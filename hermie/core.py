@@ -19,7 +19,7 @@ from .complexity import RouteLLMScorer
 from .config import RunMode, Settings
 from . import project_doc
 from .recon import workspace_recon
-from .events import (ChatMessage, EventBus, Notice, ReportArrived, ReviewArrived, RouteDecided, SnapshotTaken,
+from .events import (ChatMessage, EventBus, Notice, ReportArrived, RouteDecided, SnapshotTaken,
                      StatsUpdated, TaskFinished)
 from .judge import Judge, OllamaJudge
 from .policy import Force, Route
@@ -29,6 +29,7 @@ from .sandbox import Sandbox
 from .session import Session, TaskState
 from .snapshot import SnapshotManager
 from .trajectory import task_record
+from .graph import StepInput, build_step_graph, run_step
 from .mactools import ScreenCapture
 from .web import WebClient
 
@@ -110,6 +111,7 @@ class Hermie:
         if isinstance(judge, OllamaJudge):
             judge.usage_sink = stats.judge_usage
         self.executor = build_executor(self.models)
+        self.step_graph = build_step_graph(self)
 
     # ------------------------------------------------------------ Public interface
     @property
@@ -308,38 +310,9 @@ class Hermie:
 
     async def _execute_reviewed(self, st: TaskState, prompt: str, task_text: Optional[str] = None,
                                 acceptance: Optional[list[str]] = None) -> tuple[ExecutorOutput, Optional[Review]]:
-        """After the executor claims done, the local reviewer verifies; on failure the problems go back to the executor
-        to fix, up to verify_rounds rounds."""
-        out = await self._run_executor(st, prompt)
-        review: Optional[Review] = None
-        rounds = self.s.verify_rounds
-        for rnd in range(1, rounds + 1):
-            if out.report.status is not Status.DONE:
-                break
-            review = await self._review(st, task_text or st.text, acceptance or [], out)
-            if review is None:
-                break
-            last = review.passed or rnd == rounds
-            st.last_review = review.model_dump()
-            st.review_history.append(st.last_review)
-            self.bus.emit(ReviewArrived(review.passed, review.problems, review.suggestions, rnd, last))
-            if self.session.review_log:
-                self.session.review_log.write({"task": sha256(st.text)[:12], "route": st.route, "round": rnd,
-                                               "passed": review.passed, "problems": review.problems,
-                                               "suggestions": review.suggestions})
-            if review.passed:
-                if st.review_failures:
-                    st.review_fixed = True
-                break
-            st.review_failures += 1
-            if last:
-                break
-            fix = (f"{prompt}\n\n[Review failed (round {rnd})]\nProblems:\n"
-                   + "\n".join(f"- {x}" for x in review.problems) + "\nSuggestions:\n"
-                   + "\n".join(f"- {x}" for x in review.suggestions)
-                   + "\nFix each item, verify, then report.")
-            out = await self._run_executor(st, fix)
-        return out, review
+        """Executor plus local review loop: the step graph (graph.py)."""
+        res = await run_step(self, st, StepInput(prompt, task_text or st.text, acceptance or []))
+        return res.out, res.review
 
     def _local_output(self, st: TaskState) -> str:
         parts = ["\n\n".join(st.answers)] if st.answers else []
@@ -456,10 +429,8 @@ class Hermie:
         # Take another snapshot before each delegation: the reviewer sees only this step's changes, so the diff does
         # not keep growing across a multi-step task
         st.snapshot_id = self._snapshot(st, label="step") or st.snapshot_id
-        out, review = await self._execute_reviewed(st, prompt, task_text=local_step, acceptance=acceptance)
-        failed = out.report.status is not Status.DONE or (review is not None and not review.passed)
-        diagnosis = await self._diagnose(st, out, review) if failed else ""
-        return out, review, diagnosis
+        res = await run_step(self, st, StepInput(prompt, local_step, acceptance, diagnose=True))
+        return res.out, res.review, res.diagnosis
 
     async def _diagnose(self, st: TaskState, out: ExecutorOutput, review: Optional[Review]) -> str:
         """Rewrite the executor's concrete failure explanation into a data-free diagnosis with a local model; if it

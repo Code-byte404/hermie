@@ -165,6 +165,7 @@ class TaskState:
     # Data-free by construction: counts, booleans, numbers and enum strings only.
     trace: list[dict] = field(default_factory=list)
     _trace_pending: dict = field(default_factory=dict)
+    step: Optional[Any] = None        # graph._StepRun while the step graph runs (execute -> review -> fix loop)
 
     @property
     def s(self) -> Settings:
