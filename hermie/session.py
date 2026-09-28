@@ -13,6 +13,7 @@ from .events import EventBus
 
 if TYPE_CHECKING:
     from .judge import Judge
+    from .mactools import ScreenCapture
     from .web import WebClient
     from .privacy import CleanText, PrivacyGate
     from .sandbox import Sandbox
@@ -118,6 +119,7 @@ class Session:
     outbound_total: int = 0
     stats: Stats = field(default_factory=Stats)
     web: Optional["WebClient"] = None
+    screen: Optional["ScreenCapture"] = None   # screenshot tool (main process); None when MAC_TOOLS=false
     review_log: Optional[JsonlLog] = None   # local review records (contain local content; data_dir only)
 
     @property

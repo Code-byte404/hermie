@@ -25,7 +25,9 @@ _MARKERS = [
     ("Dockerfile", "has Dockerfile"), ("pytest.ini", "pytest"), ("tox.ini", "tox"),
 ]
 _PROBE = ("python3 --version 2>&1; node --version 2>&1; pandoc --version 2>&1 | head -1; "
-          "swiftc --version 2>&1 | head -1; git rev-parse --is-inside-work-tree 2>&1; xcodebuild -version 2>&1 | head -1")
+          "swiftc --version 2>&1 | head -1; git rev-parse --is-inside-work-tree 2>&1; xcodebuild -version 2>&1 | head -1; "
+          "echo axe=$(axe --version 2>/dev/null); "
+          "echo booted=$(xcrun simctl list devices booted 2>/dev/null | grep -c Booted)")
 
 
 def summarize_files(files: list[dict], truncated: bool = False) -> list[str]:
@@ -54,6 +56,14 @@ def summarize_tools(probe_output: str) -> str:
     for line in probe_output.splitlines():
         line = line.strip()
         if not line or "not found" in line or "No such file" in line or "xcode-select" in line:
+            continue
+        if line.startswith("axe="):
+            if v := line[4:].strip():
+                found.append(f"AXe {v} (simulator UI automation)")
+            continue
+        if line.startswith("booted="):
+            if (v := line[7:].strip()).isdigit() and int(v) > 0:
+                found.append(f"{v} booted simulator(s)")
             continue
         if re.match(r"^(Python|v\d|pandoc|Apple Swift|swift|Xcode|true)", line):
             found.append("git repo" if line == "true" else line[:60])

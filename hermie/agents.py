@@ -19,13 +19,14 @@ from pydantic import BaseModel, Field
 from pydantic_ai import Agent, ModelRetry, RunContext, UsageLimits
 from dataclasses import replace
 
-from pydantic_ai.messages import (ModelRequest, ModelResponse, PartDeltaEvent, PartStartEvent, TextPart,
-                                  TextPartDelta, ToolCallPart, ToolReturnPart, UserPromptPart)
+from pydantic_ai.messages import (BinaryContent, ModelRequest, ModelResponse, PartDeltaEvent, PartStartEvent,
+                                  TextPart, TextPartDelta, ToolCallPart, ToolReturn, ToolReturnPart, UserPromptPart)
 from pydantic_ai.models import Model
 from pydantic_ai.settings import ModelSettings
 
 from .capabilities import (ActivityTracker, CommandGuard, ExecutorToolBudget, OutboundGuard, PlannerToolBudget,
-                           TaintTracker, command_finished)
+                           TaintTracker, command_finished, mark_tainted)
+from .mactools import xcode_available
 from .config import RunMode, Settings
 from .events import (Approval, ApprovalRequest, ChatMessage, CommandStarted, Notice, OutboundSent, PlanUpdated,
                      ReportArrived)
@@ -168,6 +169,26 @@ WEB_FETCH_ONLY_INSTRUCTIONS = """- Use web_fetch (with a full URL) when you need
   curl inside the sandbox still has no network access."""
 PLANNER_WEB_NOTE = ("\nThe executor has web access: web_search for the latest information, web_fetch to read a page's text. "
                     "When up-to-date data is needed, delegate the lookup to it and require it to cite sources.")
+
+SCREENSHOT_INSTRUCTIONS = """- screenshot(target, device): captures the iOS simulator screen (target="simulator"; device is "booted", a simulator name
+  or a UDID) or the whole Mac display (target="mac") and attaches the image so you can look at it. Use it to check UI work with
+  your own eyes: after building and launching an app, take a screenshot and compare what you see with what was asked. The PNG is
+  saved outside the workspace (do not try to read it with read_file); screencapture and "simctl io screenshot" do not work from
+  run_command, only this tool does."""
+XCODE_INSTRUCTIONS = """- The Xcode toolchain is available through run_command (offline). Build an Xcode project for the simulator with
+  xcodebuild -scheme <Scheme> -destination 'platform=iOS Simulator,name=<simulator name>' -derivedDataPath build build 2>&1 | tail -40
+  (always pass -derivedDataPath inside the workspace; "xcodebuild -list" shows the schemes; the app lands under
+  build/Build/Products/Debug-iphonesimulator/<App>.app). Swift packages: swift build, swift test. Command-line Swift: swiftc.
+  Simulators (xcrun simctl): "list devices available", "boot <name>", "install booted <path/to/App.app>", "launch booted <bundle id>",
+  "openurl booted <url>", "ui booted appearance dark|light", "shutdown <name>". Every file path given to simctl must be absolute.
+  Simulator UI automation (axe, needs the simulator UDID from "xcrun simctl list devices booted"): axe describe-ui --udid <udid>
+  (accessibility tree as JSON; pipe through head or jq, it is long), axe tap -x <x> -y <y> --udid <udid> or axe tap --label "<text>"
+  --udid <udid>, axe type "<text>" --udid <udid>, axe swipe --start-x .. --start-y .. --end-x .. --end-y .. --udid <udid>,
+  axe button home --udid <udid>. Typical loop for UI work: build -> install -> launch -> screenshot -> tap/type -> screenshot,
+  and judge the result from the image, not from the build log alone."""
+PLANNER_MAC_NOTE = ("\nThe executor runs on a Mac with the Xcode toolchain: it can build Xcode projects and Swift packages, boot the "
+                    "iOS simulator, install and launch apps, drive the UI (tap, type, swipe) and take screenshots that it can look "
+                    "at itself. For app work, delegate build / run / visual check steps and require a screenshot-based check.")
 
 REVIEWER_INSTRUCTIONS = """You are the local reviewer, responsible for verifying whether the executor really completed the task. You see:
 the task (and acceptance criteria), the executor's report and answer, the actual workspace changes relative to the pre-task snapshot
@@ -328,10 +349,50 @@ async def web_search(ctx: RunContext[TaskState], query: str) -> str:
         st.session.stats.web_finished("search")
 
 
+# ====================================================================== Screenshot tool (runs in the main process; image goes to the local model only)
+
+MAC_SCREEN_REASON = ("Capture the whole Mac screen: everything visible on the display goes to the local model (never to the "
+                     "cloud; the task is marked as having touched sensitive data)")
+
+
+async def screenshot(ctx: RunContext[TaskState], target: str = "simulator", device: str = "booted"):
+    """Take a screenshot and look at it. target="simulator" captures the iOS simulator screen (device: "booted", a simulator
+    name or a UDID); target="mac" captures the whole Mac display. The PNG is saved outside the workspace and the image is
+    attached to the result."""
+    st = ctx.deps
+    sc = st.session.screen
+    if sc is None:
+        return "Screenshots are disabled (MAC_TOOLS=false)."
+    summary = f"{target} {device}" if target == "simulator" else target
+    if target == "mac":
+        if not st.s.screenshot_mac:
+            return 'Mac screen capture is switched off (SCREENSHOT_MAC=false); only target="simulator" is available.'
+        if st.session.mode is RunMode.DEFAULT and "screenshot:mac" not in st.session.session_allow:
+            decision = await st.bus.request_approval(ApprovalRequest("screenshot", summary, "high", MAC_SCREEN_REASON))
+            st.session.command_log.write({"tool": "screenshot", "command": summary, "risk": "high",
+                                          "approval": decision.value})
+            if decision is Approval.DENY:
+                return 'User denied the Mac screenshot. Use target="simulator" or continue without it.'
+            if decision is Approval.ALLOW_SESSION:
+                st.session.session_allow.add("screenshot:mac")
+    st.bus.emit(CommandStarted("screenshot", summary))
+    t0 = time.time()
+    try:
+        shot = await sc.capture(target, device)
+    except (ValueError, RuntimeError) as e:
+        command_finished(st, "screenshot", summary, 1, str(e), round(time.time() - t0, 3))
+        return f"Screenshot failed: {e}"
+    if target == "mac":  # an image cannot be scanned by the gate: fail closed, as with any Presidio error
+        mark_tainted(st, "screenshot", "the Mac screen may show anything; image content cannot be scanned")
+    msg = f"Screenshot saved: {shot.path} (shown to you at {shot.width}x{shot.height}); the image is attached."
+    command_finished(st, "screenshot", summary, 0, msg, round(time.time() - t0, 3))
+    return ToolReturn(return_value=msg, content=[BinaryContent(data=shot.data, media_type="image/png")])
+
+
 # ====================================================================== Report validation
 
 _WRITE_TOOLS = {"write_file", "edit_file"}
-_VERIFY_TOOLS = {"run_command", "read_file"}
+_VERIFY_TOOLS = {"run_command", "read_file", "screenshot"}   # looking at the running app counts as checking
 
 
 def unverified_writes(tool_seq: list[str]) -> bool:
@@ -443,6 +504,11 @@ def build_executor(models: ModelFactory) -> Agent[TaskState, ExecutorOutput]:
         settings["extra_body"] = {"reasoning_effort": "none"}
     tools = [run_command, read_file, write_file, edit_file, list_files]
     instructions = EXECUTOR_INSTRUCTIONS
+    if s.mac_tools:
+        tools.append(screenshot)
+        instructions += SCREENSHOT_INSTRUCTIONS
+        if xcode_available():
+            instructions += "\n" + XCODE_INSTRUCTIONS
     if s.web_enabled:
         tools.append(web_fetch)
         if s.tavily_api_key:
@@ -555,6 +621,8 @@ def build_planner(models: ModelFactory, run_step) -> Agent[TaskState, str]:
         return st.remember(clean).text
 
     instructions = PLANNER_INSTRUCTIONS + (PLANNER_WEB_NOTE if models.s.web_enabled else "")
+    if models.s.mac_tools and xcode_available():
+        instructions += PLANNER_MAC_NOTE
     return Agent(model, deps_type=TaskState, output_type=str, instructions=instructions, name="planner",
                  tools=[set_plan, delegate],
                  capabilities=[OutboundGuard(model_name=model.model_name), PlannerToolBudget(),

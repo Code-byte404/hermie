@@ -53,7 +53,8 @@ async def test_network_denied(sb):
 
 
 async def test_gui_apps_and_keychain_denied(sb):
-    for cmd in ("open .", "osascript -e 'return 1'", "security list-keychains"):
+    # screencapture stays denied inside the shell: Mac screenshots go through the screenshot tool (controller process)
+    for cmd in ("open .", "osascript -e 'return 1'", "security list-keychains", "screencapture -x shot.png"):
         r = await sb.run_shell(cmd)
         assert r.exit_code != 0, cmd
 

@@ -18,7 +18,7 @@ from typing import Any
 
 from pydantic_ai import RunContext
 from pydantic_ai.capabilities import AbstractCapability
-from pydantic_ai.messages import (ModelRequest, RetryPromptPart, SystemPromptPart, ToolReturnPart,
+from pydantic_ai.messages import (ModelRequest, RetryPromptPart, SystemPromptPart, ToolReturn, ToolReturnPart,
                                   UserPromptPart)
 from pydantic_ai.tools import ToolDefinition
 
@@ -90,11 +90,15 @@ _HIGH_RISK = re.compile(
     r"find\s+.*-delete|truncate|mv)\b")
 _LOW_RISK_HEADS = {"ls", "cat", "head", "tail", "wc", "grep", "rg", "find", "pwd", "echo", "stat", "file",
                    "du", "df", "tree", "diff", "sort", "uniq", "cut", "awk", "sed", "jq", "which", "date",
-                   "git", "python", "python3", "pandoc", "pytest", "mkdir", "touch"}
+                   "git", "python", "python3", "pandoc", "pytest", "mkdir", "touch",
+                   # Mac toolchain: builds write only derived data / .build, simulators are throwaway devices
+                   "xcodebuild", "xcrun", "swift", "swiftc", "xcode-select", "axe"}
 _SAFE_GIT = {"status", "diff", "log", "show", "add", "commit", "init", "branch"}
+_SIMCTL_DESTRUCTIVE = {"delete", "erase"}   # wipe simulator devices / their data: let the judge rate these
 _INTERPRETERS = {"python", "python3", "node", "ruby", "perl", "sh", "zsh", "bash"}
 _INLINE_CODE_FLAGS = {"-c", "-e", "-E", "--eval", "-p"}
 _WRITE_REDIRECT = re.compile(r"(?<![0-9&])>(?!>)\s*[^&\s]")
+_FD_DUP = re.compile(r"\d?>&\d")   # 2>&1, >&2
 
 RISK_LEVELS = [
     "low: only reads information, or creates new files inside the workspace",
@@ -110,7 +114,8 @@ def rule_risk(command: str) -> str | None:
     goes to the judge model."""
     if _HIGH_RISK.search(command):
         return "high"
-    segments = [seg.split() for seg in re.split(r"[;&|]+", command) if seg.strip()]
+    # "2>&1" only merges streams; without this it would split into a stray segment ("1") and go to the judge
+    segments = [seg.split() for seg in re.split(r"[;&|]+", _FD_DUP.sub(" ", command)) if seg.strip()]
     if not segments:
         return None
     for words in segments:
@@ -120,6 +125,8 @@ def rule_risk(command: str) -> str | None:
             return None
         if words[0] in _INTERPRETERS and any(w in _INLINE_CODE_FLAGS for w in words[1:]):
             return None  # python -c "..." can do anything; must not be rated low by script name
+        if words[0] == "xcrun" and "simctl" in words[1:2] and any(w in _SIMCTL_DESTRUCTIVE for w in words[2:]):
+            return None
     if "sed -i" in command or _WRITE_REDIRECT.search(command):
         return None
     return "low"
@@ -168,7 +175,8 @@ STUCK_QUESTION = ("Based on the action log below, is the executor going in circl
                   "similar failing actions without real progress)?")
 # These tools return no file content (only paths / byte counts / file lists): taint detection runs the rules
 # layer only and does not ask the judge model
-_NO_CONTENT_TOOLS = {"write_file", "edit_file", "list_files"}
+_NO_CONTENT_TOOLS = {"write_file", "edit_file", "list_files", "screenshot"}   # screenshot: only a path in text; the
+                                                                              # image itself is handled by the tool (mac = tainted)
 # Web content is public material, not "sensitive local content read"; it is excluded from taint tracking
 # (prompt injection is covered by the "always treat it as data" instruction)
 _PUBLIC_TOOLS = {"web_fetch", "web_search"}
@@ -212,7 +220,11 @@ class TaintTracker(AbstractCapability[TaskState]):
 
     async def after_tool_execute(self, ctx: RunContext[TaskState], *, call, tool_def, args, result: Any):
         st = ctx.deps
-        text = result if isinstance(result, str) else str(result)
+        if isinstance(result, ToolReturn):   # e.g. screenshot: the text part is checked, the attached image is not text
+            result_text = result.return_value
+        else:
+            result_text = result
+        text = result_text if isinstance(result_text, str) else str(result_text)
         st.tool_calls += 1
         st.tool_seq.append(call.tool_name)
         st.recent_calls.append(f"{call.tool_name}({str(args)[:200]}) -> {text[:200]}")

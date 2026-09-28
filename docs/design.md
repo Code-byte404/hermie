@@ -135,7 +135,7 @@ The agent layer uses a split "planner + executor" structure; the two agents each
 **Executor**
 
 - Model: a local Ollama model (recommended 8B or larger with good tool-calling ability, e.g. qwen3:8b).
-- Tools: run commands, read files, write files and edit files inside the sandbox. All tools execute through the sandbox subprocess.
+- Tools: run commands, read files, write files and edit files inside the sandbox. All tools execute through the sandbox subprocess. Two kinds of tool run in the controller process instead, each with a narrow, logged interface: web_fetch / web_search (section 6) and screenshot (section 9), which hands the executor an image of the iOS simulator or the Mac screen.
 - Output: a fixed-structure report (see section 8), never free text.
 - Memory: local history is kept across delegations and compressed by a local model when it grows too long.
 
@@ -194,9 +194,12 @@ Everything the executor does runs inside the macOS Seatbelt (sandbox-exec) sandb
 | Network | Fully disabled by default |
 | Keychain and credentials | Denied; credential channels such as the SSH agent are removed from the environment |
 | Apple Events and launching other apps | Denied (see below) |
+| Screen capture from the shell | Denied (screencapture, window server); screenshots go through the screenshot tool (see below) |
 | Resource limits | Per-command timeout; maximum steps per task |
 
 **No native app calls**: having Word, Pages, Numbers etc. process files via AppleScript, or opening files with the open command, amounts to asking a fully privileged app outside the sandbox to act on the executor's behalf, which bypasses the sandbox. Document processing uses command-line tools and libraries instead: Python's docx, Excel and PDF libraries, pandoc, and LibreOffice in headless mode.
+
+**Mac toolchain**: the Xcode command-line tools work inside the sandbox as they are: xcodebuild (derived data inside the workspace), swift build / test, xcrun simctl (list, boot, install, launch, openurl, appearance; the simulator itself is a separate process outside the sandbox, so it keeps its network) and AXe for simulator UI automation (describe-ui, tap, type, swipe, button). The executor prompt carries a cheat sheet for them when xcodebuild is installed, and the recon line tells the planner about booted simulators and AXe. The one thing the sandbox cannot do is capture an image: the `screenshot` tool runs in the controller process with a fixed argv (`xcrun simctl io <device> screenshot` or `screencapture -x`), like the web tools, saves the full PNG under `data_dir/screenshots` (never the workspace, so it stays out of diffs and snapshots) and returns a downscaled copy to the local vision model as an image. Simulator screenshots show the project's own app on a clean device and carry no taint. A Mac-screen screenshot may show anything on the display and cannot be scanned by the gate, so it marks the task as tainted (fail closed) and in default mode asks for approval once per session; `SCREENSHOT_MAC=false` removes that target. The image never goes further than the local model: reports and the planner cannot carry it.
 
 **Workspace location**: keep it outside Desktop, Documents, Downloads and other directories protected by macOS privacy permissions (TCC), to avoid permission prompts interrupting automatic runs and to avoid granting the terminal "Full Disk Access".
 

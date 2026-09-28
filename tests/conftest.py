@@ -90,7 +90,10 @@ class Script:
                 if isinstance(m, ModelRequest):
                     for p in m.parts:
                         if isinstance(p, UserPromptPart):
-                            out.append(str(p.content))
+                            if isinstance(p.content, str):
+                                out.append(p.content)
+                            else:  # tool attachments (screenshot images) are not text; keep only the text parts
+                                out.extend(c for c in p.content if isinstance(c, str))
                         elif isinstance(p, ToolReturnPart):
                             out.append(p.model_response_str())
         return "\n".join(out)

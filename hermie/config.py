@@ -85,6 +85,11 @@ class Settings:
     web_fetch_max_chars: int = field(default_factory=lambda: _env_int("WEB_FETCH_MAX_CHARS", 12000))
     web_fetch_max_bytes: int = field(default_factory=lambda: _env_int("WEB_FETCH_MAX_BYTES", 3_000_000))
 
+    # ---- Mac toolchain: Xcode / simctl / AXe run in the sandbox via run_command; the screenshot tool runs in the main process ----
+    mac_tools: bool = field(default_factory=lambda: _env_bool("MAC_TOOLS", True))
+    screenshot_mac: bool = field(default_factory=lambda: _env_bool("SCREENSHOT_MAC", True))   # whole-display capture (taints the task)
+    screenshot_max_px: int = field(default_factory=lambda: _env_int("SCREENSHOT_MAX_PX", 1024))  # longest side shown to the model
+
     # ---- RouteLLM (local BERT router) ----
     routellm_enabled: bool = field(default_factory=lambda: _env_bool("ROUTELLM_ENABLED", True))
     routellm_checkpoint: str = field(default_factory=lambda: _env("ROUTELLM_CHECKPOINT", "routellm/bert_gpt4_augmented"))
