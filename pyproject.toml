@@ -34,6 +34,7 @@ dependencies = [
   "numpy==2.4.6",
   "openpyxl==3.1.5",
   "python-docx==1.2.0",
+  "pypdf==6.7.5",
 ]
 
 [project.optional-dependencies]

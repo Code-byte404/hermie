@@ -22,9 +22,10 @@ dependencies:
       - torch==2.14.0
       - transformers==5.17.0
       - numpy==2.4.6
-      # Document handling by the executor inside the sandbox
+      # Document handling: by the executor inside the sandbox, and text extraction of attached PDF / Word / Excel files
       - openpyxl==3.1.5
       - python-docx==1.2.0
+      - pypdf==6.7.5
       # Voice (optional: without these only the voice features are unavailable): sounddevice recording, mlx-whisper local transcription (Apple Silicon)
       - sounddevice==0.5.6
       - mlx-whisper==0.4.3

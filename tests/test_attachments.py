@@ -94,3 +94,116 @@ def test_find_paths_ignores_root_and_home():
     assert find_paths("/help") == []
     assert find_paths("~") == []
     assert find_paths(f"list {Path.home()}") == []
+
+
+# ---- office / PDF documents: text is extracted in the main process and joins the material like any text file ----
+
+def _minimal_pdf(pages: list[str]) -> bytes:
+    """A hand-built single-font PDF with one line of text per page (pypdf can read but not author text)."""
+    objs: list[bytes] = []
+    n_pages = len(pages)
+    kids = " ".join(f"{3 + 2 * i} 0 R" for i in range(n_pages))
+    objs.append(b"<< /Type /Catalog /Pages 2 0 R >>")
+    objs.append(f"<< /Type /Pages /Kids [{kids}] /Count {n_pages} >>".encode())
+    font_id = 3 + 2 * n_pages
+    for i, line in enumerate(pages):
+        page_id, content_id = 3 + 2 * i, 4 + 2 * i
+        objs.append(f"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 300 144] /Contents {content_id} 0 R "
+                    f"/Resources << /Font << /F1 {font_id} 0 R >> >> >>".encode())
+        stream = f"BT /F1 12 Tf 20 100 Td ({line}) Tj ET".encode()
+        objs.append(b"<< /Length " + str(len(stream)).encode() + b" >>\nstream\n" + stream + b"\nendstream")
+    objs.append(b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>")
+    out = bytearray(b"%PDF-1.4\n")
+    offsets = []
+    for i, body in enumerate(objs, start=1):
+        offsets.append(len(out))
+        out += f"{i} 0 obj\n".encode() + body + b"\nendobj\n"
+    xref = len(out)
+    out += f"xref\n0 {len(objs) + 1}\n0000000000 65535 f \n".encode()
+    for off in offsets:
+        out += f"{off:010d} 00000 n \n".encode()
+    out += f"trailer\n<< /Size {len(objs) + 1} /Root 1 0 R >>\nstartxref\n{xref}\n%%EOF\n".encode()
+    return bytes(out)
+
+
+def test_load_material_extracts_pdf_text_per_page(tmp_path):
+    f = tmp_path / "report.pdf"
+    f.write_bytes(_minimal_pdf(["Revenue grew 12 percent", "Phone 13812345678"]))
+    m = load_material([f], max_file_chars=10_000, max_total_chars=50_000)
+    assert f"[File: {f}]" in m.text
+    assert "Revenue grew 12 percent" in m.text and "13812345678" in m.text
+    assert m.text.index("[Page 1]") < m.text.index("Revenue") < m.text.index("[Page 2]") < m.text.index("13812345678")
+    assert m.summary == [f"{f} (2 pages)"]
+    assert m.notes == []
+
+
+def test_load_material_notes_pdf_without_text_and_encrypted(tmp_path):
+    from pypdf import PdfReader, PdfWriter
+    blank = tmp_path / "scan.pdf"
+    w = PdfWriter()
+    w.add_blank_page(width=100, height=100)
+    with blank.open("wb") as fh:
+        w.write(fh)
+    locked = tmp_path / "locked.pdf"
+    w2 = PdfWriter(clone_from=PdfReader(str(blank)))
+    w2.encrypt("secret")
+    with locked.open("wb") as fh:
+        w2.write(fh)
+    m = load_material([blank, locked], max_file_chars=10_000, max_total_chars=50_000)
+    assert m.text == "" and m.summary == []
+    assert any("scan.pdf" in n and "no extractable text" in n for n in m.notes)
+    assert any("locked.pdf" in n and "encrypted" in n for n in m.notes)
+
+
+def test_load_material_extracts_docx_paragraphs_and_tables(tmp_path):
+    import docx
+    d = docx.Document()
+    d.add_heading("Quarterly review", level=1)
+    d.add_paragraph("Customer Zhang called about invoice 42.")
+    t = d.add_table(rows=2, cols=2)
+    t.cell(0, 0).text, t.cell(0, 1).text = "name", "phone"
+    t.cell(1, 0).text, t.cell(1, 1).text = "Li", "13912345678"
+    f = tmp_path / "review.docx"
+    d.save(str(f))
+    m = load_material([f], max_file_chars=10_000, max_total_chars=50_000)
+    assert "Quarterly review" in m.text and "invoice 42" in m.text
+    assert "Li\t13912345678" in m.text
+    assert m.summary == [f"{f} (docx)"]
+    assert m.notes == []
+
+
+def test_load_material_extracts_xlsx_sheets_as_tab_separated_rows(tmp_path):
+    import openpyxl
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = "Customers"
+    ws.append(["name", "phone", "amount"])
+    ws.append(["Wang", "13712345678", 99.5])
+    ws2 = wb.create_sheet("Empty")
+    f = tmp_path / "book.xlsx"
+    wb.save(str(f))
+    m = load_material([f], max_file_chars=10_000, max_total_chars=50_000)
+    assert "[Sheet: Customers]" in m.text
+    assert "name\tphone\tamount" in m.text and "Wang\t13712345678\t99.5" in m.text
+    assert "[Sheet: Empty]" not in m.text
+    assert m.summary == [f"{f} (xlsx, 1 sheet)"]
+
+
+def test_load_material_document_text_respects_caps(tmp_path):
+    import docx
+    d = docx.Document()
+    for _ in range(50):
+        d.add_paragraph("word " * 20)
+    f = tmp_path / "long.docx"
+    d.save(str(f))
+    m = load_material([f], max_file_chars=200, max_total_chars=50_000)
+    assert len(m.text.split("]\n", 1)[1]) == 200
+    assert any("long.docx" in n and "truncated" in n for n in m.notes)
+
+
+def test_load_material_corrupt_document_is_skipped_with_note(tmp_path):
+    f = tmp_path / "broken.docx"
+    f.write_bytes(b"PK\x03\x04 not really a docx")
+    m = load_material([f], max_file_chars=1000, max_total_chars=5000)
+    assert m.text == ""
+    assert any("broken.docx" in n and "unreadable" in n for n in m.notes)
