@@ -88,6 +88,7 @@ What the gate cannot promise (probabilistic name detection, uncalibrated thresho
 ## Documentation
 
 - [User guide](docs/guide.md): the UI, `AGENT.md`, the self-verification loop, voice, web access, examples, evals and known limitations.
+- [Roadmap](docs/roadmap.md): the task graph, the self-improvement loop and what comes after.
 - [Architecture](docs/architecture.md): request flow, module responsibilities, privacy invariants.
 - [Design document](docs/design.md): the original design and its reasoning.
 - [Contributing](CONTRIBUTING.md) and [Security](SECURITY.md).
