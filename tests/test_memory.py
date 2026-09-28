@@ -105,3 +105,35 @@ def test_embedder_calls_ollama_and_fails_soft():
     bad = Embedder(Settings(ollama_url="http://o.test"),
                    client=httpx.Client(transport=httpx.MockTransport(lambda r: httpx.Response(404, json={}))))
     assert bad.embed("hello") is None and bad.failed
+
+
+def test_helpful_history_never_outranks_a_much_more_relevant_lesson(tmp_path):
+    store = LessonStore(tmp_path / "l.jsonl", FakeEmbedder())
+    old = store.add("Spreadsheet imports in docker need the python image.", workspace=WS_A, task_type="x",
+                    tools=[], source="review_fixed")
+    for _ in range(5):
+        store.feedback([old.id], helped=True)
+    fresh = store.add("Use csv instead of openpyxl for spreadsheet files.", workspace=WS_A, task_type="x", tools=[],
+                      source="review_fixed")
+    got = store.recall("convert the spreadsheet to csv", workspace=WS_A, task_type="x", k=1, min_sim=0.1)
+    assert [l.id for l in got] == [fresh.id]
+
+
+def test_sync_without_a_lessons_section_disables_nothing(tmp_path):
+    store = LessonStore(tmp_path / "l.jsonl", FakeEmbedder())
+    store.add("Keep me.", workspace=WS_A, task_type="x", tools=[], source="review_fixed")
+    assert store.sync_doc(WS_A, None, cap=20) == 0
+    assert not store.all()[0].disabled
+
+
+def test_two_processes_do_not_lose_each_others_lessons(tmp_path):
+    path = tmp_path / "l.jsonl"
+    a = LessonStore(path, FakeEmbedder())
+    a.add("first from a", workspace=WS_A, task_type="x", tools=[], source="review_fixed")
+    b = LessonStore(path, FakeEmbedder())
+    a.add("second from a", workspace=WS_A, task_type="x", tools=[], source="review_fixed")
+    b.add("one from b", workspace=WS_B, task_type="x", tools=[], source="review_fixed")
+    a.feedback([a.all()[0].id], helped=True)
+    texts = sorted(l.text for l in LessonStore(path, FakeEmbedder()).all())
+    assert texts == ["first from a", "one from b", "second from a"]
+    assert not list(tmp_path.glob("*.tmp"))

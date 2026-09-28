@@ -123,3 +123,37 @@ async def test_lessons_disabled_means_no_recall_and_no_store(make_agent, setting
     agent = make_agent(FakeJudge(task="repetitive"), executor=ex, verify_rounds=0, lessons_enabled=False)
     await agent.run("Convert the spreadsheet")
     assert "[Lessons from earlier tasks]" not in ex.sent_text() and not settings.lessons_path.exists()
+
+
+async def test_missing_agent_md_does_not_disable_lessons(make_agent, settings):
+    agent = await _learn(make_agent)
+    (settings.workspace / "AGENT.md").unlink()
+    ex = Script([final()])
+    agent2 = make_agent(FakeJudge(task="repetitive"), executor=ex, verify_rounds=0, lessons_enabled=True)
+    agent2.session.lessons = agent.session.lessons
+    await agent2.run("Convert the spreadsheet to csv")
+    assert LESSON in ex.sent_text() and not agent.session.lessons.all()[0].disabled
+
+
+async def test_lessons_disabled_executor_still_reads_doc_lessons_planner_never(make_agent, settings):
+    planner = Script([tool("delegate", step="Do it"), text("Done")], name="planner")
+    ex = Script([final()])
+    agent = make_agent(FakeJudge(task="planning"), planner=planner, executor=ex, verify_rounds=0, lessons_enabled=False)
+    project_doc.record_lesson(settings.workspace, "Hand written: run pytest -q before reporting done.")
+    await agent.run("Build the thing")
+    assert "Hand written: run pytest" in ex.sent_text()
+    assert "Hand written: run pytest" not in planner.sent_text()
+
+
+async def test_recall_failure_does_not_abort_the_task(make_agent, settings):
+    agent = await _learn(make_agent)
+
+    def boom(*a, **k):
+        raise ZeroDivisionError("bad lesson file")
+    agent.session.lessons.recall = boom
+    ex = Script([final(answer="still done")])
+    agent.executor = agent.executor  # unchanged
+    agent2 = make_agent(FakeJudge(task="repetitive"), executor=ex, verify_rounds=0, lessons_enabled=True)
+    agent2.session.lessons = agent.session.lessons
+    r = await agent2.run("Convert the spreadsheet to csv")
+    assert r.output == "still done"

@@ -183,8 +183,10 @@ class Hermie:
 
     async def run(self, task: str, material: str = "", force: Force = Force.NONE) -> TaskResult:
         text = f"{task}\n\n{material}".strip() if material else task
-        # AGENT.md without its "Lessons" section: lessons reach the executor through recall_lessons, never the planner
-        st = TaskState(self.session, text, project_doc=project_doc.load(self.s.workspace, include_lessons=False),
+        # With lesson memory on, AGENT.md's "Lessons" section reaches the executor through recall_lessons instead of being
+        # pasted in; with it off, the executor reads the section as before. The planner never gets it (_outbound_task).
+        st = TaskState(self.session, text,
+                       project_doc=project_doc.load(self.s.workspace, include_lessons=not self.s.lessons_enabled),
                        flow=FlowState(task=task, force=force))
         await self._sync_lessons()
         t0 = time.time()
@@ -422,7 +424,8 @@ class Hermie:
         The workspace AGENT.md and the recon overview are attached and take the same gate path as the task."""
         gate = st.gate
         source = st.text
-        extras = ([f"[Project doc AGENT.md]\n{st.project_doc}"] if st.project_doc else []) + ([recon] if recon else [])
+        doc = project_doc.strip_lessons(st.project_doc).strip() if st.project_doc else ""  # lessons never go to the planner
+        extras = ([f"[Project doc AGENT.md]\n{doc}"] if doc else []) + ([recon] if recon else [])
         if extras:
             source = "\n\n".join([st.text, *extras])
             verdict = await asyncio.to_thread(gate.check, source)  # the routing-stage verdict covered only the task text

@@ -120,8 +120,14 @@ async def _recall_lessons(ctx: StepCtx) -> None:
     from .memory import workspace_id
     routing = st.flow.routing
     task_type = routing.signals.task.choice if routing is not None and routing.signals else ""
-    st.lessons = await asyncio.to_thread(store.recall, st.step.inp.task_text, workspace=workspace_id(agent.s.workspace),
-                                         task_type=task_type, k=agent.s.lessons_top_k, min_sim=agent.s.lessons_min_sim)
+    try:
+        st.lessons = await asyncio.to_thread(store.recall, st.step.inp.task_text,
+                                             workspace=workspace_id(agent.s.workspace), task_type=task_type,
+                                             k=agent.s.lessons_top_k, min_sim=agent.s.lessons_min_sim)
+    except Exception as e:  # lessons are a quality aid: a broken store must never stop the task
+        log.exception("Lesson recall failed; continuing without lessons")
+        st.trace_note(recall_error=type(e).__name__)
+        st.lessons = []
     st.lessons_used.update(l.id for l in st.lessons)
     st.trace_note(lessons=len(st.lessons))
 

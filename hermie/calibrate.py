@@ -145,6 +145,7 @@ class Report:
     changed: list = field(default_factory=list)   # (input sha prefix, route now, route with proposal)
     can_apply: bool = False
     note: str = ""
+    has_evals: bool = False                        # evals/signals.jsonl was found and used as the anchor
 
 
 def build_report(s: Settings, since_days: Optional[float] = None, eval_signals: Optional[Path] = None) -> Report:
@@ -175,6 +176,12 @@ def build_report(s: Settings, since_days: Optional[float] = None, eval_signals: 
         distance = sum(abs(cfg[k] - r.current[k]) for k in keys)
         return (acc, ev, local, -distance)
     candidates = [dict(zip(keys, v)) for v in itertools.product(*(GRID[k] for k in keys))] + [dict(r.current)]
+    rejected_by_evals = False
+    if evals:  # the curated cases anchor the proposal: nothing that routes them worse than today is proposed
+        floor = r.eval_acc_current
+        kept = [c for c in candidates if _hits(evals, c, s)[0] >= floor]
+        rejected_by_evals = max(candidates, key=rank) not in kept
+        candidates = kept
     best = max(candidates, key=rank)
     if rank(best) > rank(r.current):
         r.proposed = best
@@ -188,8 +195,14 @@ def build_report(s: Settings, since_days: Optional[float] = None, eval_signals: 
     r.can_apply = r.labelled >= s.calibrate_min_tasks and r.proposed != r.current
     if r.labelled < s.calibrate_min_tasks:
         r.note = f"Only {r.labelled} labelled tasks; --apply needs at least {s.calibrate_min_tasks} (CALIBRATE_MIN_TASKS)."
+    elif r.proposed == r.current and rejected_by_evals:
+        r.note = ("A change would fit your tasks better but route the curated eval cases worse, so none is proposed; "
+                  "add your own cases to evals/routing_cases.jsonl if they disagree with the curated set.")
     elif r.proposed == r.current:
         r.note = "The current thresholds are already the best on this record."
+    elif r.traj_acc_proposed == r.traj_acc_current:
+        r.note = "Same hit rate on your tasks; the proposal only sends more of them to the local routes."
+    r.has_evals = bool(evals)
     return r
 
 
@@ -206,6 +219,9 @@ def format_report(r: Report) -> str:
     if r.changed:
         lines.append(f"\nTasks whose route would change ({len(r.changed)}):")
         lines += [f"- {sha}: {a} → {b}" for sha, a, b in r.changed[:20]]
+    if r.labelled and not r.has_evals:
+        lines.append("\nNo eval signals (evals/signals.jsonl): the proposal is fitted to your tasks only. "
+                     "Run `python evals/run_evals.py routing` once to anchor it to the curated cases.")
     if r.note:
         lines.append("\n" + r.note)
     if r.can_apply:

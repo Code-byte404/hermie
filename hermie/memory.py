@@ -8,9 +8,12 @@ ranked by similarity weighted by how often they helped. Nothing here is ever sen
 """
 from __future__ import annotations
 
+import fcntl
 import json
 import logging
 import math
+import os
+import tempfile
 import re
 import threading
 import time
@@ -102,22 +105,40 @@ class LessonStore:
         self.path = Path(path)
         self.embedder = embedder
         self._lock = threading.Lock()
-        self._lessons: list[Lesson] = []
-        if self.path.exists():
-            for line in self.path.read_text(encoding="utf-8").splitlines():
-                try:
-                    self._lessons.append(Lesson(**json.loads(line)))
-                except (json.JSONDecodeError, TypeError):
-                    log.warning("Skipping a malformed line in %s", self.path)
+        self._lessons: list[Lesson] = self._read()
+
+    def _read(self) -> list[Lesson]:
+        out: list[Lesson] = []
+        if not self.path.exists():
+            return out
+        for line in self.path.read_text(encoding="utf-8").splitlines():
+            try:
+                out.append(Lesson(**json.loads(line)))
+            except (json.JSONDecodeError, TypeError):
+                log.warning("Skipping a malformed line in %s", self.path)
+        return out
 
     def all(self) -> list[Lesson]:
         return list(self._lessons)
 
     def _save(self) -> None:
+        """Merge with what is on disk (another Hermie instance may have written since we loaded), then replace the file
+        atomically. An flock on a sidecar file serializes the read-merge-write across processes."""
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        tmp = self.path.with_suffix(".tmp")
-        tmp.write_text("".join(json.dumps(asdict(l), ensure_ascii=False) + "\n" for l in self._lessons), encoding="utf-8")
-        tmp.replace(self.path)
+        with open(self.path.with_name(self.path.name + ".lock"), "w") as lockf:
+            fcntl.flock(lockf, fcntl.LOCK_EX)
+            mine = {l.id: l for l in self._lessons}
+            for d in self._read():
+                m = mine.get(d.id)
+                if m is None:
+                    self._lessons.append(d)
+                    mine[d.id] = d
+                else:
+                    m.uses, m.helped = max(m.uses, d.uses), max(m.helped, d.helped)
+            fd, tmp = tempfile.mkstemp(dir=self.path.parent, prefix=self.path.name, suffix=".tmp")
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
+                f.write("".join(json.dumps(asdict(l), ensure_ascii=False) + "\n" for l in self._lessons))
+            os.replace(tmp, self.path)
 
     def add(self, text: str, *, workspace: str, task_type: str, tools: list[str], source: str,
             key_text: str = "") -> Lesson:
@@ -154,7 +175,7 @@ class LessonStore:
             same_ws = l.workspace == workspace
             if not same_ws and sim < min_sim:
                 continue
-            score = sim * (1 + l.helped) / (1 + l.uses - l.helped)
+            score = sim * (1 + l.helped) / (1 + max(l.uses, l.helped))  # <= sim: history only ranks down
             scored.append((round(score, 4), same_ws, l.task_type == task_type, l.ts, l))
         scored.sort(key=lambda x: x[:4], reverse=True)
         return [x[-1] for x in scored[:k]]
@@ -168,10 +189,13 @@ class LessonStore:
                     by_id[i].helped += int(helped)
             self._save()
 
-    def sync_doc(self, workspace: str, doc_lessons: list[str], cap: int) -> int:
+    def sync_doc(self, workspace: str, doc_lessons: Optional[list[str]], cap: int) -> int:
         """Reconcile with the AGENT.md "Lessons" section of this workspace: lessons written there by hand are imported
         (source "manual"); when the section is below its trimming cap, store lessons of this workspace that are missing
-        from it were deleted by the user and are disabled. Returns how many lessons were imported."""
+        from it were deleted by the user and are disabled. doc_lessons None (no AGENT.md, no Lessons section, or an
+        unreadable file) changes nothing. Returns how many lessons were imported."""
+        if doc_lessons is None:
+            return 0
         doc = [x.strip() for x in doc_lessons if x.strip()]
         known = {l.text for l in self._lessons if l.workspace == workspace}
         imported = 0

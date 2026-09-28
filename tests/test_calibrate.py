@@ -96,3 +96,25 @@ def test_since_filters_old_records(tmp_path):
 def test_router_uses_needs_workspace_threshold_setting(monkeypatch):
     monkeypatch.setenv("NEEDS_WORKSPACE_THRESHOLD", "0.5")
     assert Settings().needs_workspace_threshold == 0.5
+
+
+def test_eval_cases_anchor_the_proposal(tmp_path):
+    s = Settings(data_dir=tmp_path / "d", env_path=tmp_path / ".env", calibrate_min_tasks=3, min_confidence=0.6)
+    records = [rec("local", force="local", sha=str(i), nodes=[ex(), rv(True)]) for i in range(4)]
+    for r in records:
+        r["signals"]["task_type"] = {"choice": "complex", "confidence": 0.8}
+        r["signals"]["complexity"] = {"score": 2, "confidence": 0.8}
+    _write(s, records)
+    evals = tmp_path / "signals.jsonl"
+    ev = [dict(r, expect=["plan"]) for r in records]  # the curated set says these hard tasks belong to plan mode
+    evals.write_text("".join(json.dumps(e) + "\n" for e in ev))
+    r = calibrate.build_report(s, eval_signals=evals)
+    assert r.proposed == r.current and not r.can_apply
+    assert "eval" in r.note.lower()
+
+
+def test_report_says_when_no_eval_signals(tmp_path):
+    s = Settings(data_dir=tmp_path / "d", env_path=tmp_path / ".env", calibrate_min_tasks=1)
+    _write(s, [rec("local", nodes=[ex(), rv(True)])])
+    md = calibrate.format_report(calibrate.build_report(s, eval_signals=tmp_path / "missing.jsonl"))
+    assert "No eval signals" in md

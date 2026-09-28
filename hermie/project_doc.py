@@ -55,7 +55,7 @@ def find_doc(workspace: Path) -> Optional[Path]:
     return None
 
 
-def _strip_lessons(text: str) -> str:
+def strip_lessons(text: str) -> str:
     """Drop the "Lessons" section (up to the next "## " heading): lessons reach the executor through recall, and
     the planner never gets them."""
     if LESSONS_HEADER not in text:
@@ -75,24 +75,25 @@ def load(workspace: Path, include_lessons: bool = True) -> str:
     except OSError:
         return ""
     if not include_lessons:
-        text = _strip_lessons(text)
+        text = strip_lessons(text)
     if len(text) > MAX_DOC_CHARS:
         half = MAX_DOC_CHARS // 2
         text = text[:half] + "\n\n...(middle omitted)...\n\n" + text[-half:]
     return text.strip()
 
 
-def lessons(workspace: Path) -> list[str]:
-    """The bullet lines of the "Lessons" section, without the "- "."""
+def lessons(workspace: Path) -> Optional[list[str]]:
+    """The bullet lines of the "Lessons" section, without the "- "; None when there is no document, no Lessons section
+    or it cannot be read (so that a missing file is never mistaken for "the user deleted every lesson")."""
     p = find_doc(workspace)
     if p is None:
-        return []
+        return None
     try:
         text = p.read_text(encoding="utf-8", errors="replace")
     except OSError:
-        return []
+        return None
     if LESSONS_HEADER not in text:
-        return []
+        return None
     section = text.partition(LESSONS_HEADER)[2]
     nxt = section.find("\n## ")
     section = section[:nxt] if nxt != -1 else section
