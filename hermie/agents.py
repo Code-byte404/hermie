@@ -16,7 +16,7 @@ from typing import Optional
 from urllib.parse import urlparse
 
 from pydantic import BaseModel, Field
-from pydantic_ai import Agent, ModelRetry, RunContext, UsageLimits
+from pydantic_ai import Agent, ModelRetry, RunContext, Tool, UsageLimits
 from dataclasses import replace
 
 from pydantic_ai.messages import (BinaryContent, ModelRequest, ModelResponse, PartDeltaEvent, PartStartEvent,
@@ -650,7 +650,9 @@ def build_planner(models: ModelFactory, run_step) -> Agent[TaskState, str]:
     if models.s.mac_tools and xcode_available():
         instructions += PLANNER_MAC_NOTE
     return Agent(model, deps_type=TaskState, output_type=str, instructions=instructions, name="planner",
-                 tools=[set_plan, delegate],
+                 # delegate is sequential: parallel delegations would share the executor, its history and
+                 # TaskState.step, and the planner is told to delegate step by step anyway
+                 tools=[set_plan, Tool(delegate, sequential=True)],
                  capabilities=[OutboundGuard(model_name=model.model_name), PlannerToolBudget(),
                                *models.tracker("planner", "cloud")])
 

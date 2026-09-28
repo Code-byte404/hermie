@@ -110,7 +110,7 @@ async def _execute(ctx: StepCtx) -> ExecutorOutput:
 @traced("review")
 async def _review(ctx: StepCtx) -> Literal["again", "done", "diagnose"]:
     """After the executor claims done, the local reviewer verifies; on failure the problems go back to the executor
-    to fix, up to verify_rounds rounds. Same loop as the old core._execute_reviewed, one iteration per visit."""
+    to fix, up to verify_rounds rounds; a reviewer error ends the loop with no review. One iteration per visit."""
     st, agent = ctx.state, ctx.deps
     run: _StepRun = st.step
     out = run.out
@@ -120,8 +120,8 @@ async def _review(ctx: StepCtx) -> Literal["again", "done", "diagnose"]:
         run.round += 1
         rnd = run.round
         review = await agent._review(st, run.inp.task_text, run.inp.acceptance, out)
+        run.review = review  # a reviewer error ends the loop with no review, as the old loop did
         if review is not None:
-            run.review = review
             last = review.passed or rnd == rounds
             st.last_review = review.model_dump()
             st.review_history.append(st.last_review)
@@ -344,11 +344,13 @@ async def _plan(ctx: TaskCtx) -> Literal["done", "midway", "fallback"]:
     return "done"
 
 
-def _result(st: TaskState, output: str, route: Route, backend: str, snapshot_id: Optional[str]) -> "TaskResult":
+def _result(st: TaskState, output: str, route: Route, backend: str, snapshot_id: Optional[str],
+            local_work: bool = True) -> "TaskResult":
+    """local_work=False for a cloud answer: the report and artifacts of a rejected local run do not describe it."""
     from .core import TaskResult
     route_value = Route.LOCAL_VERIFY.value if st.route == Route.LOCAL_VERIFY.value else route.value
     return TaskResult(output, route_value, backend, list(st.flow.notes), snapshot_id=snapshot_id,
-                      report=st.last_report, artifacts=st.artifacts)
+                      report=st.last_report if local_work else None, artifacts=st.artifacts if local_work else [])
 
 
 @traced("finish_local")
@@ -360,7 +362,8 @@ async def _finish_local(ctx: TaskCtx) -> "TaskResult":
 @traced("finish_cloud")
 async def _finish_cloud(ctx: TaskCtx) -> "TaskResult":
     st, agent = ctx.state, ctx.deps
-    return _result(st, st.flow.cloud_output, Route.CLOUD, agent.s.cloud_provider, st.flow.task_snapshot_id)
+    return _result(st, st.flow.cloud_output, Route.CLOUD, agent.s.cloud_provider, st.flow.task_snapshot_id,
+                   local_work=False)
 
 
 @traced("finish_plan")

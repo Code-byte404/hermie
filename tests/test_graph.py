@@ -67,7 +67,7 @@ async def test_step_graph_keeps_last_review_when_reviewer_errors(make_agent):
     agent = make_agent(FakeJudge(), executor=ex, reviewer=rv, verify_rounds=3)
     st = TaskState(agent.session, "x")
     res = await run_step(agent, st, StepInput(prompt="x", task_text="x"))
-    assert res.review is not None and not res.review.passed and res.review.problems == ["p1"]
+    assert res.review is None  # as before the graph: a reviewer error ends the loop with no review
     assert len(ex.seen) == 2  # executed, fixed once, reviewer error ends the loop
     assert nodes(st)[-2:] == [("review", "done"), ("finish_step", "ok")]
 
@@ -225,3 +225,46 @@ def test_render_lists_every_node(make_agent):
                  "finish_local", "finish_cloud", "finish_plan", "execute", "review", "diagnose", "finish_step"):
         assert f"\n  {node}\n" in src or f"  {node} -->" in src or f"--> {node}\n" in src, node
     assert src.count("stateDiagram-v2") == 2
+
+
+async def test_local_verify_reviewer_error_does_not_escalate(make_agent):
+    ex = Script([final(), final()])
+    rv = Script([review(False, problems=["p1"]), _raise("reviewer down")])
+    cloud = Script([text("never")], name="cloud")
+    agent = make_agent(FakeJudge(task="simple", conf=0.4, cx=1, cx_conf=0.4, verify=0.9, needs_ws=False),
+                       executor=ex, reviewer=rv, cloud=cloud, verify_rounds=3)
+    r = await agent.run("Explain this function")
+    assert r.route == "local_verify" and not cloud.seen and r.reasons[-1].startswith("Local self-check passed")
+
+
+async def test_escalated_cloud_answer_has_no_local_report(make_agent):
+    cloud = Script([text("CLOUD_ANSWER")], name="cloud")
+    agent = make_agent(FakeJudge(task="complex", conf=0.4, cx=1, cx_conf=0.4, verify=0.1, needs_ws=False),
+                       executor=Script(final=final(steps=["local step"])), cloud=cloud)
+    r = await agent.run("Compare the two designs")
+    assert r.backend == "deepseek" and r.report is None and r.artifacts == []
+
+
+async def test_parallel_delegations_keep_their_own_results(make_agent):
+    from pydantic_ai.messages import ModelResponse, ToolCallPart
+
+    def two(m, info):
+        return ModelResponse(parts=[ToolCallPart("delegate", {"step": "Step A"}),
+                                    ToolCallPart("delegate", {"step": "Step B"})])
+    planner = Script([two, text("Done")], name="planner")
+
+    def by_step(m, info):
+        seen = str(m[-1])
+        failed = "Step B" in seen
+        return final(status="partial" if failed else "done", issues=["b broke"] if failed else [],
+                     steps=["b attempt" if failed else "a done"])(m, info)
+    ex = Script(final=by_step)
+    agent = make_agent(FakeJudge(task="planning"), planner=planner, executor=ex, compressor=Script([text("B failed")]),
+                       verify_rounds=0)
+    r = await agent.run("Do A and B")
+    sent = planner.sent_text()
+    assert "a done" in sent and "b broke" in sent
+    returns = [p for msg in planner.seen[-1] for p in getattr(msg, "parts", []) if type(p).__name__ == "ToolReturnPart"]
+    by_content = {("A" if "a done" in str(p.content) else "B"): str(p.content) for p in returns}
+    assert "b broke" not in by_content["A"] and "failed" not in by_content["A"]
+    assert "NoneType" not in sent

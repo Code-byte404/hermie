@@ -81,7 +81,8 @@ stateDiagram-v2
 
 ```mermaid
 ---
-title: Step graph---
+title: Step graph
+---
 stateDiagram-v2
   direction LR
   execute
