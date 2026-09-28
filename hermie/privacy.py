@@ -1,4 +1,4 @@
-"""Privacy gate: the only channel between this machine and DeepSeek.
+"""Privacy gate: the only channel between this machine and the cloud model.
 
 1. Fail closed: any exception in Presidio or the judge model is treated as "contains private data".
 2. Outbound safety is guaranteed by type: CleanText can only be created by PrivacyGate.certify()

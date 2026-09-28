@@ -6,7 +6,7 @@ How a task moves through Hermie, which module owns what, and the invariants that
 
 `core.Hermie.run` does the following for every task:
 
-1. `router.EntryRouter` runs three things in parallel: the privacy check on the task text, three yes/no questions to the local judge model (is it repetitive, does it need planning, does it need the workspace), and the RouteLLM complexity score.
+1. `router.EntryRouter` runs three things in parallel: the privacy check on the task text (Presidio rules plus the judge's contextual question, a request of its own), one structured judge request per sample answering the three routing questions at once (task type, difficulty, does it need the workspace; `ROUTING_QUESTIONS`, `JUDGE_BATCH`), and the RouteLLM complexity score.
 2. `policy.decide()` turns those signals into a route. It is a pure function with no I/O, so routing changes are made there and tested directly in `tests/test_policy_privacy.py`.
 3. One of four handlers runs the task.
 4. The audit log gets a line: route, signals, backend, outbound count, and the SHA-256 of the input. Never the input.

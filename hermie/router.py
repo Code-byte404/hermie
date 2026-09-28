@@ -8,7 +8,7 @@ from typing import Optional
 
 from .complexity import RouteLLMScorer
 from .config import Settings
-from .judge import Judge
+from .judge import YES_NO, FormAnswers, Judge, as_score, form_via_primitives, score_options
 from .policy import (COMPLEXITY_LEVELS, NEEDS_WORKSPACE_QUESTION, TASK_TYPES, Decision, Force, Route, Signals,
                      decide)
 from .privacy import PrivacyGate, PrivacyVerdict
@@ -18,6 +18,18 @@ log = logging.getLogger(__name__)
 # Bias toward doing: if even one sample out of several votes that something must be produced, go to plan mode
 # (planner + local executor) instead of letting the cloud return text only
 NEEDS_WORKSPACE_THRESHOLD = 0.3
+
+TASK_QUESTION = "What kind of task is this request?"
+COMPLEXITY_QUESTION = "How difficult is it to complete this request?"
+
+# The routing questions, asked in one judge request per sample (JUDGE_BATCH). The privacy gate's contextual question
+# deliberately stays a request of its own: folded into this form the judge missed named-person cases it catches alone
+# (evals: contextual recall 0.97 -> 0.91), while the routing answers got better (36/40 -> 40/40) and faster.
+ROUTING_QUESTIONS = {
+    "task": (TASK_QUESTION, TASK_TYPES),
+    "complexity": (COMPLEXITY_QUESTION, score_options(COMPLEXITY_LEVELS)),
+    "needs_workspace": (NEEDS_WORKSPACE_QUESTION, YES_NO),
+}
 
 
 @dataclass
@@ -45,10 +57,41 @@ class EntryRouter:
         self.s, self.judge, self.gate, self.scorer = s, judge, gate, scorer
 
     async def route(self, task: str, text: str, force: Force = Force.NONE) -> Routing:
+        if self.s.judge_batch:
+            return await self._route_batched(task, text, force)
+        return await self._route_per_question(task, text, force)
+
+    def _form(self, text: str) -> FormAnswers:
+        form = getattr(self.judge, "form", None)
+        if callable(form):
+            return form(text, ROUTING_QUESTIONS)
+        return form_via_primitives(self.judge, text, ROUTING_QUESTIONS)
+
+    async def _route_batched(self, task: str, text: str, force: Force) -> Routing:
+        """Privacy check (rules + contextual question), one judge form with the routing questions, RouteLLM: in parallel."""
+        t = asyncio.to_thread
+        jobs = [t(self.gate.check, text), t(self._form, text)]
+        if self.scorer is not None:
+            jobs.append(t(self.scorer.strong_win_rate, task))
+        results = await asyncio.gather(*jobs, return_exceptions=True)
+        verdict, answers = results[0], results[1]
+        win_rate = results[2] if len(results) > 2 and not isinstance(results[2], BaseException) else None
+        if isinstance(verdict, BaseException):  # fail closed
+            verdict = PrivacyVerdict(True, reason=f"check_error: {verdict}")
+        if isinstance(answers, BaseException):
+            log.error("Judge model failed; handling locally: %r", answers)
+            return Routing(Decision(Route.LOCAL, ["judge model failed: falling back to local"]), verdict, None)
+        needs_ws = answers["needs_workspace"].probabilities["yes"]
+        sig = Signals(verdict.sensitive, answers["task"], as_score(answers["complexity"]), win_rate,
+                      needs_ws > NEEDS_WORKSPACE_THRESHOLD, needs_ws)
+        return Routing(decide(sig, self.s, force), verdict, sig)
+
+    async def _route_per_question(self, task: str, text: str, force: Force) -> Routing:
+        """One judge request per question (JUDGE_BATCH=false)."""
         t = asyncio.to_thread
         jobs = [t(self.gate.check, text),
-                t(self.judge.choice, text, "What kind of task is this request?", TASK_TYPES),
-                t(self.judge.score, text, "How difficult is it to complete this request?", COMPLEXITY_LEVELS),
+                t(self.judge.choice, text, TASK_QUESTION, TASK_TYPES),
+                t(self.judge.score, text, COMPLEXITY_QUESTION, COMPLEXITY_LEVELS),
                 t(self.judge.noul, text, NEEDS_WORKSPACE_QUESTION)]
         if self.scorer is not None:
             jobs.append(t(self.scorer.strong_win_rate, task))

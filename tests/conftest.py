@@ -13,7 +13,7 @@ from hermie.agents import SMUGGLE_QUESTION, ModelFactory
 from hermie.capabilities import RISK_QUESTION, STUCK_QUESTION
 from hermie.config import RunMode, Settings
 from hermie.core import Hermie
-from hermie.judge import ChoiceAnswer, ScoreAnswer
+from hermie.judge import ChoiceAnswer, ScoreAnswer, form_via_primitives
 from hermie.policy import NEEDS_WORKSPACE_QUESTION
 from hermie.privacy import CONTEXTUAL_PRIVACY_QUESTION, build_analyzer
 
@@ -27,7 +27,16 @@ class FakeJudge:
         self.task, self.conf, self.cx, self.cx_conf = task, conf, cx, cx_conf
         self.needs_ws, self.verify, self.secrets = needs_ws, verify, secrets
         self.fail_privacy, self.fail_task, self.risk = fail_privacy, fail_task, risk
-        self.calls: list[tuple[str, str]] = []
+        self.calls: list[tuple[str, str]] = []   # (statement, state) of every noul call
+        self.form_calls = 0
+
+    def form(self, state, questions):
+        """The batch primitive, answered from the same knobs as the single questions (fail_task fails the whole form,
+        as one real request would). The noul answers inside are recorded in `calls` like direct ones."""
+        self.form_calls += 1
+        if self.fail_task:
+            raise RuntimeError("judge down")
+        return form_via_primitives(self, state, questions)
 
     def choice(self, state, instructions, options):
         if self.fail_task:

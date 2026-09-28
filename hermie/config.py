@@ -64,6 +64,9 @@ class Settings:
     # How many samples per judge question; the vote ratio approximates probability and confidence (1 = fastest, no confidence)
     judge_samples: int = field(default_factory=lambda: _env_int("JUDGE_SAMPLES", 3))
     judge_disable_thinking: bool = field(default_factory=lambda: _env_bool("JUDGE_DISABLE_THINKING", True))
+    # Routing asks its three questions (task type, difficulty, needs workspace) in ONE judge request per sample instead
+    # of one request each (the privacy gate's contextual question stays separate); false = one request per question
+    judge_batch: bool = field(default_factory=lambda: _env_bool("JUDGE_BATCH", True))
     judge_max_chars: int = field(default_factory=lambda: _env_int("JUDGE_MAX_CHARS", 6000))
     judge_timeout_s: float = field(default_factory=lambda: _env_float("JUDGE_TIMEOUT", 120))
     # How long the judge model stays resident in Ollama: avoids reloading on every switch when it differs from the executor model
@@ -166,9 +169,6 @@ class Settings:
     # When a task has a "review failed, then fixed successfully" episode, have the local model write a lesson into AGENT.md
     lessons_enabled: bool = field(default_factory=lambda: _env_bool("LESSONS_ENABLED", True))
 
-    @property
-    def audit_log_path(self) -> Path:
-        return self.data_dir / "audit.jsonl"
     def __post_init__(self) -> None:
         if self.cloud_provider not in CLOUD_PROVIDERS:
             raise ValueError(f"CLOUD_PROVIDER must be one of {', '.join(CLOUD_PROVIDERS)}, not {self.cloud_provider!r}")
@@ -184,6 +184,9 @@ class Settings:
             return urlparse(self.cloud_base_url).hostname or "OpenAI-compatible"
         return CLOUD_PROVIDERS[self.cloud_provider]
 
+    @property
+    def audit_log_path(self) -> Path:
+        return self.data_dir / "audit.jsonl"
 
     @property
     def outbound_log_path(self) -> Path:

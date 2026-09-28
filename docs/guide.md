@@ -120,13 +120,13 @@ When switching the judge model, run `privacy --judge` and `routing` with `JUDGE_
 
 That is why the default judge is `gemma4:12b` while the executor and reviewer use the 27B model.
 
-In `privacy_cases.jsonl`, `layer` marks which layer should catch each positive case (`rules` / `ner` / `judge`); the rules-layer cases double as a regression test. `expect` in `routing_cases.jsonl` lists the acceptable routes. A routing run is slow (about 25 s per case), so signals are collected once and threshold tuning happens offline.
+In `privacy_cases.jsonl`, `layer` marks which layer should catch each positive case (`rules` / `ner` / `judge`); the rules-layer cases double as a regression test. `expect` in `routing_cases.jsonl` lists the acceptable routes. A routing run is slow (several seconds per case), so signals are collected once and threshold tuning happens offline.
 
 ## Known limitations
 
 - Thresholds are uncalibrated. Collect a few hundred real, privacy-free requests, label them and tune before relying on the routing.
 - RouteLLM weights were trained on English; their value on Chinese is unknown. `ROUTELLM_ENABLED=false` if useless.
-- Routing asks the judge four questions, each sampled `JUDGE_SAMPLES` times; with a 27B model that is about 25 s. Use a smaller `JUDGE_MODEL` or `JUDGE_SAMPLES=1`.
+- Routing asks the judge its three questions (task type, difficulty, needs workspace) in one request per sample (`JUDGE_BATCH=true`, the default) and the contextual privacy question in a request of its own: measured with gemma4:12b, the combined form answers the routing questions better (40/40 instead of 36/40) and about a quarter faster, while the privacy question loses recall inside it, so it stays separate. `JUDGE_BATCH=false` restores one request per question; use a smaller `JUDGE_MODEL` or `JUDGE_SAMPLES=1` to speed routing up further.
 - Each review-and-fix round adds two or three local model calls. Set `VERIFY_ROUNDS` to 1 or 0 if too slow.
 - The judge's taint check runs in the background, but executor and judge share the same Ollama, so a smaller judge model is the biggest speed win. `JUDGE_KEEP_ALIVE` keeps it resident so the two models stop swapping.
 - The judge is conservative about contextual privacy ("send the report to this email address" is judged sensitive). Intentional.
