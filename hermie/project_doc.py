@@ -55,7 +55,17 @@ def find_doc(workspace: Path) -> Optional[Path]:
     return None
 
 
-def load(workspace: Path) -> str:
+def _strip_lessons(text: str) -> str:
+    """Drop the "Lessons" section (up to the next "## " heading): lessons reach the executor through recall, and
+    the planner never gets them."""
+    if LESSONS_HEADER not in text:
+        return text
+    before, _, rest = text.partition(LESSONS_HEADER)
+    nxt = rest.find("\n## ")
+    return before.rstrip() + ("\n\n" + rest[nxt + 1:] if nxt != -1 else "\n")
+
+
+def load(workspace: Path, include_lessons: bool = True) -> str:
     """Read the document; when too long keep the head (about/status/next steps) and the tail (recent progress)."""
     p = find_doc(workspace)
     if p is None:
@@ -64,10 +74,29 @@ def load(workspace: Path) -> str:
         text = p.read_text(encoding="utf-8", errors="replace")
     except OSError:
         return ""
+    if not include_lessons:
+        text = _strip_lessons(text)
     if len(text) > MAX_DOC_CHARS:
         half = MAX_DOC_CHARS // 2
         text = text[:half] + "\n\n...(middle omitted)...\n\n" + text[-half:]
     return text.strip()
+
+
+def lessons(workspace: Path) -> list[str]:
+    """The bullet lines of the "Lessons" section, without the "- "."""
+    p = find_doc(workspace)
+    if p is None:
+        return []
+    try:
+        text = p.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return []
+    if LESSONS_HEADER not in text:
+        return []
+    section = text.partition(LESSONS_HEADER)[2]
+    nxt = section.find("\n## ")
+    section = section[:nxt] if nxt != -1 else section
+    return [l.strip()[2:].strip() for l in section.splitlines() if l.strip().startswith("- ")]
 
 
 def _one_line(s: str, limit: int) -> str:

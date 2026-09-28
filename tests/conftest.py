@@ -3,6 +3,7 @@ Presidio (needs zh_core_web_sm) and the real Seatbelt sandbox are used."""
 from __future__ import annotations
 
 import json
+import math
 from typing import Callable
 
 import pytest
@@ -60,6 +61,23 @@ class FakeJudge:
         if statement in (STUCK_QUESTION, SMUGGLE_QUESTION):
             return 0.0
         return self.verify
+
+
+class FakeEmbedder:
+    """Bag-of-words vectors over a fixed vocabulary: deterministic, no network."""
+    VOCAB = ["csv", "openpyxl", "spreadsheet", "swift", "xcode", "build", "test", "pytest", "sandbox", "network",
+             "excel", "simulator", "python", "docker", "file"]
+
+    def __init__(self):
+        self.failed = False
+        self.calls = 0
+
+    def embed(self, text):
+        self.calls += 1
+        words = text.lower().replace(".", " ").replace(",", " ").split()
+        v = [float(sum(w.startswith(t) for w in words)) for t in self.VOCAB]
+        n = math.sqrt(sum(x * x for x in v)) or 1.0
+        return [x / n for x in v]
 
 
 class Script:
@@ -157,6 +175,8 @@ def make_agent(settings, analyzer):
         events = []
         agent.bus.subscribe(events.append)
         agent.events = events
+        if agent.session.lessons is not None:  # never reach a real Ollama for embeddings
+            agent.session.lessons.embedder = FakeEmbedder()
         return agent
     return _make
 

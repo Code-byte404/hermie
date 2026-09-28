@@ -96,6 +96,8 @@ class Hermie:
             trajectory_log=JsonlLog(s.trajectory_log_path))
         if web is None:
             web = WebClient(s) if s.web_enabled else None
+        from .memory import Embedder, LessonStore
+        self.session.lessons = LessonStore(s.lessons_path, Embedder(s)) if s.lessons_enabled else None
         self.session.web = web or None
         self.session.screen = ScreenCapture(s) if s.mac_tools else None
         self.router = EntryRouter(s, judge, gate, self.scorer)
@@ -181,8 +183,10 @@ class Hermie:
 
     async def run(self, task: str, material: str = "", force: Force = Force.NONE) -> TaskResult:
         text = f"{task}\n\n{material}".strip() if material else task
-        st = TaskState(self.session, text, project_doc=project_doc.load(self.s.workspace),
+        # AGENT.md without its "Lessons" section: lessons reach the executor through recall_lessons, never the planner
+        st = TaskState(self.session, text, project_doc=project_doc.load(self.s.workspace, include_lessons=False),
                        flow=FlowState(task=task, force=force))
+        await self._sync_lessons()
         t0 = time.time()
         self.session.stats.task_started_at = t0
         self.bus.emit(ChatMessage("user", task))
@@ -202,6 +206,8 @@ class Hermie:
                 await st.settle_checks()
                 if self.s.lessons_enabled and st.review_fixed:
                     await self._write_lesson(st)
+                if self.s.lessons_enabled and self.session.lessons is not None:
+                    await self._lessons_after_task(st)
             r = result or TaskResult("", routing.decision.route.value if routing else "cancelled", "none",
                                      ["Task was interrupted or failed"])
             r.outbound_count, r.tainted = st.outbound_count, st.tainted
@@ -252,6 +258,8 @@ class Hermie:
 
     async def _run_executor(self, st: TaskState, prompt: str) -> ExecutorOutput:
         st.tool_calls, st.stuck, st.recent_calls, st.tool_seq = 0, False, [], []
+        if st.lessons:
+            prompt = "[Lessons from earlier tasks]\n" + "\n".join(f"- {l.text}" for l in st.lessons) + "\n\n" + prompt
         if st.project_doc:
             prompt = f"[Project doc AGENT.md]\n{st.project_doc}\n\n{prompt}"
         history = trim_history(self.session.exec_history)  # deterministic trim first; compress with the local model if still too long
@@ -355,9 +363,57 @@ class Hermie:
             lesson = lesson.strip().splitlines()[0].strip() if lesson.strip() else ""
             if lesson:
                 project_doc.record_lesson(self.s.workspace, lesson)
+                await self._store_lesson(st, lesson, "review_fixed")
                 self.bus.emit(Notice("info", f"Lesson recorded to AGENT.md: {lesson}"))
         except Exception as e:
             log.warning("Lesson recording failed (%s)", type(e).__name__)
+
+    async def _store_lesson(self, st: TaskState, text: str, source: str) -> None:
+        store = self.session.lessons
+        if store is None:
+            return
+        from .memory import workspace_id
+        routing = st.flow.routing
+        await asyncio.to_thread(store.add, text, workspace=workspace_id(self.s.workspace),
+                                task_type=routing.signals.task.choice if routing and routing.signals else "",
+                                tools=sorted(st.tools_used), source=source, key_text=st.flow.task)
+        self._embedding_notice()
+
+    def _embedding_notice(self) -> None:
+        store = self.session.lessons
+        if store is not None and getattr(store.embedder, "failed", False) and not self.session.lessons_notice_sent:
+            self.session.lessons_notice_sent = True
+            self.bus.emit(Notice("warn", f"Lesson embeddings unavailable ({self.s.lesson_embed_model} not reachable in "
+                                         "Ollama); lessons are matched by word overlap"))
+
+    async def _sync_lessons(self) -> None:
+        """Import lessons written into AGENT.md by hand; stop using the ones the user deleted from it."""
+        store = self.session.lessons
+        if store is None or not self.s.lessons_enabled:
+            return
+        from .memory import workspace_id
+        try:
+            await asyncio.to_thread(store.sync_doc, workspace_id(self.s.workspace),
+                                    project_doc.lessons(self.s.workspace), project_doc.MAX_LESSONS)
+        except Exception:
+            log.exception("Lesson sync with AGENT.md failed")
+
+    async def _lessons_after_task(self, st: TaskState) -> None:
+        """Feedback for the lessons injected in this task, and a lesson for every problem the reviewer raised twice or
+        more without it being fixed. Local only; failures are logged and ignored."""
+        store = self.session.lessons
+        try:
+            if st.lessons_used and st.review_history:
+                helped = bool(st.review_history[0].get("passed"))
+                await asyncio.to_thread(store.feedback, sorted(st.lessons_used), helped)
+            for count, wording in st.problem_counts.values():
+                if count >= 2:
+                    lesson = f"Raised {count} times by the reviewer and not resolved: {wording}"
+                    project_doc.record_lesson(self.s.workspace, lesson)
+                    await self._store_lesson(st, lesson, "repeated_failure")
+            self._embedding_notice()
+        except Exception:
+            log.exception("Lesson bookkeeping failed")
 
     async def _outbound_task(self, st: TaskState, verdict: PrivacyVerdict, notes: list[str],
                              recon: str = "") -> Optional[CleanText]:

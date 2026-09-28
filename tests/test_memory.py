@@ -9,22 +9,7 @@ import httpx
 from hermie.config import Settings
 from hermie.memory import Embedder, LessonStore, workspace_id
 
-
-class FakeEmbedder:
-    """Bag-of-words vectors over a fixed vocabulary: deterministic, no network."""
-    VOCAB = ["csv", "openpyxl", "spreadsheet", "swift", "xcode", "build", "test", "pytest", "sandbox", "network",
-             "excel", "simulator", "python", "docker", "file"]
-
-    def __init__(self):
-        self.failed = False
-        self.calls = 0
-
-    def embed(self, text):
-        self.calls += 1
-        words = text.lower().replace(".", " ").replace(",", " ").split()
-        v = [float(sum(w.startswith(t) for w in words)) for t in self.VOCAB]
-        n = math.sqrt(sum(x * x for x in v)) or 1.0
-        return [x / n for x in v]
+from .conftest import FakeEmbedder
 
 
 class DeadEmbedder:

@@ -10,7 +10,8 @@ notes the body left with TaskState.trace_note), written to trajectories.jsonl by
 
 The step graph runs one executor task with the local review loop:
 
-    [*] --> execute --> review --> (again) execute | (done) finish_step | (diagnose) diagnose --> finish_step --> [*]
+    [*] --> recall_lessons --> execute --> review --> (again) execute | (done) finish_step
+                                                         | (diagnose) diagnose --> finish_step --> [*]
 
 Both the local routes (run_reviewed in the task graph) and the planner's delegate tool run it through run_step().
 """
@@ -19,6 +20,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import re
 import time
 from dataclasses import dataclass, field
 from functools import wraps
@@ -66,6 +68,16 @@ def traced(node: str):
     return deco
 
 
+def _first_sentence(text: str) -> str:
+    return re.split(r"(?<=[.!?])\s", text.strip(), maxsplit=1)[0]
+
+
+def problem_key(text: str) -> str:
+    """Identity of a reviewer problem across rounds: first sentence, lowercased, digits and extra spaces removed."""
+    first = re.sub(r"\d+", "", _first_sentence(text).lower())
+    return re.sub(r"\s+", " ", first).strip()[:120]
+
+
 # ---------------------------------------------------------------- step graph
 
 @dataclass
@@ -97,11 +109,29 @@ class _StepRun:
 StepCtx = StepContext[TaskState, object, object]
 
 
+@traced("recall_lessons")
+async def _recall_lessons(ctx: StepCtx) -> None:
+    """Recall the lessons most relevant to this step (local store, local embeddings) for the executor prompt."""
+    st, agent = ctx.state, ctx.deps
+    st.lessons = []
+    store = st.session.lessons
+    if store is None or not agent.s.lessons_enabled:
+        return
+    from .memory import workspace_id
+    routing = st.flow.routing
+    task_type = routing.signals.task.choice if routing is not None and routing.signals else ""
+    st.lessons = await asyncio.to_thread(store.recall, st.step.inp.task_text, workspace=workspace_id(agent.s.workspace),
+                                         task_type=task_type, k=agent.s.lessons_top_k, min_sim=agent.s.lessons_min_sim)
+    st.lessons_used.update(l.id for l in st.lessons)
+    st.trace_note(lessons=len(st.lessons))
+
+
 @traced("execute")
 async def _execute(ctx: StepCtx) -> ExecutorOutput:
     st, agent = ctx.state, ctx.deps
     run: _StepRun = st.step
     run.out = await agent._run_executor(st, run.prompt)
+    st.tools_used.update(st.tool_seq)
     st.trace_note(report_status=run.out.report.status.value, issues=len(run.out.report.issues),
                   tool_calls=st.tool_calls, stuck=st.stuck)
     return run.out
@@ -131,9 +161,13 @@ async def _review(ctx: StepCtx) -> Literal["again", "done", "diagnose"]:
                                              "passed": review.passed, "problems": review.problems,
                                              "suggestions": review.suggestions})
             if review.passed:
+                st.problem_counts.clear()
                 if st.review_failures:
                     st.review_fixed = True
             else:
+                for p in review.problems:
+                    entry = st.problem_counts.setdefault(problem_key(p), [0, _first_sentence(p)])
+                    entry[0] += 1
                 st.review_failures += 1
                 if not last:
                     run.prompt = (f"{run.inp.prompt}\n\n[Review failed (round {rnd})]\nProblems:\n"
@@ -165,12 +199,14 @@ async def _finish_step(ctx: StepCtx) -> StepResult:
 
 def build_step_graph(agent: "Hermie"):
     g = GraphBuilder(name="step", state_type=TaskState, deps_type=object, output_type=StepResult)
+    recall = g.step(_recall_lessons, node_id="recall_lessons")
     execute = g.step(_execute, node_id="execute")
     review = g.step(_review, node_id="review")
     diagnose = g.step(_diagnose, node_id="diagnose")
     finish = g.step(_finish_step, node_id="finish_step")
     g.add(
-        g.edge_from(g.start_node).to(execute),
+        g.edge_from(g.start_node).to(recall),
+        g.edge_from(recall).to(execute),
         g.edge_from(execute).to(review),
         g.edge_from(review).to(
             g.decision(node_id="review_outcome")

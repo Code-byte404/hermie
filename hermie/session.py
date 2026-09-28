@@ -123,6 +123,8 @@ class Session:
     screen: Optional["ScreenCapture"] = None   # screenshot tool (main process); None when MAC_TOOLS=false
     review_log: Optional[JsonlLog] = None   # local review records (contain local content; data_dir only)
     trajectory_log: Optional[JsonlLog] = None   # per-task node trajectory (data-free; data_dir only)
+    lessons: Optional[Any] = None                 # memory.LessonStore (local lesson memory; data_dir only)
+    lessons_notice_sent: bool = False             # "embeddings unavailable" is said once per session
 
     @property
     def mode(self) -> RunMode:
@@ -185,6 +187,10 @@ class TaskState:
     _trace_pending: dict = field(default_factory=dict)
     step: Optional[Any] = None        # graph._StepRun while the step graph runs (execute -> review -> fix loop)
     flow: FlowState = field(default_factory=FlowState)
+    lessons: list = field(default_factory=list)          # memory.Lesson recalled for the current step
+    lessons_used: set[str] = field(default_factory=set)  # ids of every lesson injected during this task
+    tools_used: set[str] = field(default_factory=set)    # tool names the executor called during this task (lesson tags)
+    problem_counts: dict = field(default_factory=dict)   # problem_key -> [times raised, first sentence]; cleared on a pass
 
     @property
     def s(self) -> Settings:
