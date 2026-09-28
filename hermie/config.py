@@ -120,6 +120,10 @@ class Settings:
     # ---- Routing policy ----
     min_confidence: float = field(default_factory=lambda: _env_float("MIN_CONFIDENCE", 0.6))
     verify_threshold: float = field(default_factory=lambda: _env_float("VERIFY_THRESHOLD", 0.6))
+    # needs_workspace vote share above which a task counts as "must produce files" (see router); tuned by --calibrate
+    needs_workspace_threshold: float = field(default_factory=lambda: _env_float("NEEDS_WORKSPACE_THRESHOLD", 0.3))
+    # --calibrate --apply refuses to write .env below this many labelled tasks
+    calibrate_min_tasks: int = field(default_factory=lambda: _env_int("CALIBRATE_MIN_TASKS", 30))
 
     # ---- Execution environment ----
     # Default = current directory (like Claude Code); the --workspace flag wins; the WORKSPACE env var is only a fallback for library use

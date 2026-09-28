@@ -17,7 +17,7 @@ log = logging.getLogger(__name__)
 
 # Bias toward doing: if even one sample out of several votes that something must be produced, go to plan mode
 # (planner + local executor) instead of letting the cloud return text only
-NEEDS_WORKSPACE_THRESHOLD = 0.3
+NEEDS_WORKSPACE_THRESHOLD = 0.3  # default of Settings.needs_workspace_threshold; kept for evals
 
 TASK_QUESTION = "What kind of task is this request?"
 COMPLEXITY_QUESTION = "How difficult is it to complete this request?"
@@ -83,7 +83,7 @@ class EntryRouter:
             return Routing(Decision(Route.LOCAL, ["judge model failed: falling back to local"]), verdict, None)
         needs_ws = answers["needs_workspace"].probabilities["yes"]
         sig = Signals(verdict.sensitive, answers["task"], as_score(answers["complexity"]), win_rate,
-                      needs_ws > NEEDS_WORKSPACE_THRESHOLD, needs_ws)
+                      needs_ws > self.s.needs_workspace_threshold, needs_ws)
         return Routing(decide(sig, self.s, force), verdict, sig)
 
     async def _route_per_question(self, task: str, text: str, force: Force) -> Routing:
@@ -107,5 +107,5 @@ class EntryRouter:
             return Routing(Decision(Route.LOCAL, ["judge model failed: falling back to local"]), verdict, None)
         if isinstance(needs_ws, BaseException):
             needs_ws = 1.0  # when unsure, assume local operations are needed: plan mode rather than handing the whole task to the cloud
-        sig = Signals(verdict.sensitive, task_ans, cx_ans, win_rate, needs_ws > NEEDS_WORKSPACE_THRESHOLD, needs_ws)
+        sig = Signals(verdict.sensitive, task_ans, cx_ans, win_rate, needs_ws > self.s.needs_workspace_threshold, needs_ws)
         return Routing(decide(sig, self.s, force), verdict, sig)

@@ -17,7 +17,6 @@ from __future__ import annotations
 
 import argparse
 import asyncio
-import itertools
 import json
 import sys
 import time
@@ -27,9 +26,9 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from hermie.config import Settings  # noqa: E402
-from hermie.judge import ChoiceAnswer, ScoreAnswer  # noqa: E402
-from hermie.policy import Force, Signals, decide  # noqa: E402
-from hermie.router import NEEDS_WORKSPACE_THRESHOLD  # noqa: E402
+from hermie.policy import Force  # noqa: E402
+# signals replay and the threshold sweep live in hermie.calibrate (also used by hermie --calibrate); re-exported here
+from hermie.calibrate import GRID, signals_from_record, sweep  # noqa: E402,F401
 
 HERE = Path(__file__).resolve().parent
 
@@ -161,45 +160,15 @@ def run_routing(args) -> None:
 
 # ====================================================================== sweep
 
-def signals_from_record(rec: dict, needs_ws_threshold: float) -> Signals:
-    sg = rec["signals"]
-    task = ChoiceAnswer(sg["task_type"]["choice"], sg.get("task_probs") or {}, sg["task_type"]["confidence"])
-    cx = ScoreAnswer(sg["complexity"]["score"], sg.get("complexity_probs") or [], sg["complexity"]["confidence"])
-    p = sg.get("needs_workspace_prob")
-    needs_ws = (p > needs_ws_threshold) if p is not None else sg["needs_workspace"]
-    return Signals(sg["privacy"]["sensitive"], task, cx, sg.get("routellm_win_rate"), needs_ws, p)
-
-
-def sweep(records: list[dict], grid: dict[str, list[float]]) -> list[tuple[float, dict]]:
-    """Sweep threshold combinations over the recorded signals; returns [(hit rate, config)] sorted by hit rate
-    descending. Pure computation."""
-    results = []
-    keys = list(grid)
-    for values in itertools.product(*(grid[k] for k in keys)):
-        cfg = dict(zip(keys, values))
-        s = Settings()
-        s.min_confidence, s.routellm_threshold = cfg["min_confidence"], cfg["routellm_threshold"]
-        hits = 0
-        for rec in records:
-            sig = signals_from_record(rec, cfg["needs_workspace_threshold"])
-            hits += decide(sig, s).route.value in rec["expect"]
-        results.append((hits / len(records) if records else 0.0, cfg))
-    results.sort(key=lambda x: -x[0])
-    return results
-
-
 def run_sweep(args) -> None:
     records = load_cases(Path(args.signals))
     records = [r for r in records if "signals" in r and "task_type" in r["signals"]]
     if not records:
         sys.exit("No usable records in the signals file (records where the judge failed have no task_type)")
-    grid = {"min_confidence": [0.5, 0.6, 0.67, 0.75, 0.9],
-            "routellm_threshold": [0.3, 0.4, 0.5, 0.6, 0.7],
-            "needs_workspace_threshold": [0.1, 0.3, 0.5, 0.67]}
-    results = sweep(records, grid)
+    results = sweep(records, GRID)
     s = Settings()
     current = {"min_confidence": s.min_confidence, "routellm_threshold": s.routellm_threshold,
-               "needs_workspace_threshold": NEEDS_WORKSPACE_THRESHOLD}
+               "needs_workspace_threshold": s.needs_workspace_threshold}
     cur_acc = next((acc for acc, cfg in results if cfg == current), None)
     print(f"Threshold sweep · {len(records)} records · {len(results)} combinations")
     print(f"  current config {current} -> {cur_acc:.2f}" if cur_acc is not None else f"  current config {current} is not in the grid")
