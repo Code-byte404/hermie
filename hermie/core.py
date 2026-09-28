@@ -28,6 +28,7 @@ from .router import EntryRouter, Routing
 from .sandbox import Sandbox
 from .session import Session, TaskState
 from .snapshot import SnapshotManager
+from .trajectory import task_record
 from .mactools import ScreenCapture
 from .web import WebClient
 
@@ -96,7 +97,8 @@ class Hermie:
             settings=s, judge=judge, gate=gate, sandbox=Sandbox(s),
             snapshots=SnapshotManager(s.workspace, s.snapshot_dir), bus=bus or EventBus(),
             audit=AuditLog(s.audit_log_path), outbound_log=JsonlLog(s.outbound_log_path),
-            command_log=JsonlLog(s.command_log_path), review_log=JsonlLog(s.review_log_path))
+            command_log=JsonlLog(s.command_log_path), review_log=JsonlLog(s.review_log_path),
+            trajectory_log=JsonlLog(s.trajectory_log_path))
         if web is None:
             web = WebClient(s) if s.web_enabled else None
         self.session.web = web or None
@@ -215,6 +217,8 @@ class Hermie:
                                     signals=routing.signals_dict() if routing else {}, backend=r.backend,
                                     outbound_count=st.outbound_count, latency_s=time.time() - t0,
                                     tainted=st.tainted, mode=self.s.mode.value)
+            if self.session.trajectory_log:
+                self.session.trajectory_log.write(task_record(st, r, time.time() - t0, interrupted=result is None))
             self._record_progress(task, r, st, interrupted=result is None)
             if result is not None:
                 self.bus.emit(TaskFinished(r.route, r.backend, r.output, st.outbound_count))

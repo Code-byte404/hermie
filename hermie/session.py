@@ -121,6 +121,7 @@ class Session:
     web: Optional["WebClient"] = None
     screen: Optional["ScreenCapture"] = None   # screenshot tool (main process); None when MAC_TOOLS=false
     review_log: Optional[JsonlLog] = None   # local review records (contain local content; data_dir only)
+    trajectory_log: Optional[JsonlLog] = None   # per-task node trajectory (data-free; data_dir only)
 
     @property
     def mode(self) -> RunMode:
@@ -160,6 +161,10 @@ class TaskState:
     answers: list[str] = field(default_factory=list)
     artifacts: list[dict] = field(default_factory=list)
     last_report: Optional[dict] = None
+    # Trajectory: one record per graph node (graph.py `traced`), written by trajectory.task_record at task end.
+    # Data-free by construction: counts, booleans, numbers and enum strings only.
+    trace: list[dict] = field(default_factory=list)
+    _trace_pending: dict = field(default_factory=dict)
 
     @property
     def s(self) -> Settings:
@@ -183,6 +188,14 @@ class TaskState:
         """Register a certified piece of content; the outbound guard lets it through based on this."""
         self.certified.add(sha256(clean.text))
         return clean
+
+    def trace_note(self, **fields) -> None:
+        """Structured facts a node body wants in its trace record; merged into the next trace_add."""
+        self._trace_pending.update(fields)
+
+    def trace_add(self, node: str, **fields) -> None:
+        self.trace.append({"node": node, **self._trace_pending, **fields})
+        self._trace_pending = {}
 
     def schedule_check(self, coro) -> None:
         """Attach a background check (coroutine) to the task; the coroutine writes its result back into the state itself."""

@@ -204,6 +204,10 @@ class Settings:
     def review_log_path(self) -> Path:
         return self.data_dir / "reviews.jsonl"
 
+    @property
+    def trajectory_log_path(self) -> Path:
+        return self.data_dir / "trajectories.jsonl"
+
     def ensure_dirs(self) -> None:
         self.workspace.mkdir(parents=True, exist_ok=True)
         self.data_dir.mkdir(parents=True, exist_ok=True)
