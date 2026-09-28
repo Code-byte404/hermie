@@ -822,6 +822,11 @@ class HermieApp(App):
                           + f"\n\nSession running for {_mmss(st['session_elapsed_s'])}"
                           + (f", current task {_mmss(st['task_elapsed_s'])}" if st["task_elapsed_s"] is not None else "")
                           + (f", waiting for {st['current']}" if st["current"] else ""))
+        elif cmd == "/calibrate":
+            from .. import calibrate
+            from ..config import PROJECT_ROOT
+            report = calibrate.build_report(self.settings, eval_signals=PROJECT_ROOT / "evals" / "signals.jsonl")
+            self._chat_md("system", calibrate.format_report(report))
         elif cmd == "/export":
             path = Path(arg).expanduser() if arg else \
                 self.settings.data_dir / "exports" / time.strftime("session-%Y%m%d-%H%M%S.md")

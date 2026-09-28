@@ -20,7 +20,7 @@ The left pane shows the route decision, its signals and the planner's plan. The 
 
 - **Read before every task** as the executor's project context. Before it reaches the cloud planner it goes through the privacy gate like the task text, and is de-identified if it contains private data.
 - **After every task** an entry is appended under "Progress log": time, status, what was done, output files, issues. Only the last 30 entries are kept. This is deterministic, no model call.
-- The "Lessons" section is filled by the self-verification loop (below); you can also write to it by hand. At most 20 entries.
+- The "Lessons" section is filled by the self-verification loop (below); you can also write to it by hand. At most 20 entries. Deleting a line there stops Hermie from using that lesson.
 - "About", "Current status" and "Next steps" are maintained jointly by you and the executor; the executor updates them when a task changes the project state.
 - If the file does not exist, it is created from a template at the end of the first task.
 
@@ -36,7 +36,9 @@ Review records go to `~/.hermie/reviews.jsonl` (contains local content). `python
 
 **On the planner's side.** Before a plan-mode task starts, Hermie performs a deterministic local recon (directory layout, project type, toolchain, whether AGENT.md exists), which after the gate is given to the planner as a workspace overview (`RECON_ENABLED`). The planner lays out the plan with `set_plan`, then delegates step by step with `delegate(step, acceptance)`. Every report carries `verification`, `local_review`, on failure a `diagnosis` (a local model rewrites the concrete error into a data-free diagnosis, certified before it leaves), and the remaining delegation count.
 
-**Self-improvement across tasks.** When a task passes review after a fix, a local model writes a one-line "what works in this project" into the Lessons section of AGENT.md, which is included in the next task (`LESSONS_ENABLED`).
+**Self-improvement across tasks.** When a task passes review after a fix, a local model writes a one-line "what works in this project" into the Lessons section of AGENT.md (`LESSONS_ENABLED`). A problem the reviewer raises twice or more without it getting fixed becomes a lesson too ("Raised 3 times by the reviewer and not resolved: ...").
+
+**Lesson memory.** Lessons are also kept in `~/.hermie/lessons.jsonl`, tagged with the project, the task type and the tools used, and embedded by a local Ollama model (`LESSON_EMBED_MODEL`, default `nomic-embed-text`; without it, lessons are matched by word overlap and a notice says so once). Before each executor run, the `LESSONS_TOP_K` most relevant lessons are put in front of the prompt: lessons from the same project always qualify, lessons from other projects only when they are similar enough (`LESSONS_MIN_SIM`). Lessons that keep being injected without the first review passing are ranked down. Lessons you write into AGENT.md by hand are picked up; lessons you delete from it are no longer used. The cloud planner never sees lessons: the AGENT.md it receives has the Lessons section removed.
 
 ## Voice
 
@@ -88,6 +90,7 @@ The scenarios run in auto mode inside `~/HermieWork/demo` (created automatically
 - `~/.hermie/audit.jsonl`: route, signals, backend, outbound count, input hash
 - `~/.hermie/commands.jsonl`: every command the executor ran
 - `~/.hermie/reviews.jsonl`: every local review round's verdict (contains local content)
+- `~/.hermie/lessons.jsonl`: the lesson memory (lesson lines, tags, local embeddings; never the task text)
 - `~/.hermie/trajectories.jsonl`: one line per task with the graph nodes it went through, their durations and decisions, the routing signals and counters; no task text or tool output. `hermie --graph` prints the graph as Mermaid
 - `~/.hermie/snapshots/`: the last `SNAPSHOT_KEEP` (default 20) snapshots per workspace
 
@@ -100,7 +103,19 @@ pytest -q tests/test_pipeline.py -k plan_mode    # only the plan-mode data-flow 
 
 The executor and planner are `FunctionModel` fakes; privacy detection (Presidio + spaCy), the Seatbelt sandbox and snapshot rollback are real.
 
-## Calibration
+## Calibrating routing from your own tasks
+
+Every task leaves a line in `~/.hermie/trajectories.jsonl`. `hermie --calibrate` turns that record into a proposal for the routing thresholds:
+
+```bash
+hermie --calibrate                 # report: labels, current vs proposed thresholds, tasks whose route would change
+hermie --calibrate --since 30      # only the last 30 days
+hermie --calibrate --apply         # write the proposal to .env (only with at least CALIBRATE_MIN_TASKS labelled tasks)
+```
+
+Each task is labelled from what happened after it was routed: local work that never passed review should have gone further, a local + self-check task that escalated should have gone where it escalated to, a plan-mode task that needed one step and passed its first review could have stayed local, a cloud answer you re-ran with `/local` should have been local, and a route you forced is what you wanted. Interrupted tasks, tasks that fell back after a cloud failure and privacy-sensitive tasks are not labelled. The sweep covers `MIN_CONFIDENCE`, `ROUTELLM_THRESHOLD` and `NEEDS_WORKSPACE_THRESHOLD`; privacy thresholds are never tuned from usage. If `evals/signals.jsonl` exists (from `run_evals.py routing`), its hit rate is shown next to yours so a proposal cannot silently drift away from the curated cases. In the UI, `/calibrate` shows the same report; applying stays a terminal command.
+
+## Calibration with the eval sets
 
 The shipped thresholds (`MIN_CONFIDENCE`, `VERIFY_THRESHOLD`, `ROUTELLM_THRESHOLD`, `CONTEXT_PRIVACY_THRESHOLD`) are starting points. `evals/` has labelled cases and scripts; real requests can be appended to the case files.
 

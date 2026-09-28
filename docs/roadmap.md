@@ -8,24 +8,13 @@ What is planned next and why, in the order it will be built. Each item lands as 
 - **Cloud provider choice.** `CLOUD_PROVIDER` selects DeepSeek, OpenAI, Anthropic or any OpenAI-compatible endpoint for the planner and the cloud-direct route; the outbound gate is the same for all of them.
 - **Faster routing.** The three routing questions go to the judge as one structured request per sample; the contextual privacy question stays a request of its own because, measured on the eval set, it loses recall inside the combined form.
 
-## Next: the task graph
+## Done after 0.2
 
-The request flow in `core.py` (route, four handlers, review loop, self-check, escalation, cloud fallbacks) becomes an explicit graph on `pydantic-graph`, which Pydantic AI already depends on. Nothing a task does changes. What is gained:
+- **Task graph.** The request flow runs as an explicit graph on `pydantic-graph` (route, snapshot, review loop, self-check, plan, cloud, fallbacks). Every task leaves a data-free trajectory line, and `hermie --graph` prints the diagram from the code.
+- **Lesson memory.** Lessons from review-then-fix episodes and from problems the reviewer kept raising go into a local store with local embeddings; the most relevant ones are given to the executor before each step. The planner no longer receives lessons.
+- **Routing calibration.** `hermie --calibrate` labels your recorded tasks from what happened after routing, sweeps the routing thresholds and proposes new values; `--apply` writes them to `.env` once there are enough labelled tasks. Privacy thresholds are never tuned from usage.
 
-- Named nodes with a recorded trajectory per task (`trajectories.jsonl`: node timings, statuses and structured signals, never task text or tool output).
-- A Mermaid diagram generated from the code (`hermie graph`) instead of a hand-drawn one.
-- Stable places to attach the self-improvement pieces below.
-
-Resuming an interrupted task from a checkpoint is not part of this step; the task state holds live sandbox and agent handles.
-
-## Then: self-improvement, phase 1
-
-Two loops that read Hermie's own local record and feed the next task. Both stay entirely on the machine.
-
-1. **Lesson memory.** Lessons written after a review-then-fix episode (and after a problem the reviewer raised twice without a fix) go into a local store with tags and local embeddings. Before execution, the few lessons most similar to the task are injected instead of the whole `## Lessons` block of `AGENT.md`; lessons that keep being injected without a first-round review pass are ranked down. The planner stops receiving the lessons section at all.
-2. **Routing calibration.** `hermie calibrate` labels each recorded task's route from what followed (local work that had to escalate, planner runs a single local step would have finished, forced routes), sweeps the routing thresholds on the recorded signals plus the curated eval cases, and prints the proposal. `.env` changes only with `--apply` and only above a minimum number of labelled tasks. Privacy thresholds are excluded from tuning on purpose.
-
-## Later: self-improvement, phase 2
+## Next: self-improvement, phase 2
 
 A skill library: successful tool sequences turned into reusable, sandboxed skills the executor can call. Designed once phase 1 has produced enough trajectories to know which sequences recur.
 

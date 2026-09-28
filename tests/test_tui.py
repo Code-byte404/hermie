@@ -525,3 +525,11 @@ async def test_model_dialog_labels_show_cloud_provider(make_agent):
         scr = await _wait_screen(pilot, app, ModelScreen)
         labels = [str(lbl.render()) for lbl in scr.query(Label)]
         assert any("Anthropic" in lbl for lbl in labels) and not any("DeepSeek" in lbl for lbl in labels)
+
+
+async def test_calibrate_command_shows_report(make_agent, settings):
+    app = HermieApp(agent=make_agent(FakeJudge()))
+    async with app.run_test(size=(160, 45)) as pilot:
+        await _submit(pilot, "/calibrate")
+        await pilot.pause(0.2)
+        assert any("Routing calibration" in t for who, t in app.transcript)

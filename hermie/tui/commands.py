@@ -24,6 +24,7 @@ COMMANDS: list[Command] = [
     Command("/snapshots", "/snapshots [prune N]", "List snapshots / keep only the latest N", True),
     Command("/perf", "/perf", "Show performance monitoring (CPU / GPU / memory usage graphs)"),
     Command("/usage", "/usage", "Show token usage"),
+    Command("/calibrate", "/calibrate", "Propose routing thresholds from your recorded tasks (apply with hermie --calibrate --apply)"),
     Command("/export", "/export [PATH]", "Export this session (contains original text; handle with care)", True),
     Command("/clear", "/clear", "Clear the chat area"),
 ]

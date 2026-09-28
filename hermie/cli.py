@@ -33,6 +33,10 @@ def _parser() -> argparse.ArgumentParser:
     p.add_argument("--force", choices=["local", "cloud"], help="force local or cloud")
     p.add_argument("-v", "--verbose", action="store_true")
     p.add_argument("--graph", action="store_true", help="print the task graph and step graph as Mermaid and exit")
+    p.add_argument("--calibrate", action="store_true",
+                   help="propose routing thresholds from your recorded tasks (trajectories.jsonl) and exit")
+    p.add_argument("--apply", action="store_true", help="with --calibrate: write the proposal to .env")
+    p.add_argument("--since", type=float, metavar="DAYS", help="with --calibrate: only tasks from the last DAYS days")
     return p
 
 
@@ -78,6 +82,17 @@ def main(argv: list[str] | None = None) -> None:
         shell = SimpleNamespace()
         shell.step_graph, shell.task_graph = build_step_graph(shell), build_task_graph(shell)
         print(render(shell))
+        return
+    if args.calibrate:
+        from . import calibrate
+        from .config import PROJECT_ROOT
+        s = Settings()
+        report = calibrate.build_report(s, since_days=args.since, eval_signals=PROJECT_ROOT / "evals" / "signals.jsonl")
+        print(calibrate.format_report(report))
+        if args.apply:
+            written = calibrate.apply(s, report)
+            print(f"\nWrote {', '.join(f'{k}={v}' for k, v in written.items())} to {s.env_path}" if written
+                  else "\nNothing written.")
         return
     s = Settings()
     s.workspace, ws_warnings = resolve_workspace(args.workspace)
