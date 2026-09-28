@@ -1,0 +1,30 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" width="256" height="256">
+  <!-- tile background -->
+  <rect x="8" y="8" width="240" height="240" rx="56" fill="#E6F4F1"/>
+  <!-- sand -->
+  <ellipse cx="128" cy="212" rx="96" ry="12" fill="#F5E1B5"/>
+  <!-- legs -->
+  <path d="M92 190 L82 212 M106 194 L100 214 M120 196 L118 214" stroke="#E64A19" stroke-width="8" stroke-linecap="round" fill="none"/>
+  <!-- shell -->
+  <circle cx="150" cy="140" r="64" fill="#FFB74D"/>
+  <path d="M150 140 m0 0 a10 10 0 0 1 10 10 a20 20 0 0 1 -20 20 a30 30 0 0 1 -30 -30 a40 40 0 0 1 40 -40 a50 50 0 0 1 50 50"
+        stroke="#E64A19" stroke-width="9" fill="none" stroke-linecap="round"/>
+  <!-- shell opening -->
+  <ellipse cx="96" cy="166" rx="30" ry="34" fill="#4E342E"/>
+  <!-- crab body peeking out -->
+  <circle cx="88" cy="168" r="30" fill="#FF7043"/>
+  <!-- eye stalks -->
+  <path d="M78 142 L74 122 M98 142 L102 122" stroke="#FF7043" stroke-width="7" stroke-linecap="round"/>
+  <circle cx="74" cy="120" r="8" fill="#FFFFFF"/>
+  <circle cx="102" cy="120" r="8" fill="#FFFFFF"/>
+  <circle cx="75" cy="121" r="4" fill="#263238"/>
+  <circle cx="103" cy="121" r="4" fill="#263238"/>
+  <!-- smile -->
+  <path d="M78 176 Q88 184 98 176" stroke="#4E342E" stroke-width="4" fill="none" stroke-linecap="round"/>
+  <!-- cheeks -->
+  <circle cx="70" cy="174" r="4" fill="#F48FB1" opacity="0.85"/>
+  <circle cx="106" cy="174" r="4" fill="#F48FB1" opacity="0.85"/>
+  <!-- claw -->
+  <path d="M60 188 q-18 4 -22 -12 q6 -12 20 -6" fill="#FF7043"/>
+  <circle cx="44" cy="180" r="6" fill="#E6F4F1"/>
+</svg>

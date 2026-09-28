@@ -1,0 +1,176 @@
+Screen {
+    layout: vertical;
+}
+
+#topbar {
+    height: 2;
+    padding: 0 1;
+    background: $panel;
+    color: $text;
+}
+#topbar.mode-auto {
+    background: $warning;
+    color: $background;
+    text-style: bold;
+}
+#topbar.mode-no_sandbox {
+    background: $error;
+    color: $background;
+    text-style: bold;
+}
+
+#main {
+    height: 1fr;
+}
+
+#left {
+    width: 28;
+    border-right: solid $panel-lighten-2;
+    padding: 0 1;
+}
+#route {
+    height: auto;
+    margin-bottom: 1;
+}
+#plan {
+    height: auto;
+}
+
+#chat {
+    width: 1fr;
+    padding: 0 1;
+}
+
+#right {
+    width: 45%;
+    border-left: solid $panel-lighten-2;
+}
+#right RichLog {
+    height: 1fr;
+}
+#perf {
+    padding: 1 2;
+}
+#perf .perf-label {
+    height: 1;
+    margin-top: 1;
+}
+#perf .perf-graph {
+    height: 4;
+    border-bottom: solid $panel-lighten-2;
+}
+#perf .perf-graph.cpu { color: $success; }
+#perf .perf-graph.gpu { color: $warning; }
+
+.msg {
+    margin: 1 0 0 0;
+    padding: 0 1;
+    height: auto;
+}
+.msg.user {
+    color: $text;
+    text-style: bold;
+}
+.msg.planner {
+    border: round $warning;
+    border-title-color: $warning;
+}
+.msg.executor {
+    border: round $success;
+    border-title-color: $success;
+}
+.msg.report {
+    border-left: thick $success;
+    color: $text-muted;
+}
+.msg.system {
+    border: round $panel-lighten-2;
+}
+
+.notice {
+    height: auto;
+    color: $text-muted;
+}
+.notice.warn {
+    color: $warning;
+}
+.notice.error {
+    color: $error;
+    text-style: bold;
+}
+
+#input {
+    height: 5;
+    border: round $accent;
+}
+
+#hints {
+    height: 1;
+    color: $text-muted;
+    padding: 0 1;
+}
+
+ApprovalScreen {
+    align: center middle;
+}
+#approval {
+    width: 80%;
+    height: auto;
+    border: thick $error;
+    background: $surface;
+    padding: 1 2;
+}
+#approval-title {
+    text-style: bold;
+    color: $error;
+    margin-bottom: 1;
+}
+#approval-cmd {
+    height: auto;
+    margin-bottom: 1;
+}
+#approval-buttons {
+    height: auto;
+}
+#approval-buttons Button {
+    margin-right: 2;
+}
+
+#cmd-popup {
+    display: none;
+    height: auto;
+    max-height: 9;
+    margin: 0 1;
+    border: solid $panel-lighten-2;
+}
+
+#config {
+    width: 70%;
+    height: auto;
+    border: thick $accent;
+    background: $surface;
+    padding: 1 2;
+}
+#config .config-title {
+    text-style: bold;
+    color: $accent;
+    margin-bottom: 1;
+}
+#config Select, #config Input {
+    margin-bottom: 1;
+}
+#config .config-row {
+    height: auto;
+    margin-bottom: 1;
+}
+#config-error {
+    color: $error;
+    height: auto;
+}
+#config .config-buttons {
+    height: auto;
+    margin-top: 1;
+}
+#config .config-buttons Button {
+    margin-right: 2;
+}

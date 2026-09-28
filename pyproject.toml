@@ -1,0 +1,64 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "hermie"
+version = "0.1.0"
+description = "Local-first coding and document agent for macOS: local models do the work inside a Seatbelt sandbox, the cloud planner only ever sees certified, privacy-free text."
+readme = "README.md"
+license = { file = "LICENSE" }
+requires-python = ">=3.12"
+keywords = ["agent", "local-first", "privacy", "ollama", "deepseek", "sandbox", "macos"]
+classifiers = [
+  "Development Status :: 3 - Alpha",
+  "Environment :: Console",
+  "Intended Audience :: Developers",
+  "License :: OSI Approved :: MIT License",
+  "Operating System :: MacOS",
+  "Programming Language :: Python :: 3.12",
+  "Topic :: Software Development",
+]
+# Versions are pinned: the Pydantic AI capability/hook API is still moving, and Textual is no longer actively developed.
+# Keep this list and environment.yml in step.
+dependencies = [
+  "pydantic-ai-slim[openai]==2.51.0",
+  "openai==3.19.2",
+  "presidio-analyzer==2.2.364",
+  "spacy==3.8.16",
+  "textual==8.2.8",
+  "rich==15.0.0",
+  "httpx==0.28.1",
+  "python-dotenv==1.2.3",
+  "psutil==7.2.2",
+  "numpy==2.4.6",
+  "openpyxl==3.1.5",
+  "python-docx==1.2.0",
+]
+
+[project.optional-dependencies]
+# RouteLLM BERT router (ROUTELLM_ENABLED); about 400 MB of weights on first use
+router = ["torch==2.14.0", "transformers==5.17.0"]
+# Voice input/output: sounddevice recording, mlx-whisper local transcription (Apple Silicon)
+voice = ["sounddevice==0.5.6", "mlx-whisper==0.4.3"]
+test = ["pytest==9.1.1", "pytest-asyncio==1.4.0"]
+all = ["hermie[router,voice,test]"]
+
+[project.urls]
+Homepage = "https://github.com/Code-byte404/hermie"
+Issues = "https://github.com/Code-byte404/hermie/issues"
+
+[project.scripts]
+hermie = "hermie.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["hermie*"]
+
+[tool.setuptools.package-data]
+hermie = ["tui/*.tcss"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+markers = ["live: tests that need a real Ollama / DeepSeek (skipped by default; run with -m live)"]
+addopts = "-m 'not live'"

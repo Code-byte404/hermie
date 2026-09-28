@@ -1,0 +1,34 @@
+# conda env create -f environment.yml && conda activate hermie
+# then: python -m spacy download zh_core_web_sm
+name: hermie
+channels:
+  - conda-forge
+dependencies:
+  - python=3.12
+  - pip
+  - pip:
+      # Pinned versions: the Pydantic AI capability/hook API is still changing, and the company behind Textual has shut down
+      - pydantic-ai-slim[openai]==2.51.0
+      - openai==3.19.2
+      - presidio-analyzer==2.2.364
+      - spacy==3.8.16
+      - textual==8.2.8
+      - rich==15.0.0
+      - httpx==0.28.1
+      - python-dotenv==1.2.3
+      # Performance tab: CPU / memory sampling (GPU via ioreg, no extra dependency)
+      - psutil==7.2.2
+      # RouteLLM BERT router (optional when ROUTELLM_ENABLED=false)
+      - torch==2.14.0
+      - transformers==5.17.0
+      - numpy==2.4.6
+      # Document handling by the executor inside the sandbox
+      - openpyxl==3.1.5
+      - python-docx==1.2.0
+      # Voice (optional: without these only the voice features are unavailable): sounddevice recording, mlx-whisper local transcription (Apple Silicon)
+      - sounddevice==0.5.6
+      - mlx-whisper==0.4.3
+      # Tests
+      - pytest==9.1.1
+      - pytest-asyncio==1.4.0
+      - -e .

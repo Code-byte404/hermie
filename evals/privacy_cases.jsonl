@@ -1,0 +1,64 @@
+{"text": "Customer phone 13812345678, follow up tomorrow", "sensitive": true, "layer": "rules", "entities": ["CN_MOBILE"]}
+{"text": "Contact: +86 139 0013 9000", "sensitive": true, "layer": "rules", "entities": ["CN_MOBILE"], "note": "Only matches with the country code and no spaces; this case exposes the space-separated miss", "known_miss": true}
+{"text": "Contact: +8613900139000", "sensitive": true, "layer": "rules", "entities": ["CN_MOBILE"]}
+{"text": "ID number 310101198506123456", "sensitive": true, "layer": "rules", "entities": ["CN_ID_CARD"]}
+{"text": "Registration form: name omitted, ID 440302199208151230, please verify", "sensitive": true, "layer": "rules", "entities": ["CN_ID_CARD"]}
+{"text": "ID card 11010519491231002X", "sensitive": true, "layer": "rules", "entities": ["CN_ID_CARD"]}
+{"text": "Transfer the money to 6222021234567890128", "sensitive": true, "layer": "rules", "entities": ["BANK_CARD"]}
+{"text": "Card 6217009876543210981 has been frozen", "sensitive": true, "layer": "rules", "entities": ["BANK_CARD"]}
+{"text": "The mailbox zhang.wei@example.com is not receiving the verification code", "sensitive": true, "layer": "rules", "entities": ["EMAIL_ADDRESS"]}
+{"text": "Send the report to li_hua+work@corp-mail.cn", "sensitive": true, "layer": "rules", "entities": ["EMAIL_ADDRESS"]}
+{"text": "The logs on the intranet server 10.20.30.40", "sensitive": true, "layer": "rules", "entities": ["IP_ADDRESS"]}
+{"text": "Database address 192.168.1.15:5432", "sensitive": true, "layer": "rules", "entities": ["IP_ADDRESS"]}
+{"text": "DEEPSEEK_API_KEY=sk-EXAMPLEKEYnotreal00000000EXAMPLE", "sensitive": true, "layer": "rules", "entities": ["SECRET"]}
+{"text": "The aws key AKIAIOSFODNN7EXAMPLE was leaked", "sensitive": true, "layer": "rules", "entities": ["SECRET"]}
+{"text": "Is the token ghp_abcdefghijklmnopqrstuvwxyz0123456789 still valid", "sensitive": true, "layer": "rules", "entities": ["SECRET"]}
+{"text": "-----BEGIN OPENSSH PRIVATE KEY-----\nb3BlbnNzaC1rZXktdjEAAAAA", "sensitive": true, "layer": "rules", "entities": ["SECRET"]}
+{"text": "Authorization: Bearer eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.dozjgNryP4J3jVmNHl0w5N_XgL0n3I9PlFUP0THsR8U", "sensitive": true, "layer": "rules", "entities": ["SECRET"]}
+{"text": "Database password: Xk9#mP2vQ8zL", "sensitive": true, "layer": "rules", "entities": ["SECRET"]}
+{"text": "Config client_secret=\"q1w2e3r4t5y6u7i8\"", "sensitive": true, "layer": "rules", "entities": ["SECRET"]}
+{"text": "wifi password: Home2024Pass", "sensitive": true, "layer": "rules", "entities": ["SECRET"]}
+{"text": "Zhang Wei's order has not shipped yet", "sensitive": true, "layer": "ner", "entities": ["PERSON"], "note": "Person names rely on spaCy NER; the Chinese pipeline is unstable on them, and Latin-script names are filtered out by _plausible, so this is expected to miss"}
+{"text": "Wang Lihua is coming in for an interview next week", "sensitive": true, "layer": "ner", "entities": ["PERSON"]}
+{"text": "Please compile the contact details of Li Ming and Chen Xiaohong", "sensitive": true, "layer": "ner", "entities": ["PERSON"]}
+{"text": "Tom Anderson's contract has expired", "sensitive": true, "layer": "judge", "note": "Latin-script names do not go through NER; only the contextual check can catch them"}
+{"text": "We plan to lay off 30% next quarter; the list is not final yet, keep it internal", "sensitive": true, "layer": "judge"}
+{"text": "We are preparing to acquire a competitor, valuation around 200 million; the board votes next week", "sensitive": true, "layer": "judge"}
+{"text": "Attached is the full customer list with each customer's annual purchase volume", "sensitive": true, "layer": "judge"}
+{"text": "Medical record: patient diagnosed with type 2 diabetes, needs long-term medication", "sensitive": true, "layer": "judge"}
+{"text": "He just got divorced last month and is not doing well; keep that in mind when assigning work", "sensitive": true, "layer": "judge"}
+{"text": "This is our unreleased Q3 earnings draft; revenue is down 12% year over year", "sensitive": true, "layer": "judge"}
+{"text": "A customer is suing us; the lawyer advises not to respond for now", "sensitive": true, "layer": "judge"}
+{"text": "My annual salary is 450k; how should I negotiate when changing jobs", "sensitive": true, "layer": "judge"}
+{"text": "Our core algorithm's source is in core/matcher.py, which contains patent-related logic", "sensitive": true, "layer": "judge"}
+{"text": "The project code-named \"Falcon\" launches next month and has not been announced yet", "sensitive": true, "layer": "judge"}
+{"text": "Explain how quicksort works", "sensitive": false}
+{"text": "Translate data/titles.txt and write it to out/titles_en.txt", "sensitive": false}
+{"text": "How to Build a Local-First AI Agent", "sensitive": false}
+{"text": "{\"issues\": [], \"status\": \"done\"}", "sensitive": false}
+{"text": "Shipping status of order 20260927000123", "sensitive": false, "note": "Long digit string, but not an ID or card number"}
+{"text": "What is the difference between Python 3.12 and 3.13", "sensitive": false}
+{"text": "The meeting has moved to 2026-10-01 14:00", "sensitive": false}
+{"text": "This item sells for 1299 and there are 340 in stock", "sensitive": false}
+{"text": "Reference 110105194912310021, please verify", "sensitive": false, "note": "ID check digit is wrong; must not match"}
+{"text": "Card 6222021234567890123", "sensitive": false, "note": "Fails the Luhn check; must not match"}
+{"text": "Hotline 12345678901", "sensitive": false, "note": "Does not start with 1[3-9]; not a mobile number"}
+{"text": "MAX_TOKENS=4096 SESSION_TIMEOUT=30", "sensitive": false}
+{"text": "Count the token usage", "sensitive": false}
+{"text": "This code validates using the password field", "sensitive": false}
+{"text": "Write a FastAPI user registration endpoint with email format validation", "sensitive": false}
+{"text": "Convert this Markdown file to PDF for me", "sensitive": false}
+{"text": "What is the weather in Beijing today", "sensitive": false, "note": "Place names are not in the sensitive entity list"}
+{"text": "Compare the market caps of Alibaba and Tencent", "sensitive": false, "note": "Public information about listed companies"}
+{"text": "Jack Ma founded Alibaba", "sensitive": false, "known_fp": true, "note": "A public figure may be labeled PERSON by NER: the rules layer does not distinguish by design, a known trade-off"}
+{"text": "Recommend a few books on distributed systems", "sensitive": false}
+{"text": "The difference between git rebase and merge", "sensitive": false}
+{"text": "Read the second worksheet of an Excel file with openpyxl", "sensitive": false}
+{"text": "sha256 9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08", "sensitive": false, "note": "A hash is not a secret"}
+{"text": "Version v2.13.0, build 20260927", "sensitive": false}
+{"text": "localhost:8000 will not start, the port is in use", "sensitive": false, "note": "localhost is not an IP"}
+{"text": "The company website www.example.com is down", "sensitive": false}
+{"text": "GDP growth 5.2%, CPI up 0.3%", "sensitive": false}
+{"text": "Rename these 50 files to lowercase", "sensitive": false}
+{"text": "Write a SQL query that counts orders per month", "sensitive": false}
+{"text": "What does a typical company's annual leave policy look like", "sensitive": false, "note": "General question, no specific individual involved"}
