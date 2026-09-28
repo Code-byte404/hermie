@@ -26,7 +26,7 @@ jobs:
           python -m spacy download zh_core_web_sm
 
       - name: Test
+        # Web tests use a mock HTTP transport, so WEB_ENABLED stays at its default (true); nothing reaches the network.
         env:
           ROUTELLM_ENABLED: "false"
-          WEB_ENABLED: "false"
         run: pytest -q
