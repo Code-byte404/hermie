@@ -29,6 +29,7 @@ from textual.widgets import (Button, Input, Label, Markdown, OptionList, RichLog
                              TabPane, TextArea)
 from textual.widgets.option_list import Option
 
+from ..attachments import find_paths, human_size, load_material
 from ..config import RunMode, Settings, update_env
 from ..perf import PerfSample, PerfSampler, render_graph
 from .commands import filter_commands, find_command, help_markdown
@@ -296,6 +297,7 @@ class HermieApp(App):
         self._stream_buf = ""
         self._last_snapshot: Optional[str] = None
         self._busy = False
+        self._pending_attachments: list[str] = []
 
     # ------------------------------------------------------------ layout
     def compose(self) -> ComposeResult:
@@ -315,7 +317,8 @@ class HermieApp(App):
                 with TabPane("Perf", id="tab-perf"):
                     yield PerfPanel(id="perf")
         yield OptionList(id="cmd-popup")
-        yield PromptInput(id="input", placeholder="› Type a task (/help for commands)", soft_wrap=True)
+        yield Static("", id="attachments")
+        yield PromptInput(id="input", placeholder="› Type a task, drop files here (/help for commands)", soft_wrap=True)
         yield Static(self._hints_text(), id="hints")
 
     def _hints_text(self) -> str:
@@ -393,6 +396,40 @@ class HermieApp(App):
     @on(TextArea.Changed, "#input")
     def _input_changed(self, ev: TextArea.Changed) -> None:
         self._update_popup()
+        self._update_attachments()
+
+    # ------------------------------------------------------------ attachments (paths dropped into the input box)
+    def _update_attachments(self) -> None:
+        """A dragged file arrives as its path text; show what would be attached so the user sees it before sending."""
+        strip = self.query_one("#attachments", Static)
+        text = self.query_one("#input", PromptInput).text
+        paths = find_paths(text) if text else []
+        if not paths:
+            if strip.display:
+                strip.display = False
+            return
+        items = []
+        for p in paths:
+            try:
+                items.append(f"{p.name}/" if p.is_dir() else f"{p.name} ({human_size(p.stat().st_size)})")
+            except OSError:
+                items.append(p.name)
+        strip.update(Text("📎 " + " · ".join(items)))
+        if not strip.display:
+            strip.display = True
+
+    def _load_attachments(self, task: str):
+        """Read the attached paths (main process, outside the sandbox) into material; the content stays local and goes
+        through the same privacy gate as the task text. Returns (material_text, summary_lines)."""
+        paths = find_paths(task)
+        if not paths:
+            return "", []
+        s = self.settings
+        m = load_material(paths, max_file_chars=s.attach_max_file_chars, max_total_chars=s.attach_max_total_chars,
+                          deny_names=s.sandbox_deny_names)
+        for n in m.notes:
+            self._notice("warn", f"Attachment: {n}")
+        return m.text, m.summary
 
     def _update_popup(self) -> None:
         """Called on every keystroke: only rebuild the list when the candidate set actually changes, and only touch
@@ -498,15 +535,18 @@ class HermieApp(App):
         if self._busy:
             self._notice("warn", "The previous task is still running; press Esc to interrupt it before sending.")
             return
+        material, attached = self._load_attachments(task)
+        self._pending_attachments = attached
+        self._update_attachments()
         self._busy = True
         self._refresh_topbar()
         self._timer = self.set_interval(1.0, self._refresh_topbar)
         self.query_one("#plan", Static).update("")
-        self.run_worker(self._run_task(task, force), group="task", exclusive=True, exit_on_error=False)
+        self.run_worker(self._run_task(task, material, force), group="task", exclusive=True, exit_on_error=False)
 
-    async def _run_task(self, task: str, force: Force) -> None:
+    async def _run_task(self, task: str, material: str, force: Force) -> None:
         try:
-            await self.agent.run(task, force=force)
+            await self.agent.run(task, material, force=force)
         except asyncio.CancelledError:
             self.agent.cancel_running()
             self._notice("warn", "Interrupted. Add instructions to continue.", announce=True)
@@ -920,9 +960,14 @@ class HermieApp(App):
         self._end_stream()
         role = {"user": "user", "executor": "executor", "planner": "planner"}.get(ev.role, "system")
         if role == "user":
-            w = Static(Text("› " + ev.text), classes="msg user")
+            shown = ev.text
+            attached = self._pending_attachments
+            if attached:
+                shown += "\n📎 " + "\n📎 ".join(attached)
+                self._pending_attachments = []
+            w = Static(Text("› " + shown), classes="msg user")
             await self.query_one("#chat").mount(w)
-            self.transcript.append(("You", ev.text))
+            self.transcript.append(("You", shown))
         else:
             self._chat_md(role, ev.text)
         self.query_one("#chat").scroll_end(animate=False)

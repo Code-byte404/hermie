@@ -99,6 +99,13 @@ Screen {
     text-style: bold;
 }
 
+#attachments {
+    display: none;
+    height: 1;
+    color: $accent;
+    padding: 0 1;
+}
+
 #input {
     height: 5;
     border: round $accent;

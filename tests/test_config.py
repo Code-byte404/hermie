@@ -15,3 +15,11 @@ def test_update_env_creates_file(tmp_path):
     p.parent.mkdir()
     update_env(p, {"VOICE_OUTPUT": "true"})
     assert p.read_text() == "VOICE_OUTPUT=true\n"
+
+
+def test_attachment_limits_come_from_env(monkeypatch):
+    from hermie.config import Settings
+    monkeypatch.setenv("ATTACH_MAX_FILE_CHARS", "123")
+    monkeypatch.setenv("ATTACH_MAX_TOTAL_CHARS", "456")
+    s = Settings()
+    assert s.attach_max_file_chars == 123 and s.attach_max_total_chars == 456

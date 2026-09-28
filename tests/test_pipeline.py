@@ -244,3 +244,15 @@ def test_trim_history_stubs_large_payloads():
     out = trim_history(hist)
     assert out[0].parts[0].args["path"] == "a.txt" and "omitted" in out[0].parts[0].args["content"]
     assert len(out[1].parts[0].content) < 400 and hist[1].parts[0].content == big  # the original object is unchanged
+
+
+async def test_material_pii_never_reaches_planner(make_agent, settings):
+    planner = Script([tool("delegate", step="Summarize the attached customer list"), text("Summary done")], name="planner")
+    ex = Script(final=final(answer="3 customers"))
+    agent = make_agent(FakeJudge(task="planning"), executor=ex, planner=planner)
+    material = f"[File: /tmp/customers.csv]\nname,phone\nZhang,{PHONE}\n"
+    r = await agent.run("Summarize the attached customer list", material)
+    assert r.route == "plan"
+    assert PHONE not in planner.sent_text()
+    assert PHONE in ex.sent_text()
+    assert PHONE not in settings.outbound_log_path.read_text()

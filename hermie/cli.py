@@ -14,6 +14,7 @@ import logging
 import sys
 from pathlib import Path
 
+from .attachments import load_material
 from .config import RunMode, Settings
 from .events import Approval
 from .policy import Force
@@ -22,7 +23,7 @@ from .policy import Force
 def _parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="hermie", description="Local-first hybrid agent")
     p.add_argument("task", nargs="?", help="task description (used with --json)")
-    p.add_argument("material", nargs="?", help="path to a material file (optional)")
+    p.add_argument("material", nargs="?", help="path to a material file or directory (optional; a directory attaches its file tree)")
     p.add_argument("--json", action="store_true", help="headless mode, prints JSON")
     p.add_argument("--auto", "--skip-permissions", dest="auto", action="store_true",
                    help="auto mode: skip manual approvals (sandbox, privacy gate, snapshots and audit still apply)")
@@ -35,6 +36,18 @@ def _parser() -> argparse.ArgumentParser:
 
 
 _TCC_DIRS = ("Desktop", "Documents", "Downloads")
+
+
+def read_material(path: Path, s: Settings) -> str:
+    """The material argument of --json: a text file's content or a directory's file tree, in the same format the
+    UI uses for dropped files (read here in the main process; it goes through the privacy gate with the task)."""
+    if not path.exists():
+        raise SystemExit(f"✖ Material not found: {path}")
+    m = load_material([path], max_file_chars=s.attach_max_file_chars, max_total_chars=s.attach_max_total_chars,
+                      deny_names=s.sandbox_deny_names)
+    for n in m.notes:
+        print(f"⚠ Attachment: {n}", file=sys.stderr)
+    return m.text
 
 
 def resolve_workspace(arg: Path | None) -> tuple[Path, list[str]]:
@@ -77,7 +90,7 @@ def main(argv: list[str] | None = None) -> None:
     if args.json:
         if not args.task:
             _parser().error("--json requires a task description")
-        material = Path(args.material).read_text(encoding="utf-8") if args.material else ""
+        material = read_material(Path(args.material).expanduser(), s) if args.material else ""
         asyncio.run(_headless(s, args.task, material, Force(args.force) if args.force else Force.NONE))
         return
 

@@ -68,12 +68,12 @@ The directory you start in is the workspace. The sandbox only lets the executor 
 cd ~/projects/my-app
 hermie                     # full-screen UI; high-risk commands prompt for approval
 hermie --auto              # no approval prompts; sandbox, gate, snapshots and audit unchanged
-hermie --json "task" file  # headless: JSON event stream, then the final result
+hermie --json "task" file  # headless: JSON event stream, then the final result (file or directory as material)
 ```
 
 `start.sh` in the repo does the whole warm-up: activates the env, starts Ollama if needed, pulls missing models, opens the UI.
 
-Inside the UI: type a task and press `Enter`. `/` opens the command list. `F2` switches default/auto mode, `F5` records a voice task, `F6` toggles speech. The full list is in the [user guide](docs/guide.md).
+Inside the UI: type a task and press `Enter`. Drag a file or folder from Finder into the input box to attach it: its path stays in the text, a 📎 line shows what will be attached, and the content (a file tree for folders) is read locally and goes through the privacy gate with the task, so nothing unredacted leaves the machine. `/` opens the command list. `F2` switches default/auto mode, `F5` records a voice task, `F6` toggles speech. The full list is in the [user guide](docs/guide.md).
 
 ## Where the privacy guarantee comes from
 

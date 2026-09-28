@@ -7,7 +7,7 @@ from hermie.config import RunMode
 from hermie.perf import PerfSample
 from hermie.tui.app import ApprovalScreen, HermieApp, ModelScreen, PerfPanel, VoiceScreen
 
-from .conftest import FakeJudge, Script, review, text, tool
+from .conftest import FakeJudge, Script, final, review, text, tool
 
 
 async def _submit(pilot, value: str):
@@ -483,3 +483,34 @@ async def test_popup_click_opens_dialog_or_completes(make_agent):
         popup.action_select()
         await pilot.pause(0.2)
         assert any("Slash commands" in t for _, t in app.transcript)
+
+
+async def test_dropped_path_shows_attachment_strip(make_agent, tmp_path):
+    f = tmp_path / "report notes.txt"
+    f.write_text("quarterly numbers")
+    app = HermieApp(agent=make_agent(FakeJudge()))
+    async with app.run_test(size=(160, 45)) as pilot:
+        inp = app.query_one("#input")
+        strip = app.query_one("#attachments", Static)
+        assert not strip.display
+        inp.text = "summarize " + str(f).replace(" ", "\\ ")
+        await pilot.pause(0.1)
+        assert strip.display
+        assert "report notes.txt" in str(strip.render()) and "17 B" in str(strip.render())
+        inp.text = "summarize"
+        await pilot.pause(0.1)
+        assert not strip.display
+
+
+async def test_submitting_with_attachment_feeds_content_to_executor(make_agent, tmp_path):
+    f = tmp_path / "data.csv"
+    f.write_text("name,amount\nACME,100\n")
+    ex = Script(final=final())
+    app = HermieApp(agent=make_agent(FakeJudge(task="repetitive"), executor=ex))
+    async with app.run_test(size=(160, 45)) as pilot:
+        await _submit(pilot, f"total the amounts in {f}")
+        await _wait_idle(pilot, app)
+        await pilot.pause(0.2)
+        assert "ACME,100" in ex.sent_text() and f"[File: {f}]" in ex.sent_text()
+        assert any("data.csv" in t for who, t in app.transcript if who == "You")
+        assert not app.query_one("#attachments", Static).display

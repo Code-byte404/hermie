@@ -124,6 +124,9 @@ class Settings:
     tool_output_max_chars: int = field(default_factory=lambda: _env_int("TOOL_OUTPUT_MAX_CHARS", 8000))
     # When the executor's conversation history exceeds this many characters, compress it with the local model (never the cloud)
     history_compress_chars: int = field(default_factory=lambda: _env_int("HISTORY_COMPRESS_CHARS", 24000))
+    # Files dropped into the input box are attached as material: per-file and total character caps (directories attach a file tree only)
+    attach_max_file_chars: int = field(default_factory=lambda: _env_int("ATTACH_MAX_FILE_CHARS", 200_000))
+    attach_max_total_chars: int = field(default_factory=lambda: _env_int("ATTACH_MAX_TOTAL_CHARS", 400_000))
 
     # ---- Voice (all local: sounddevice recording, mlx-whisper transcription, macOS say for speech) ----
     voice_output: bool = field(default_factory=lambda: _env_bool("VOICE_OUTPUT", False))
