@@ -168,6 +168,11 @@ class Settings:
     recon_enabled: bool = field(default_factory=lambda: _env_bool("RECON_ENABLED", True))
     # When a task has a "review failed, then fixed successfully" episode, have the local model write a lesson into AGENT.md
     lessons_enabled: bool = field(default_factory=lambda: _env_bool("LESSONS_ENABLED", True))
+    # Lesson memory (all local): lessons are embedded by this Ollama model and the top-k most relevant are injected
+    # before each executor run; lessons from the same workspace always qualify, others need LESSONS_MIN_SIM
+    lesson_embed_model: str = field(default_factory=lambda: _env("LESSON_EMBED_MODEL", "nomic-embed-text"))
+    lessons_top_k: int = field(default_factory=lambda: _env_int("LESSONS_TOP_K", 5))
+    lessons_min_sim: float = field(default_factory=lambda: _env_float("LESSONS_MIN_SIM", 0.55))
 
     def __post_init__(self) -> None:
         if self.cloud_provider not in CLOUD_PROVIDERS:
@@ -207,6 +212,10 @@ class Settings:
     @property
     def trajectory_log_path(self) -> Path:
         return self.data_dir / "trajectories.jsonl"
+
+    @property
+    def lessons_path(self) -> Path:
+        return self.data_dir / "lessons.jsonl"
 
     def ensure_dirs(self) -> None:
         self.workspace.mkdir(parents=True, exist_ok=True)
