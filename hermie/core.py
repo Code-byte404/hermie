@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import asyncio
-import json
 import logging
 import time
 from dataclasses import dataclass, field
@@ -11,32 +10,27 @@ from typing import Optional
 from pydantic_ai import Agent
 from pydantic_ai.exceptions import UsageLimitExceeded
 
-from .agents import (ExecutorOutput, ExecutorReport, ModelFactory, Review, Status, build_cloud_agent, build_executor,
-                     build_planner, build_reviewer, compress_history, require_clean, restore_local, review_prompt,
-                     stream_handler, trim_history, usage_limits)
-from .audit import AuditLog, JsonlLog, sha256
+from .agents import (ExecutorOutput, ExecutorReport, ModelFactory, Review, Status, build_executor, build_reviewer,
+                     compress_history, restore_local, review_prompt, trim_history, usage_limits)
+from .audit import AuditLog, JsonlLog
 from .complexity import RouteLLMScorer
 from .config import RunMode, Settings
 from . import project_doc
-from .recon import workspace_recon
-from .events import (ChatMessage, EventBus, Notice, ReportArrived, RouteDecided, SnapshotTaken,
+from .events import (ChatMessage, EventBus, Notice, ReportArrived, SnapshotTaken,
                      StatsUpdated, TaskFinished)
 from .judge import Judge, OllamaJudge
 from .policy import Force, Route
 from .privacy import CleanText, PrivacyGate, PrivacyVerdict
-from .router import EntryRouter, Routing
+from .router import EntryRouter
 from .sandbox import Sandbox
-from .session import Session, TaskState
+from .session import FlowState, Session, TaskState
 from .snapshot import SnapshotManager
 from .trajectory import task_record
-from .graph import StepInput, build_step_graph, run_step
+from .graph import StepInput, build_step_graph, build_task_graph, run_step
 from .mactools import ScreenCapture
 from .web import WebClient
 
 log = logging.getLogger(__name__)
-
-VERIFY_QUESTION = ("Does the answer below complete the task correctly and completely, so that a stronger model does not "
-                   "need to redo it?")
 
 DIAGNOSE_PROMPT = (
     "Below is an explanation of a failure (or a failed review) by the local executor. Rewrite it as a [Diagnosis] for the "
@@ -112,6 +106,7 @@ class Hermie:
             judge.usage_sink = stats.judge_usage
         self.executor = build_executor(self.models)
         self.step_graph = build_step_graph(self)
+        self.task_graph = build_task_graph(self)
 
     # ------------------------------------------------------------ Public interface
     @property
@@ -186,25 +181,20 @@ class Hermie:
 
     async def run(self, task: str, material: str = "", force: Force = Force.NONE) -> TaskResult:
         text = f"{task}\n\n{material}".strip() if material else task
-        st = TaskState(self.session, text, project_doc=project_doc.load(self.s.workspace))
+        st = TaskState(self.session, text, project_doc=project_doc.load(self.s.workspace),
+                       flow=FlowState(task=task, force=force))
         t0 = time.time()
         self.session.stats.task_started_at = t0
         self.bus.emit(ChatMessage("user", task))
         result: Optional[TaskResult] = None
-        routing: Optional[Routing] = None
         try:
-            routing = await self.router.route(task, text, force)
-            d = routing.decision
-            st.sensitive_input = routing.verdict.sensitive
-            st.route = d.route.value
-            self.bus.emit(RouteDecided(d.route.value, d.reasons, routing.signals_dict()))
-            handler = {Route.LOCAL: self._local, Route.LOCAL_VERIFY: self._local_verify,
-                       Route.CLOUD: self._cloud, Route.PLAN: self._plan}[d.route]
-            result = await handler(st, routing)
-            result.reasons = d.reasons + result.reasons
+            result = await self.task_graph.run(state=st, deps=self)
+            routing = st.flow.routing
+            result.reasons = routing.decision.reasons + result.reasons
             result.signals = routing.signals_dict()
             return result
         finally:
+            routing = st.flow.routing
             self.session.stats.task_started_at = None
             if result is None:
                 st.cancel_checks()  # interrupted / failed: stop waiting for the background judge calls
@@ -308,12 +298,6 @@ class Hermie:
             self.bus.emit(Notice("warn", f"Reviewer error, skipping review: {type(e).__name__}"))
             return None
 
-    async def _execute_reviewed(self, st: TaskState, prompt: str, task_text: Optional[str] = None,
-                                acceptance: Optional[list[str]] = None) -> tuple[ExecutorOutput, Optional[Review]]:
-        """Executor plus local review loop: the step graph (graph.py)."""
-        res = await run_step(self, st, StepInput(prompt, task_text or st.text, acceptance or []))
-        return res.out, res.review
-
     def _local_output(self, st: TaskState) -> str:
         parts = ["\n\n".join(st.answers)] if st.answers else []
         if st.artifacts:
@@ -322,102 +306,6 @@ class Hermie:
         if st.last_review and not st.last_review.get("passed"):
             parts.append("⚠ Local review failed:\n" + "\n".join(f"- {x}" for x in st.last_review.get("problems", [])))
         return "\n\n".join(parts) or "(the executor gave no answer)"
-
-    # ------------------------------------------------------------ Modes
-    async def _local(self, st: TaskState, routing: Routing, reasons: Optional[list[str]] = None) -> TaskResult:
-        snap = st.snapshot_id or self._snapshot(st)
-        st.snapshot_id = snap
-        await self._execute_reviewed(st, st.text)
-        return TaskResult(self._local_output(st), Route.LOCAL.value, "ollama", reasons or [], snapshot_id=snap,
-                          report=st.last_report, artifacts=st.artifacts)
-
-    async def _local_verify(self, st: TaskState, routing: Routing) -> TaskResult:
-        snap = self._snapshot(st)
-        st.snapshot_id = snap
-        out, review = await self._execute_reviewed(st, st.text)
-        if review is not None and not review.passed:
-            note = "Local review failed after multiple rounds; escalating to cloud"
-            p = 0.0
-        else:
-            state = (f"Task:\n{st.text}\n\nExecutor report:\n{out.report.model_dump_json()}\n\nAnswer:\n{out.answer}"
-                     + (f"\n\nLocal review: {json.dumps(st.last_review, ensure_ascii=False)}" if st.last_review else ""))
-            try:
-                p = await asyncio.to_thread(self.session.judge.noul, state, VERIFY_QUESTION)
-            except Exception as e:
-                return TaskResult(self._local_output(st), Route.LOCAL_VERIFY.value, "ollama",
-                                  [f"Self-check failed; keeping the local result: {e}"], snapshot_id=snap,
-                                  report=st.last_report, artifacts=st.artifacts)
-            if p >= self.s.verify_threshold and out.report.status is Status.DONE:
-                return TaskResult(self._local_output(st), Route.LOCAL_VERIFY.value, "ollama",
-                                  [f"Local self-check passed p={p:.2f}"], snapshot_id=snap, report=st.last_report,
-                                  artifacts=st.artifacts)
-            note = f"Local self-check failed p={p:.2f}; escalating to cloud"
-        self.bus.emit(Notice("info", note))
-        needs_ws = routing.signals.needs_workspace if routing.signals else True
-        if needs_ws or st.tainted or st.artifacts:
-            r = await self._plan(st, routing, take_snapshot=False)
-        else:
-            st.answers.clear()
-            r = await self._cloud(st, routing)
-        r.route = Route.LOCAL_VERIFY.value
-        r.reasons.insert(0, note)
-        r.snapshot_id = r.snapshot_id or snap
-        return r
-
-    async def _cloud(self, st: TaskState, routing: Routing) -> TaskResult:
-        planning = bool(routing.signals and routing.signals.task.choice == "planning")
-        try:
-            clean = st.remember(await asyncio.to_thread(st.gate.certify, st.text))  # check once more before going outbound
-        except PermissionError as e:
-            return await self._fallback_local(st, routing, f"Outbound check blocked; running locally instead: {e}")
-        try:
-            agent = build_cloud_agent(self.models, planning)
-            res = await agent.run(require_clean(clean), deps=st, event_stream_handler=stream_handler("planner", self.bus))
-        except Exception as e:  # includes OutboundBlockedError, network errors, missing API key
-            log.exception("Cloud model call failed")
-            return await self._fallback_local(st, routing, f"{self.s.cloud_label} unavailable, falling back to local: {e}")
-        self.bus.emit(ChatMessage("planner", res.output))
-        return TaskResult(res.output, Route.CLOUD.value, self.s.cloud_provider)
-
-    async def _plan(self, st: TaskState, routing: Routing, take_snapshot: bool = True) -> TaskResult:
-        if not self.models.cloud_available:
-            return await self._fallback_local(st, routing, "CLOUD_API_KEY not set; plan mode runs fully local")
-        snap = self._snapshot(st) if take_snapshot else None
-        st.snapshot_id = st.snapshot_id or snap
-        notes: list[str] = []
-        recon = ""
-        if self.s.recon_enabled:
-            try:
-                recon = await workspace_recon(self.session.sandbox, bool(st.project_doc))
-            except Exception as e:
-                log.exception("Recon failed")
-                notes.append(f"Workspace recon failed; the planner starts blind: {type(e).__name__}")
-        outbound = await self._outbound_task(st, routing.verdict, notes, recon)
-        if outbound is None:
-            r = await self._local(st, routing, notes + ["de-identification failed; running fully local"])
-            r.snapshot_id = r.snapshot_id or snap
-            return r
-        st.report_for_cloud = True
-        try:
-            planner = build_planner(self.models, self._delegated_step)
-            res = await planner.run(require_clean(outbound), deps=st, usage_limits=usage_limits(self.s),
-                                    event_stream_handler=stream_handler("planner", self.bus))
-        except Exception as e:
-            log.exception("Plan mode failed")
-            st.report_for_cloud = False
-            if st.answers:  # the executor already did part of the work: keep the results, do not rerun
-                notes.append(f"Planner failed midway ({e}); keeping the finished local results")
-                return TaskResult(self._local_output(st), Route.PLAN.value, f"{self.s.cloud_provider}-plan+ollama", notes,
-                                  snapshot_id=snap, report=st.last_report, artifacts=st.artifacts)
-            r = await self._local(st, routing, notes + [f"Planner unavailable; running fully local: {e}"])
-            r.snapshot_id = r.snapshot_id or snap
-            return r
-        summary = restore_local(st, res.output)
-        self.bus.emit(ChatMessage("planner", summary))
-        output = summary + ("\n\n---\nLocal execution result:\n" + self._local_output(st)
-                            if st.answers or st.artifacts else "")
-        return TaskResult(output, Route.PLAN.value, f"{self.s.cloud_provider}-plan+ollama", notes, snapshot_id=snap,
-                          report=st.last_report, artifacts=st.artifacts)
 
     async def _delegated_step(self, st: TaskState, local_step: str,
                               acceptance: list[str]) -> tuple[ExecutorOutput, Optional[Review], str]:
@@ -470,10 +358,6 @@ class Hermie:
                 self.bus.emit(Notice("info", f"Lesson recorded to AGENT.md: {lesson}"))
         except Exception as e:
             log.warning("Lesson recording failed (%s)", type(e).__name__)
-
-    async def _fallback_local(self, st: TaskState, routing: Routing, why: str) -> TaskResult:
-        self.bus.emit(Notice("warn", why))
-        return await self._local(st, routing, [why])
 
     async def _outbound_task(self, st: TaskState, verdict: PrivacyVerdict, notes: list[str],
                              recon: str = "") -> Optional[CleanText]:

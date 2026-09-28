@@ -18,15 +18,14 @@ if TYPE_CHECKING:
 
 
 def task_record(st: "TaskState", r: "TaskResult", latency_s: float, interrupted: bool) -> dict:
-    flow = getattr(st, "flow", None)
-    routing = getattr(flow, "routing", None)
-    force = getattr(flow, "force", None)
+    flow = st.flow
+    routing = flow.routing
     return {
         "input_sha256": sha256(st.text),
         "workspace_sha256": sha256(str(st.s.workspace)),
         "route": r.route,
         "backend": r.backend,
-        "force": getattr(force, "value", "none"),
+        "force": flow.force.value,
         "interrupted": interrupted,
         "latency_s": round(latency_s, 3),
         "sensitive": st.sensitive_input,
@@ -35,9 +34,9 @@ def task_record(st: "TaskState", r: "TaskResult", latency_s: float, interrupted:
         "delegations": st.delegations,
         "review_failures": st.review_failures,
         "review_fixed": st.review_fixed,
-        "escalated": bool(getattr(flow, "escalated", False)),
-        "fallback": bool(getattr(flow, "fallback", False)),
+        "escalated": flow.escalated,
+        "fallback": flow.fallback,
         "reasons": list(r.reasons),
-        "signals": routing.signals_dict() if routing is not None else dict(r.signals),
+        "signals": routing.signals_dict() if routing is not None else {},
         "nodes": list(st.trace),
     }

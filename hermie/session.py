@@ -10,6 +10,7 @@ from typing import TYPE_CHECKING, Any, Callable, Optional
 from .audit import AuditLog, JsonlLog, sha256
 from .config import RunMode, Settings
 from .events import EventBus
+from .policy import Force
 
 if TYPE_CHECKING:
     from .judge import Judge
@@ -129,6 +130,23 @@ class Session:
 
 
 @dataclass
+class FlowState:
+    """Working memory of the task graph (graph.py): what the nodes hand to each other. Local only."""
+    task: str = ""                                # the task line as typed (without material), for RouteLLM and the user echo
+    force: Force = Force.NONE
+    routing: Optional[Any] = None                 # router.Routing once the route node ran
+    task_snapshot_id: Optional[str] = None        # the pre-task snapshot: TaskResult.snapshot_id and rollback target
+    notes: list[str] = field(default_factory=list)   # framework-generated reasons in order (self-check note, plan notes, fallbacks)
+    fallback: bool = False                        # a cloud step failed and the task is finishing locally
+    escalated: bool = False                       # local_verify handed the task to the cloud
+    recon: str = ""                               # workspace recon text for the planner (goes through the gate in _outbound_task)
+    outbound: Optional[Any] = None                # CleanText the planner receives
+    plan_summary: Optional[str] = None            # planner's final text, restored locally
+    cloud_output: Optional[str] = None            # cloud-direct answer
+    last_step: Optional[Any] = None               # graph.StepResult of the last run_reviewed
+
+
+@dataclass
 class TaskState:
     session: Session
     text: str                         # local original text: task + material
@@ -166,6 +184,7 @@ class TaskState:
     trace: list[dict] = field(default_factory=list)
     _trace_pending: dict = field(default_factory=dict)
     step: Optional[Any] = None        # graph._StepRun while the step graph runs (execute -> review -> fix loop)
+    flow: FlowState = field(default_factory=FlowState)
 
     @property
     def s(self) -> Settings:

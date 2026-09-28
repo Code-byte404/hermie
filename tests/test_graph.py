@@ -85,3 +85,134 @@ async def test_step_graph_diagnoses_only_when_asked(make_agent):
     agent2 = make_agent(FakeJudge(), executor=ex2, compressor=Script([text("unused")]), verify_rounds=1)
     res2 = await run_step(agent2, st2, StepInput(prompt="x", task_text="x"))
     assert res2.diagnosis == "" and nodes(st2) == [("execute", "ok"), ("review", "done"), ("finish_step", "ok")]
+
+
+# ---------------------------------------------------------------- task graph
+
+PHONE = "13812345678"
+
+
+def _rec(settings):
+    import json
+    return json.loads(settings.trajectory_log_path.read_text().splitlines()[-1])
+
+
+def _raise(msg):
+    def f(m, info):
+        raise RuntimeError(msg)
+    return f
+
+
+async def test_local_route_nodes(make_agent, settings):
+    agent = make_agent(FakeJudge(task="repetitive"), executor=Script(final=final()))
+    r = await agent.run("Rename the files")
+    assert r.route == "local" and r.snapshot_id
+    rec = _rec(settings)
+    assert nodes(rec) == [("route", "local"), ("snapshot", "execute"), ("execute", "ok"), ("review", "done"),
+                          ("finish_step", "ok"), ("run_reviewed", "finish"), ("finish_local", "ok")]
+    assert rec["nodes"][0]["reasons"] == r.reasons[:len(rec["nodes"][0]["reasons"])]
+
+
+async def test_local_verify_passes_self_check(make_agent, settings):
+    agent = make_agent(FakeJudge(task="simple", conf=0.4, cx=1, cx_conf=0.4, verify=0.9), executor=Script(final=final()))
+    r = await agent.run("Explain this function")
+    assert r.route == "local_verify" and r.reasons[-1].startswith("Local self-check passed")
+    assert nodes(_rec(settings))[-3:] == [("run_reviewed", "self_check"), ("self_check", "passed"), ("finish_local", "ok")]
+
+
+async def test_local_verify_escalates_to_cloud(make_agent, settings):
+    cloud = Script([text("CLOUD_ANSWER")], name="cloud")
+    agent = make_agent(FakeJudge(task="complex", conf=0.4, cx=1, cx_conf=0.4, verify=0.1, needs_ws=False),
+                       executor=Script(final=final()), cloud=cloud)
+    r = await agent.run("Compare the two designs")
+    assert r.route == "local_verify" and r.backend == "deepseek" and r.output == "CLOUD_ANSWER"
+    assert r.reasons[-1].startswith("Local self-check failed")
+    rec = _rec(settings)
+    assert nodes(rec)[-3:] == [("self_check", "escalate_cloud"), ("cloud_direct", "done"), ("finish_cloud", "ok")]
+    assert rec["escalated"] is True and rec["fallback"] is False
+
+
+async def test_local_verify_escalation_cloud_failure_falls_back(make_agent, settings):
+    ex = Script([final(answer="first"), final(answer="second")])
+    agent = make_agent(FakeJudge(task="complex", conf=0.4, cx=1, cx_conf=0.4, verify=0.1, needs_ws=False),
+                       executor=ex, cloud=Script([_raise("api down")], name="cloud"))
+    r = await agent.run("Compare the two designs")
+    assert r.route == "local_verify" and r.backend == "ollama" and r.output == "second"
+    own = [x for x in r.reasons if x.startswith("Local self-check failed") or "unavailable" in x]
+    assert own[0].startswith("Local self-check failed") and "unavailable, falling back to local" in own[1]
+    rec = _rec(settings)
+    assert nodes(rec)[-7:] == [("cloud_direct", "fallback"), ("snapshot", "execute"), ("execute", "ok"), ("review", "done"),
+                               ("finish_step", "ok"), ("run_reviewed", "finish"), ("finish_local", "ok")]
+    assert rec["fallback"] is True and rec["escalated"] is True and len(ex.seen) == 2
+
+
+async def test_cloud_route_nodes(make_agent, settings):
+    agent = make_agent(FakeJudge(task="planning", needs_ws=False), cloud=Script([text("plan")], name="cloud"))
+    r = await agent.run("Plan a launch")
+    assert r.route == "cloud" and r.snapshot_id is None
+    assert nodes(_rec(settings)) == [("route", "cloud"), ("cloud_direct", "done"), ("finish_cloud", "ok")]
+
+
+async def test_cloud_outbound_block_falls_back_local(make_agent, settings, monkeypatch):
+    cloud = Script([text("never")], name="cloud")
+    agent = make_agent(FakeJudge(task="planning", needs_ws=False), cloud=cloud,
+                       executor=Script(final=final(answer="local")))
+
+    def refuse(text):
+        raise PermissionError("Outbound check failed: test")
+    monkeypatch.setattr(agent.session.gate, "certify", refuse)
+    r = await agent.run("Plan a launch")
+    assert r.route == "local" and not cloud.seen and r.output == "local"
+    assert any("Outbound check blocked" in x for x in r.reasons)
+    assert nodes(_rec(settings))[:2] == [("route", "cloud"), ("cloud_direct", "fallback")]
+
+
+async def test_plan_route_nodes(make_agent, settings):
+    planner = Script([tool("delegate", step="Create hello.py"), text("Done")], name="planner")
+    agent = make_agent(FakeJudge(task="planning"), planner=planner, executor=Script(final=final()))
+    r = await agent.run("Create a hello world script")
+    assert r.route == "plan" and r.backend == "deepseek-plan+ollama"
+    rec = _rec(settings)
+    seq = nodes(rec)
+    assert seq[:4] == [("route", "plan"), ("snapshot", "plan"), ("recon", "done"), ("outbound_task", "certified")]
+    assert seq[-2:] == [("plan", "done"), ("finish_plan", "ok")]
+    assert ("execute", "ok") in seq and rec["delegations"] == 1
+
+
+async def test_plan_failure_midway_keeps_local_results(make_agent, settings):
+    planner = Script([tool("delegate", step="Create hello.py"), _raise("planner down")], name="planner")
+    ex = Script([final(answer="hello written")])
+    agent = make_agent(FakeJudge(task="planning"), planner=planner, executor=ex)
+    r = await agent.run("Create a hello world script")
+    assert r.route == "plan" and "hello written" in r.output and len(ex.seen) == 1
+    assert any("Planner failed midway" in x for x in r.reasons)
+    assert nodes(_rec(settings))[-2:] == [("plan", "midway"), ("finish_plan", "ok")]
+
+
+async def test_plan_without_cloud_key_runs_local(make_agent, settings):
+    agent = make_agent(FakeJudge(task="planning"), cloud_api_key="", executor=Script(final=final()))
+    r = await agent.run("Create a hello world script")
+    assert r.route == "local" and "CLOUD_API_KEY" in "".join(r.reasons)
+    assert nodes(_rec(settings))[:3] == [("route", "plan"), ("snapshot", "plan"), ("recon", "fallback")]
+
+
+async def test_node_error_still_writes_trajectory(make_agent, settings):
+    import pytest
+    ex = Script([_raise("executor crashed")])
+    agent = make_agent(FakeJudge(task="repetitive"), executor=ex)
+    with pytest.raises(RuntimeError):
+        await agent.run("Rename the files")
+    rec = _rec(settings)
+    assert rec["interrupted"] is True and rec["route"] == "local"
+    # the failing node and every node that was awaiting it are recorded as errors
+    assert nodes(rec)[-2:] == [("execute", "error"), ("run_reviewed", "error")]
+    assert rec["nodes"][-2]["error"] == "RuntimeError"
+    assert (settings.workspace / "AGENT.md").exists()  # progress still recorded
+
+
+async def test_task_graph_privacy_of_trajectory(make_agent, settings):
+    planner = Script([tool("delegate", step="Summarize the list"), text("Summary done")], name="planner")
+    ex = Script(final=final(answer=f"3 customers, first {PHONE}"))
+    agent = make_agent(FakeJudge(task="planning"), executor=ex, planner=planner)
+    await agent.run("Summarize the attached customer list", f"[File: /tmp/c.csv]\nname,phone\nZhang,{PHONE}\n")
+    assert PHONE not in settings.trajectory_log_path.read_text()
