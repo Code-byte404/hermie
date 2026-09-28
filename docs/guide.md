@@ -88,6 +88,7 @@ The scenarios run in auto mode inside `~/HermieWork/demo` (created automatically
 - `~/.hermie/audit.jsonl`: route, signals, backend, outbound count, input hash
 - `~/.hermie/commands.jsonl`: every command the executor ran
 - `~/.hermie/reviews.jsonl`: every local review round's verdict (contains local content)
+- `~/.hermie/trajectories.jsonl`: one line per task with the graph nodes it went through, their durations and decisions, the routing signals and counters; no task text or tool output. `hermie --graph` prints the graph as Mermaid
 - `~/.hermie/snapshots/`: the last `SNAPSHOT_KEEP` (default 20) snapshots per workspace
 
 ## Tests

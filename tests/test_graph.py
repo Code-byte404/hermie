@@ -216,3 +216,12 @@ async def test_task_graph_privacy_of_trajectory(make_agent, settings):
     agent = make_agent(FakeJudge(task="planning"), executor=ex, planner=planner)
     await agent.run("Summarize the attached customer list", f"[File: /tmp/c.csv]\nname,phone\nZhang,{PHONE}\n")
     assert PHONE not in settings.trajectory_log_path.read_text()
+
+
+def test_render_lists_every_node(make_agent):
+    from hermie.graph import render
+    src = render(make_agent(FakeJudge()))
+    for node in ("route", "snapshot", "run_reviewed", "self_check", "cloud_direct", "recon", "outbound_task", "plan",
+                 "finish_local", "finish_cloud", "finish_plan", "execute", "review", "diagnose", "finish_step"):
+        assert f"\n  {node}\n" in src or f"  {node} -->" in src or f"--> {node}\n" in src, node
+    assert src.count("stateDiagram-v2") == 2

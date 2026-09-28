@@ -19,3 +19,15 @@ def test_read_material_missing_path_exits(settings, tmp_path):
     import pytest
     with pytest.raises(SystemExit):
         read_material(tmp_path / "nope.txt", settings)
+
+
+def test_graph_flag_prints_mermaid_without_loading_models(capsys, monkeypatch):
+    import hermie.core
+    from hermie import cli
+
+    def boom(*a, **k):
+        raise AssertionError("--graph must not construct the agent")
+    monkeypatch.setattr(hermie.core, "Hermie", boom)
+    cli.main(["--graph"])
+    out = capsys.readouterr().out
+    assert "stateDiagram-v2" in out and "route --> by_route" in out

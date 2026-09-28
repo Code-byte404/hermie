@@ -32,6 +32,7 @@ def _parser() -> argparse.ArgumentParser:
     p.add_argument("--workspace", type=Path, help="workspace directory (default: current directory)")
     p.add_argument("--force", choices=["local", "cloud"], help="force local or cloud")
     p.add_argument("-v", "--verbose", action="store_true")
+    p.add_argument("--graph", action="store_true", help="print the task graph and step graph as Mermaid and exit")
     return p
 
 
@@ -70,6 +71,14 @@ def resolve_workspace(arg: Path | None) -> tuple[Path, list[str]]:
 
 def main(argv: list[str] | None = None) -> None:
     args = _parser().parse_args(argv)
+    if args.graph:  # no models, no sandbox profile: the builders only keep a reference to the agent
+        from types import SimpleNamespace
+
+        from .graph import build_step_graph, build_task_graph, render
+        shell = SimpleNamespace()
+        shell.step_graph, shell.task_graph = build_step_graph(shell), build_task_graph(shell)
+        print(render(shell))
+        return
     s = Settings()
     s.workspace, ws_warnings = resolve_workspace(args.workspace)
     s.ensure_dirs()

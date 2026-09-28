@@ -8,17 +8,97 @@ How a task moves through Hermie, which module owns what, and the invariants that
 
 1. `router.EntryRouter` runs three things in parallel: the privacy check on the task text (Presidio rules plus the judge's contextual question, a request of its own), one structured judge request per sample answering the three routing questions at once (task type, difficulty, does it need the workspace; `ROUTING_QUESTIONS`, `JUDGE_BATCH`), and the RouteLLM complexity score.
 2. `policy.decide()` turns those signals into a route. It is a pure function with no I/O, so routing changes are made there and tested directly in `tests/test_policy_privacy.py`.
-3. One of four handlers runs the task.
-4. The audit log gets a line: route, signals, backend, outbound count, and the SHA-256 of the input. Never the input.
+3. The task graph (`graph.py`, on pydantic-graph) runs the task. `snapshot` takes the pre-task snapshot; `run_reviewed` runs the step graph (`execute` → `review` → fix, up to `VERIFY_ROUNDS`); `self_check` asks the judge whether a local_verify result is good enough; `recon` → `outbound_task` → `plan` is plan mode; `cloud_direct` is the cloud route; the `finish_*` nodes build the result. Every cloud failure is a `fallback` edge back to `snapshot`, so the task finishes locally and keeps what the executor already produced. The planner's `delegate` tool runs the same step graph, plus a `diagnose` node on failure.
+4. The audit log gets a line: route, signals, backend, outbound count, and the SHA-256 of the input. Never the input. `trajectories.jsonl` gets one line too: the nodes the task went through with their durations and decisions, the routing signals and counters. Node bodies only pass counts, flags and probabilities into it, never text.
 
-| Route | Handler | Who runs |
+| Route | Nodes | Who runs |
 |---|---|---|
-| `local` | `_local` | local executor + local review loop |
-| `local_verify` | `_local_verify` | executor + review loop, then a judge self-check; escalates to `_plan` or `_cloud` if either fails |
-| `cloud` | `_cloud` | cloud model alone, for tasks that need no workspace and carry no private data |
-| `plan` | `_plan` | workspace recon, then the cloud planner (`set_plan`, `delegate(step, acceptance)`) driving the local executor step by step |
+| `local` | `snapshot`, `run_reviewed`, `finish_local` | local executor + local review loop |
+| `local_verify` | the same, then `self_check`; escalates to `recon` (plan mode) or `cloud_direct` if the review or the self-check fails | executor + review loop, then a judge self-check |
+| `cloud` | `cloud_direct`, `finish_cloud` | cloud model alone, for tasks that need no workspace and carry no private data |
+| `plan` | `snapshot`, `recon`, `outbound_task`, `plan`, `finish_plan` | workspace recon, then the cloud planner (`set_plan`, `delegate(step, acceptance)`) driving the local executor step by step |
 
 Any yes-vote on "needs the workspace" is treated as "do it locally". Any cloud failure falls back to local and keeps the partial local results.
+
+`hermie --graph` prints both graphs from the code:
+
+```mermaid
+---
+title: Task graph
+---
+stateDiagram-v2
+  direction TB
+  route
+  state by_route <<choice>>
+  cloud_direct
+  snapshot
+  state after_snapshot <<choice>>
+  state cloud_outcome <<choice>>
+  finish_cloud
+  recon
+  run_reviewed
+  state after_run <<choice>>
+  state recon_outcome <<choice>>
+  finish_local
+  outbound_task
+  self_check
+  state outbound_outcome <<choice>>
+  state self_check_outcome <<choice>>
+  plan
+  state plan_outcome <<choice>>
+  finish_plan
+
+  [*] --> route
+  route --> by_route
+  by_route --> cloud_direct: cloud
+  by_route --> snapshot: local / local_verify / plan
+  cloud_direct --> cloud_outcome
+  snapshot --> after_snapshot
+  cloud_outcome --> snapshot: blocked or failed: run locally
+  after_snapshot --> recon: plan mode
+  after_snapshot --> run_reviewed: run locally
+  cloud_outcome --> finish_cloud: answered
+  finish_cloud --> [*]
+  recon --> recon_outcome
+  run_reviewed --> after_run
+  recon_outcome --> snapshot: no cloud key: run locally
+  after_run --> finish_local: done
+  after_run --> self_check: local_verify
+  recon_outcome --> outbound_task
+  finish_local --> [*]
+  outbound_task --> outbound_outcome
+  self_check --> self_check_outcome
+  outbound_outcome --> snapshot: not certifiable: run locally
+  self_check_outcome --> cloud_direct: failed, text only
+  self_check_outcome --> recon: failed, needs workspace
+  self_check_outcome --> finish_local: passed
+  outbound_outcome --> plan: certified
+  plan --> plan_outcome
+  plan_outcome --> snapshot: failed before local work: run locally
+  plan_outcome --> finish_plan: done, or failed after local work
+  finish_plan --> [*]
+```
+
+```mermaid
+---
+title: Step graph---
+stateDiagram-v2
+  direction LR
+  execute
+  review
+  state review_outcome <<choice>>
+  diagnose
+  finish_step
+
+  [*] --> execute
+  execute --> review
+  review --> review_outcome
+  review_outcome --> execute: failed, rounds left
+  review_outcome --> diagnose: failed, plan mode
+  review_outcome --> finish_step
+  diagnose --> finish_step
+  finish_step --> [*]
+```
 
 ## Modules
 
@@ -44,7 +124,7 @@ Any yes-vote on "needs the workspace" is treated as "do it locally". Any cloud f
 
 ## The self-verification loop
 
-After the executor claims `done`, `core._execute_reviewed` hands a local reviewer the task, the acceptance criteria, the workspace diff since the task-start snapshot and the recent command outputs. On failure the problems are appended to the prompt and the executor re-runs, up to `VERIFY_ROUNDS`. Reviewer errors fail open (this is a quality mechanism, not a privacy one). Before any of that, `validate_report` bounces a `done` that wrote files without a verification step.
+After the executor claims `done`, the step graph (`graph.py`: `execute` → `review`) hands a local reviewer the task, the acceptance criteria, the workspace diff since the task-start snapshot and the recent command outputs. On failure the problems are appended to the prompt and the executor re-runs, up to `VERIFY_ROUNDS`. Reviewer errors fail open (this is a quality mechanism, not a privacy one). Before any of that, `validate_report` bounces a `done` that wrote files without a verification step.
 
 In plan mode each delegated step also produces a `diagnosis`: a local model rewrites the concrete failure into a data-free description of the cause, which is certified before it leaves. The outbound report degrades step by step (with review and diagnosis, with review, bare, status only) until it certifies.
 

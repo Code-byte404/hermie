@@ -393,38 +393,43 @@ def build_task_graph(agent: "Hermie"):
         g.edge_from(g.start_node).to(route),
         g.edge_from(route).to(
             g.decision(node_id="by_route")
-            .branch(lit("local", "local_verify").to(snapshot))
-            .branch(lit("cloud").to(cloud_direct))
-            .branch(lit("plan").to(snapshot))),
+            .branch(lit("local", "local_verify", "plan").label("local / local_verify / plan").to(snapshot))
+            .branch(lit("cloud").label("cloud").to(cloud_direct))),
         g.edge_from(snapshot).to(
             g.decision(node_id="after_snapshot")
-            .branch(lit("execute").to(run_reviewed))
-            .branch(lit("plan").to(recon))),
+            .branch(lit("execute").label("run locally").to(run_reviewed))
+            .branch(lit("plan").label("plan mode").to(recon))),
         g.edge_from(run_reviewed).to(
             g.decision(node_id="after_run")
-            .branch(lit("finish").to(finish_local))
-            .branch(lit("self_check").to(self_check))),
+            .branch(lit("finish").label("done").to(finish_local))
+            .branch(lit("self_check").label("local_verify").to(self_check))),
         g.edge_from(self_check).to(
             g.decision(node_id="self_check_outcome")
-            .branch(lit("passed").to(finish_local))
-            .branch(lit("escalate_plan").to(recon))
-            .branch(lit("escalate_cloud").to(cloud_direct))),
+            .branch(lit("passed").label("passed").to(finish_local))
+            .branch(lit("escalate_plan").label("failed, needs workspace").to(recon))
+            .branch(lit("escalate_cloud").label("failed, text only").to(cloud_direct))),
         g.edge_from(cloud_direct).to(
             g.decision(node_id="cloud_outcome")
-            .branch(lit("done").to(finish_cloud))
-            .branch(lit("fallback").to(snapshot))),
+            .branch(lit("done").label("answered").to(finish_cloud))
+            .branch(lit("fallback").label("blocked or failed: run locally").to(snapshot))),
         g.edge_from(recon).to(
             g.decision(node_id="recon_outcome")
             .branch(lit("done").to(outbound_task))
-            .branch(lit("fallback").to(snapshot))),
+            .branch(lit("fallback").label("no cloud key: run locally").to(snapshot))),
         g.edge_from(outbound_task).to(
             g.decision(node_id="outbound_outcome")
-            .branch(lit("certified").to(plan))
-            .branch(lit("fallback").to(snapshot))),
+            .branch(lit("certified").label("certified").to(plan))
+            .branch(lit("fallback").label("not certifiable: run locally").to(snapshot))),
         g.edge_from(plan).to(
             g.decision(node_id="plan_outcome")
-            .branch(lit("done", "midway").to(finish_plan))
-            .branch(lit("fallback").to(snapshot))),
+            .branch(lit("done", "midway").label("done, or failed after local work").to(finish_plan))
+            .branch(lit("fallback").label("failed before local work: run locally").to(snapshot))),
         g.edge_from(finish_local, finish_cloud, finish_plan).to(g.end_node),
     )
     return g.build()
+
+
+def render(agent: "Hermie") -> str:
+    """Mermaid sources of the task graph and the step graph (docs/architecture.md embeds them; `hermie --graph`)."""
+    return (agent.task_graph.render(title="Task graph", direction="TB") + "\n\n"
+            + agent.step_graph.render(title="Step graph", direction="LR"))
