@@ -2,8 +2,8 @@
 
 - Executor: local Ollama model; every tool goes through the sandbox subprocess; outputs a fixed-structure report
   plus an answer that stays local.
-- Planner: DeepSeek; its only tool is "delegate to the executor"; sees only the de-identified description and clean reports.
-- Cloud direct: DeepSeek; no tools; sees only the certified task text.
+- Planner: the cloud model (CLOUD_PROVIDER); its only tool is "delegate to the executor"; sees only the de-identified description and clean reports.
+- Cloud direct: the cloud model; no tools; sees only the certified task text.
 """
 from __future__ import annotations
 
@@ -466,15 +466,37 @@ class ModelFactory:
                              timeout=self.s.worker_timeout_s, max_retries=0)
         return OllamaModel(self.s.worker_model, provider=OllamaProvider(openai_client=client))
 
-    def _deepseek(self, name: str) -> Model:
-        if not self.s.deepseek_api_key:
-            raise RuntimeError("DEEPSEEK_API_KEY not set (fill it in .env at the project root)")
+    def _cloud_model(self, name: str, which: str) -> Model:
+        """The cloud model for the configured provider. Every provider gets the same treatment: explicit timeout,
+        one retry, and the OutboundGuard on the agent (the guard is provider-independent)."""
+        s = self.s
+        if not s.cloud_api_key:
+            raise RuntimeError("CLOUD_API_KEY not set (fill it in .env at the project root)")
+        if not name:
+            raise RuntimeError(f"{which} not set: CLOUD_PROVIDER={s.cloud_provider} has no default model")
+        if s.cloud_provider == "anthropic":
+            try:
+                from anthropic import AsyncAnthropic
+                from pydantic_ai.models.anthropic import AnthropicModel
+                from pydantic_ai.providers.anthropic import AnthropicProvider
+            except ImportError as e:  # pragma: no cover - depends on the optional extra
+                raise RuntimeError("CLOUD_PROVIDER=anthropic needs the optional extra: pip install 'hermie[anthropic]'") from e
+            client = AsyncAnthropic(api_key=s.cloud_api_key, base_url=s.cloud_base_url or None,
+                                    timeout=s.cloud_timeout_s, max_retries=1)
+            return AnthropicModel(name, provider=AnthropicProvider(anthropic_client=client))
         from openai import AsyncOpenAI
         from pydantic_ai.models.openai import OpenAIChatModel
-        from pydantic_ai.providers.deepseek import DeepSeekProvider
-        client = AsyncOpenAI(base_url="https://api.deepseek.com", api_key=self.s.deepseek_api_key,
-                             timeout=self.s.cloud_timeout_s, max_retries=1)
-        return OpenAIChatModel(name, provider=DeepSeekProvider(openai_client=client))
+        if s.cloud_provider == "deepseek":
+            from pydantic_ai.providers.deepseek import DeepSeekProvider
+            client = AsyncOpenAI(base_url="https://api.deepseek.com", api_key=s.cloud_api_key,
+                                 timeout=s.cloud_timeout_s, max_retries=1)
+            return OpenAIChatModel(name, provider=DeepSeekProvider(openai_client=client))
+        from pydantic_ai.providers.openai import OpenAIProvider
+        if s.cloud_provider == "openai-compatible" and not s.cloud_base_url:
+            raise RuntimeError("CLOUD_PROVIDER=openai-compatible needs CLOUD_BASE_URL (the endpoint's /v1 URL)")
+        client = AsyncOpenAI(base_url=s.cloud_base_url or None, api_key=s.cloud_api_key,
+                             timeout=s.cloud_timeout_s, max_retries=1)
+        return OpenAIChatModel(name, provider=OpenAIProvider(openai_client=client))
 
     def executor(self) -> Model:
         return self._executor or self._ollama()
@@ -487,14 +509,18 @@ class ModelFactory:
         return self._reviewer or self._executor or self._ollama()
 
     def planner(self) -> Model:
-        return self._planner or self._deepseek(self.s.deepseek_plan_model)
+        return self._planner or self._cloud_model(self.s.cloud_plan_model, "CLOUD_PLAN_MODEL")
 
     def cloud(self, planning: bool) -> Model:
-        return self._cloud or self._deepseek(self.s.deepseek_plan_model if planning else self.s.deepseek_model)
+        if self._cloud:
+            return self._cloud
+        if planning:
+            return self._cloud_model(self.s.cloud_plan_model, "CLOUD_PLAN_MODEL")
+        return self._cloud_model(self.s.cloud_model, "CLOUD_MODEL")
 
     @property
     def cloud_available(self) -> bool:
-        return bool(self._planner or self._cloud or self.s.deepseek_api_key)
+        return bool(self._planner or self._cloud or self.s.cloud_api_key)
 
 
 def build_executor(models: ModelFactory) -> Agent[TaskState, ExecutorOutput]:

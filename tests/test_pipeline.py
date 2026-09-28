@@ -125,9 +125,9 @@ async def test_cloud_failure_falls_back_local(make_agent):
 
 
 async def test_no_api_key_plan_falls_back_local(make_agent):
-    agent = make_agent(FakeJudge(task="planning"), deepseek_api_key="")
+    agent = make_agent(FakeJudge(task="planning"), cloud_api_key="")
     r = await agent.run("Plan and refactor this project")
-    assert r.backend == "ollama" and "DEEPSEEK_API_KEY" in "".join(r.reasons)
+    assert r.backend == "ollama" and "CLOUD_API_KEY" in "".join(r.reasons)
 
 
 async def test_judge_failure_routes_local(make_agent):

@@ -8,7 +8,7 @@ dependencies:
   - pip
   - pip:
       # Pinned versions: the Pydantic AI capability/hook API is still changing, and the company behind Textual has shut down
-      - pydantic-ai-slim[openai]==2.51.0
+      - pydantic-ai-slim[openai,anthropic]==2.51.0
       - openai==3.19.2
       - presidio-analyzer==2.2.364
       - spacy==3.8.16

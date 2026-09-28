@@ -63,7 +63,7 @@ async def run(indices: list[int]) -> None:
     agent = Hermie(s)
     agent.bus.subscribe(printer)
     print(f"Workspace: {s.workspace}\nExecutor/judge model: {s.worker_model} / {s.judge_model}\n"
-          f"DeepSeek: {'configured' if s.deepseek_api_key else 'not configured (cloud routes fall back to local)'}\n")
+          f"Cloud ({s.cloud_label}): {'configured' if s.cloud_api_key else 'not configured (cloud routes fall back to local)'}\n")
     print("Loading privacy detection models...")
     agent.warm_up()
     for i in indices:

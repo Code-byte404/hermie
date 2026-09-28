@@ -7,7 +7,7 @@
 - network: fully offline;
 - open / osascript / security and launching other applications are forbidden (otherwise apps outside the
   sandbox could be used to bypass it);
-- the environment is cleared, keeping only PATH/LANG etc.; DEEPSEEK_API_KEY, SSH_AUTH_SOCK and the like never
+- the environment is cleared, keeping only PATH/LANG etc.; CLOUD_API_KEY, SSH_AUTH_SOCK and the like never
   enter the sandbox.
 
 Threat model: defends against mistakes of the local model and prompt injection, not against malicious programs

@@ -22,7 +22,7 @@ Local models do the work inside a sandbox. The cloud planner only ever sees cert
 Like a hermit crab, Hermie carries its own shell and only pokes its eyes out.
 
 - **Repetitive and simple work stays local.** An Ollama model runs the task with file and shell tools inside a macOS Seatbelt sandbox: write access only to the workspace, no network, no keychain, no `~/.ssh`.
-- **Hard work gets a cloud planner, not a cloud executor.** For tasks that need overall planning, a DeepSeek model writes the plan and delegates steps one by one. It receives the de-identified task and fixed-structure step reports. It never receives file contents, diffs, or the executor's answer.
+- **Hard work gets a cloud planner, not a cloud executor.** For tasks that need overall planning, a cloud model (DeepSeek by default; OpenAI, Anthropic or any OpenAI-compatible endpoint) writes the plan and delegates steps one by one. It receives the de-identified task and fixed-structure step reports. It never receives file contents, diffs, or the executor's answer.
 - **Nothing leaves without a certificate.** Every outbound message passes a three-layer privacy gate (regex recognizers for phones, IDs, cards, secrets; Presidio NER; a local judge model for context). The cloud client only accepts the `CleanText` type that the gate produces. If any layer errors, the text counts as sensitive.
 - **The executor has to prove it.** A local reviewer reads the actual workspace diff before a task is allowed to report done. Failed reviews go back to the executor for a bounded number of fixes.
 - **You can see everything.** The Outbound tab shows every message sent to the cloud, verbatim. The Changes tab shows the diff. Every task is snapshotted first and can be rolled back.
@@ -42,7 +42,7 @@ Routing is a pure function of three parallel signals: the privacy check, three y
 
 - macOS on Apple Silicon. The sandbox is Seatbelt, transcription is mlx-whisper, speech is `say`.
 - [Ollama](https://ollama.com) running locally with an executor model and a judge model pulled. Defaults: `qwen3.8:27b-mlx` as executor and reviewer, `gemma4:12b` as judge. A 32 GB machine runs both; a smaller judge model is the biggest speed win.
-- A DeepSeek API key, only if you want the `cloud` and `plan` routes. Everything else works fully offline.
+- A cloud API key (DeepSeek by default; `CLOUD_PROVIDER` switches to OpenAI, Anthropic or an OpenAI-compatible endpoint), only if you want the `cloud` and `plan` routes. Everything else works fully offline.
 
 ## Install
 
@@ -50,7 +50,7 @@ Routing is a pure function of three parallel signals: the privacy check, three y
 git clone https://github.com/Code-byte404/hermie.git && cd hermie
 conda env create -f environment.yml && conda activate hermie
 python -m spacy download zh_core_web_sm
-cp .env.example .env          # add DEEPSEEK_API_KEY if you want cloud routes; pick your Ollama models
+cp .env.example .env          # add CLOUD_API_KEY if you want cloud routes; pick your Ollama models
 ```
 
 Or with plain pip into any Python 3.12 environment:
@@ -94,7 +94,7 @@ What the gate cannot promise (probabilistic name detection, uncalibrated thresho
 
 ## Status
 
-Alpha. The routing thresholds shipped in `.env.example` are starting points; `evals/` has the tooling to calibrate them on your own requests. The test suite (fake models, real sandbox and detectors) runs with `pytest -q` and needs no Ollama or DeepSeek.
+Alpha. The routing thresholds shipped in `.env.example` are starting points; `evals/` has the tooling to calibrate them on your own requests. The test suite (fake models, real sandbox and detectors) runs with `pytest -q` and needs no Ollama or cloud key.
 
 ## License
 

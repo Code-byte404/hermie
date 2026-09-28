@@ -1,7 +1,7 @@
 """Three gatekeeping capabilities (outbound guard, command guard, taint tracking) + tool budgets, attached to agents as needed.
 
 | Need                                   | Mechanism                        | Attached to      |
-| Last check before sending to DeepSeek  | before_model_request             | planner / cloud  |
+| Last check before sending to the cloud | before_model_request             | planner / cloud  |
 | Command risk rating and approval       | wrap_tool_execute                | executor         |
 | Mark the session when sensitive data is read | after_tool_execute + task state | executor    |
 | Limit the tools visible at each step   | prepare_tools                    | both             |

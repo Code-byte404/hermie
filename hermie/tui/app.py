@@ -178,10 +178,10 @@ class ModelScreen(ModalScreen[Optional[dict]]):
             yield Select(opts, value=self.s.worker_model, allow_blank=False, id="cfg-worker")
             yield Label("Local judge model (Ollama)")
             yield Select(opts, value=self.s.judge_model, allow_blank=False, id="cfg-judge")
-            yield Label("Cloud direct model (DeepSeek)")
-            yield Input(self.s.deepseek_model, id="cfg-cloud")
-            yield Label("Cloud planner model (DeepSeek)")
-            yield Input(self.s.deepseek_plan_model, id="cfg-plan")
+            yield Label(f"Cloud direct model ({self.s.cloud_label})")
+            yield Input(self.s.cloud_model, id="cfg-cloud")
+            yield Label(f"Cloud planner model ({self.s.cloud_label})")
+            yield Input(self.s.cloud_plan_model, id="cfg-plan")
             yield Label("", id="config-error")
             with Horizontal(classes="config-buttons"):
                 yield Button("Save (Enter)", id="save", variant="primary")
@@ -342,8 +342,8 @@ class HermieApp(App):
         self.query_one("#input").focus()
         if self.settings.mode is RunMode.NO_SANDBOX:
             self._notice("error", "No-sandbox mode: the executor can access the network and read/write the whole disk. The privacy gate is still on.")
-        if not self.settings.deepseek_api_key:
-            self._notice("warn", "DEEPSEEK_API_KEY not set: plan mode and cloud direct will fall back to local execution.")
+        if not self.settings.cloud_api_key:
+            self._notice("warn", "CLOUD_API_KEY not set: plan mode and cloud direct will fall back to local execution.")
         self._warm_up()
 
     @work(thread=True, exclusive=True, group="warmup")
@@ -381,7 +381,7 @@ class HermieApp(App):
         c, l = st["cloud"], st["local"]
         runs = ", ".join(f"{k}×{v}" for k, v in st["runs"].items()) or "0"
         active = f" (running {len(st['active'])}: {', '.join(st['active'])})" if st["active"] else ""
-        line2 = (f" ☁ {s.deepseek_plan_model if s.deepseek_api_key else 'not configured'}: {c['requests']} req "
+        line2 = (f" ☁ {s.cloud_plan_model if s.cloud_api_key else 'not configured'}: {c['requests']} req "
                  f"in {_k(c['input_tokens'])} out {_k(c['output_tokens'])} │ "
                  f"🔒 {s.worker_model}: {l['requests']} req in {_k(l['input_tokens'])} out {_k(l['output_tokens'])}"
                  f" (incl. judge {st['judge_requests']}) │ 🌐 search {st['web']['search']} fetch {st['web']['fetch']} │ "
@@ -812,7 +812,7 @@ class HermieApp(App):
         elif cmd == "/usage":
             st = self.agent.session.stats.snapshot()
             c, l = st["cloud"], st["local"]
-            rows = [f"| ☁ DeepSeek (billed) | {c['requests']} | {c['input_tokens']:,} | {c['output_tokens']:,} |",
+            rows = [f"| ☁ {self.settings.cloud_label} (billed) | {c['requests']} | {c['input_tokens']:,} | {c['output_tokens']:,} |",
                     f"| 🔒 Ollama (local, incl. {st['judge_requests']} judge requests) | {l['requests']} | "
                     f"{l['input_tokens']:,} | {l['output_tokens']:,} |"]
             runs = "\n".join(f"- {k}: {v}" for k, v in st["runs"].items()) or "- no agent has run yet"
@@ -942,7 +942,7 @@ class HermieApp(App):
         if ev.role == "planner" and ev.streaming:
             if self._stream is None:
                 self._stream_md = Markdown("", classes="msg planner")
-                self._stream_md.border_title = "☁ Planner (DeepSeek)"
+                self._stream_md.border_title = f"☁ Planner ({self.settings.cloud_label})"
                 await self.query_one("#chat").mount(self._stream_md)
                 self._stream = Markdown.get_stream(self._stream_md)
                 self._stream_buf = ""
@@ -979,7 +979,8 @@ class HermieApp(App):
         self._stream, self._stream_md, self._stream_buf = None, None, ""
 
     def _chat_md(self, role: str, text: str) -> None:
-        titles = {"executor": "🔒 Local executor", "planner": "☁ Planner (DeepSeek)", "report": "", "system": "ℹ"}
+        titles = {"executor": "🔒 Local executor", "planner": f"☁ Planner ({self.settings.cloud_label})", "report": "",
+                  "system": "ℹ"}
         md = Markdown(text, classes=f"msg {role}")
         if titles.get(role):
             md.border_title = titles[role]

@@ -19,7 +19,7 @@ COMMANDS: list[Command] = [
     Command("/cloud", "/cloud TASK", "Force cloud (still goes through the privacy gate)", True),
     Command("/model", "/model [list | local|judge|cloud|plan NAME]", "Show / switch local and remote models; changes are written to .env", True),
     Command("/voice", "/voice [on|off|list|test|key KEY|VOICE]", "Speech output toggle, voice, record key; changes are written to .env", True),
-    Command("/outbound", "/outbound", "Show the outbound log (the exact text sent to DeepSeek each time)"),
+    Command("/outbound", "/outbound", "Show the outbound log (the exact text sent to the cloud model each time)"),
     Command("/rollback", "/rollback [SNAPSHOT_ID]", "Roll back to a pre-task snapshot (default: the latest one)", True),
     Command("/snapshots", "/snapshots [prune N]", "List snapshots / keep only the latest N", True),
     Command("/perf", "/perf", "Show performance monitoring (CPU / GPU / memory usage graphs)"),

@@ -10,7 +10,7 @@ Everything past the quickstart: the UI, the project doc, the self-verification l
 
 The left pane shows the route decision, its signals and the planner's plan. The middle pane is the conversation. The right pane has four tabs: **Log** (snapshots and events), **Outbound** (every message sent to the cloud, verbatim), **Changes** (the workspace diff since the task started), **Perf** (CPU, memory, GPU).
 
-`/model` opens the model dialog: local executor and judge are picked from the models already pulled in Ollama, the two cloud models are typed in. Saving applies from the next task and writes back to `.env`. Text forms work too: `/model list`, `/model local|judge|cloud|plan NAME`.
+`/model` opens the model dialog: local executor and judge are picked from the models already pulled in Ollama, the two cloud models are typed in. The cloud provider itself is set in `.env`: `CLOUD_PROVIDER` is `deepseek` (default), `openai`, `anthropic` (`pip install 'hermie[anthropic]'`) or `openai-compatible` with `CLOUD_BASE_URL` pointing at the endpoint (OpenRouter, Moonshot, Qwen, Gemini's compatible endpoint ...); `CLOUD_API_KEY`, `CLOUD_MODEL` and `CLOUD_PLAN_MODEL` apply to whichever provider is chosen, and the outbound gate is the same for all of them. Saving applies from the next task and writes back to `.env`. Text forms work too: `/model list`, `/model local|judge|cloud|plan NAME`.
 
 `/rollback` with no argument returns the workspace to the state before the last task. `/snapshots prune [N]` cleans up old snapshots.
 
@@ -78,8 +78,8 @@ The home directory and `/` are refused as workspaces. Keep the workspace outside
 python examples/privacy_gate_demo.py           # privacy gate, rules layer only, a few seconds
 python examples/privacy_gate_demo.py --judge   # plus the local judge model's contextual check
 python examples/run_scenarios.py --list        # six typical scenarios
-python examples/run_scenarios.py 1 2 3         # local-only scenarios (no DeepSeek needed)
-python examples/run_scenarios.py 4 5 6         # cloud direct / plan mode (needs DEEPSEEK_API_KEY)
+python examples/run_scenarios.py 1 2 3         # local-only scenarios (no cloud key needed)
+python examples/run_scenarios.py 4 5 6         # cloud direct / plan mode (needs CLOUD_API_KEY)
 ```
 
 The scenarios run in auto mode inside `~/HermieWork/demo` (created automatically, all fictional data). Afterwards look at:
@@ -93,7 +93,7 @@ The scenarios run in auto mode inside `~/HermieWork/demo` (created automatically
 ## Tests
 
 ```bash
-pytest -q                                        # fake models, no Ollama or DeepSeek needed
+pytest -q                                        # fake models, no Ollama or cloud key needed
 pytest -q tests/test_pipeline.py -k plan_mode    # only the plan-mode data-flow tests
 ```
 

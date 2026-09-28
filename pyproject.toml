@@ -9,7 +9,7 @@ description = "Local-first coding and document agent for macOS: local models do 
 readme = "README.md"
 license = { file = "LICENSE" }
 requires-python = ">=3.12"
-keywords = ["agent", "local-first", "privacy", "ollama", "deepseek", "sandbox", "macos"]
+keywords = ["agent", "local-first", "privacy", "ollama", "deepseek", "anthropic", "openai", "sandbox", "macos"]
 classifiers = [
   "Development Status :: 3 - Alpha",
   "Environment :: Console",
@@ -40,10 +40,12 @@ dependencies = [
 [project.optional-dependencies]
 # RouteLLM BERT router (ROUTELLM_ENABLED); about 400 MB of weights on first use
 router = ["torch==2.14.0", "transformers==5.17.0"]
+# CLOUD_PROVIDER=anthropic (DeepSeek, OpenAI and OpenAI-compatible endpoints need nothing extra)
+anthropic = ["pydantic-ai-slim[anthropic]==2.51.0"]
 # Voice input/output: sounddevice recording, mlx-whisper local transcription (Apple Silicon)
 voice = ["sounddevice==0.5.6", "mlx-whisper==0.4.3"]
 test = ["pytest==9.1.1", "pytest-asyncio==1.4.0"]
-all = ["hermie[router,voice,test]"]
+all = ["hermie[router,voice,anthropic,test]"]
 
 [project.urls]
 Homepage = "https://github.com/Code-byte404/hermie"

@@ -66,7 +66,7 @@ ABSTRACT_PROMPT = (
 class TaskResult:
     output: str
     route: str
-    backend: str   # ollama / deepseek / deepseek-plan+ollama
+    backend: str   # ollama / <cloud provider> / <cloud provider>-plan+ollama
     reasons: list[str] = field(default_factory=list)
     signals: dict = field(default_factory=dict)
     outbound_count: int = 0
@@ -125,7 +125,7 @@ class Hermie:
     def set_models(self, *, worker: Optional[str] = None, judge: Optional[str] = None,
                    cloud: Optional[str] = None, plan: Optional[str] = None) -> dict[str, str]:
         """Switch models; takes effect for the next task. The executor agent is built by model name at startup, so
-        changing the worker rebuilds it; the judge reads the config on every request; the DeepSeek agents are rebuilt
+        changing the worker rebuilds it; the judge reads the config on every request; the cloud agents are rebuilt
         per task. Returns what actually changed."""
         s, changed = self.s, {}
         if worker and worker != s.worker_model:
@@ -135,12 +135,12 @@ class Hermie:
         if judge and judge != s.judge_model:
             s.judge_model = judge
             changed["JUDGE_MODEL"] = judge
-        if cloud and cloud != s.deepseek_model:
-            s.deepseek_model = cloud
-            changed["DEEPSEEK_MODEL"] = cloud
-        if plan and plan != s.deepseek_plan_model:
-            s.deepseek_plan_model = plan
-            changed["DEEPSEEK_PLAN_MODEL"] = plan
+        if cloud and cloud != s.cloud_model:
+            s.cloud_model = cloud
+            changed["CLOUD_MODEL"] = cloud
+        if plan and plan != s.cloud_plan_model:
+            s.cloud_plan_model = plan
+            changed["CLOUD_PLAN_MODEL"] = plan
         return changed
 
     def list_local_models(self) -> list[str]:
@@ -397,14 +397,14 @@ class Hermie:
             agent = build_cloud_agent(self.models, planning)
             res = await agent.run(require_clean(clean), deps=st, event_stream_handler=stream_handler("planner", self.bus))
         except Exception as e:  # includes OutboundBlockedError, network errors, missing API key
-            log.exception("DeepSeek call failed")
-            return await self._fallback_local(st, routing, f"DeepSeek unavailable, falling back to local: {e}")
+            log.exception("Cloud model call failed")
+            return await self._fallback_local(st, routing, f"{self.s.cloud_label} unavailable, falling back to local: {e}")
         self.bus.emit(ChatMessage("planner", res.output))
-        return TaskResult(res.output, Route.CLOUD.value, "deepseek")
+        return TaskResult(res.output, Route.CLOUD.value, self.s.cloud_provider)
 
     async def _plan(self, st: TaskState, routing: Routing, take_snapshot: bool = True) -> TaskResult:
         if not self.models.cloud_available:
-            return await self._fallback_local(st, routing, "DEEPSEEK_API_KEY not set; plan mode runs fully local")
+            return await self._fallback_local(st, routing, "CLOUD_API_KEY not set; plan mode runs fully local")
         snap = self._snapshot(st) if take_snapshot else None
         st.snapshot_id = st.snapshot_id or snap
         notes: list[str] = []
@@ -430,7 +430,7 @@ class Hermie:
             st.report_for_cloud = False
             if st.answers:  # the executor already did part of the work: keep the results, do not rerun
                 notes.append(f"Planner failed midway ({e}); keeping the finished local results")
-                return TaskResult(self._local_output(st), Route.PLAN.value, "deepseek-plan+ollama", notes,
+                return TaskResult(self._local_output(st), Route.PLAN.value, f"{self.s.cloud_provider}-plan+ollama", notes,
                                   snapshot_id=snap, report=st.last_report, artifacts=st.artifacts)
             r = await self._local(st, routing, notes + [f"Planner unavailable; running fully local: {e}"])
             r.snapshot_id = r.snapshot_id or snap
@@ -439,7 +439,7 @@ class Hermie:
         self.bus.emit(ChatMessage("planner", summary))
         output = summary + ("\n\n---\nLocal execution result:\n" + self._local_output(st)
                             if st.answers or st.artifacts else "")
-        return TaskResult(output, Route.PLAN.value, "deepseek-plan+ollama", notes, snapshot_id=snap,
+        return TaskResult(output, Route.PLAN.value, f"{self.s.cloud_provider}-plan+ollama", notes, snapshot_id=snap,
                           report=st.last_report, artifacts=st.artifacts)
 
     async def _delegated_step(self, st: TaskState, local_step: str,

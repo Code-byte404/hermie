@@ -125,7 +125,7 @@ def analyzer():
 @pytest.fixture
 def settings(tmp_path):
     return Settings(workspace=tmp_path / "ws", data_dir=tmp_path / "data", judge_samples=1,
-                    deepseek_api_key="test-key", mode=RunMode.AUTO, routellm_enabled=False,
+                    cloud_api_key="test-key", mode=RunMode.AUTO, routellm_enabled=False,
                     stuck_check_every=0, env_path=tmp_path / ".env",
                     # the self-verification loop is off by default; the relevant tests enable it explicitly
                     verify_required=False, verify_rounds=0, recon_enabled=False, lessons_enabled=False)
@@ -142,7 +142,7 @@ def make_agent(settings, analyzer):
                               cloud=cloud.model if cloud else None,
                               compressor=compressor.model if compressor else None,
                               reviewer=reviewer.model if reviewer else None)
-        if not settings.deepseek_api_key:
+        if not settings.cloud_api_key:
             models._planner = models._cloud = None
         agent = Hermie(settings, judge=judge or FakeJudge(), analyzer=analyzer, scorer=False, models=models)
         events = []

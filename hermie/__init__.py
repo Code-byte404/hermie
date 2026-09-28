@@ -1,4 +1,4 @@
-"""Local-first hybrid agent framework: Ollama local execution + DeepSeek planning, privacy gate + Seatbelt sandbox."""
+"""Local-first hybrid agent framework: Ollama local execution + cloud planning (DeepSeek, OpenAI, Anthropic or any OpenAI-compatible endpoint), privacy gate + Seatbelt sandbox."""
 from .config import RunMode, Settings
 
 __all__ = ["RunMode", "Settings", "Hermie", "TaskResult"]

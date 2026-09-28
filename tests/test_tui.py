@@ -364,7 +364,7 @@ async def test_model_command_switches_and_writes_env(make_agent, settings):
         await _submit(pilot, "Do something")
         await _wait_idle(pilot, app)
     env = settings.env_path.read_text()
-    assert env.startswith("# x\nWORKER_MODEL=qwen3:8b\n") and "DEEPSEEK_MODEL=deepseek-v4-flash-lite" in env
+    assert env.startswith("# x\nWORKER_MODEL=qwen3:8b\n") and "CLOUD_MODEL=deepseek-v4-flash-lite" in env
     assert "JUDGE_MODEL=nothere:1b" in env
 
 
@@ -397,7 +397,7 @@ async def test_configured_voice_key_bound_on_start(make_agent, settings):
 
 # ---------------- Config dialogs: /model and /voice open a dialog directly; saving applies immediately and writes .env
 
-from textual.widgets import Input, Select, Switch
+from textual.widgets import Input, Label, Select, Switch
 
 
 async def _wait_screen(pilot, app, cls, timeout=3):
@@ -421,9 +421,9 @@ async def test_model_dialog_saves_and_writes_env(make_agent, settings):
         await pilot.click("#save")
         await pilot.pause(0.2)
         assert not isinstance(app.screen, ModelScreen)
-        assert agent.s.worker_model == "qwen3:8b" and agent.s.deepseek_plan_model == "deepseek-v4-pro-max"
+        assert agent.s.worker_model == "qwen3:8b" and agent.s.cloud_plan_model == "deepseek-v4-pro-max"
         env = settings.env_path.read_text()
-        assert "WORKER_MODEL=qwen3:8b" in env and "DEEPSEEK_PLAN_MODEL=deepseek-v4-pro-max" in env
+        assert "WORKER_MODEL=qwen3:8b" in env and "CLOUD_PLAN_MODEL=deepseek-v4-pro-max" in env
         assert "JUDGE_MODEL" not in env                       # unchanged values are not written
         await _submit(pilot, "/model")
         scr = await _wait_screen(pilot, app, ModelScreen)
@@ -433,7 +433,7 @@ async def test_model_dialog_saves_and_writes_env(make_agent, settings):
         assert isinstance(app.screen, ModelScreen) and "cannot be empty" in str(scr.query_one("#config-error").render())
         await pilot.press("escape")
         await pilot.pause(0.1)
-        assert not isinstance(app.screen, ModelScreen) and agent.s.deepseek_model == "deepseek-v4-flash"
+        assert not isinstance(app.screen, ModelScreen) and agent.s.cloud_model == "deepseek-v4-flash"
 
 
 async def test_voice_dialog_saves_preview_and_validates(make_agent, settings):
@@ -514,3 +514,14 @@ async def test_submitting_with_attachment_feeds_content_to_executor(make_agent, 
         assert "ACME,100" in ex.sent_text() and f"[File: {f}]" in ex.sent_text()
         assert any("data.csv" in t for who, t in app.transcript if who == "You")
         assert not app.query_one("#attachments", Static).display
+
+
+async def test_model_dialog_labels_show_cloud_provider(make_agent):
+    agent = make_agent(FakeJudge(), cloud_provider="anthropic")
+    agent.list_local_models = lambda: []
+    app = HermieApp(agent=agent)
+    async with app.run_test(size=(160, 45)) as pilot:
+        await _submit(pilot, "/model")
+        scr = await _wait_screen(pilot, app, ModelScreen)
+        labels = [str(lbl.render()) for lbl in scr.query(Label)]
+        assert any("Anthropic" in lbl for lbl in labels) and not any("DeepSeek" in lbl for lbl in labels)

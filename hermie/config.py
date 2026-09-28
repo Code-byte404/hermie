@@ -48,6 +48,13 @@ class RunMode(str, Enum):
         return {"default": "default mode", "auto": "auto mode", "no_sandbox": "no-sandbox mode"}[self.value]
 
 
+CLOUD_PROVIDERS = {"deepseek": "DeepSeek", "openai": "OpenAI", "anthropic": "Anthropic",
+                   "openai-compatible": "OpenAI-compatible"}
+# (cloud direct model, planner model) when CLOUD_MODEL / CLOUD_PLAN_MODEL are not set; other providers must set them
+CLOUD_DEFAULT_MODELS = {"deepseek": ("deepseek-v4-flash", "deepseek-v4-pro"),
+                        "anthropic": ("claude-sonnet-5", "claude-opus-5-5")}
+
+
 @dataclass
 class Settings:
     # ---- Ollama (executor + judge model) ----
@@ -71,10 +78,14 @@ class Settings:
     # Whether the executor runs in thinking mode (more accurate but slower)
     worker_thinking: bool = field(default_factory=lambda: _env_bool("WORKER_THINKING", False))
 
-    # ---- DeepSeek (receives CleanText only) ----
-    deepseek_api_key: str = field(default_factory=lambda: _env("DEEPSEEK_API_KEY", ""))
-    deepseek_model: str = field(default_factory=lambda: _env("DEEPSEEK_MODEL", "deepseek-v4-flash"))
-    deepseek_plan_model: str = field(default_factory=lambda: _env("DEEPSEEK_PLAN_MODEL", "deepseek-v4-pro"))
+    # ---- Cloud model (planner + cloud direct; receives CleanText only) ----
+    # deepseek (default) / openai / anthropic / openai-compatible (any OpenAI-style endpoint via CLOUD_BASE_URL:
+    # OpenRouter, Moonshot, Qwen, Gemini's compatible endpoint, ...). The legacy DEEPSEEK_* variables still work.
+    cloud_provider: str = field(default_factory=lambda: _env("CLOUD_PROVIDER", "deepseek").strip().lower())
+    cloud_api_key: str = field(default_factory=lambda: _env("CLOUD_API_KEY", "") or _env("DEEPSEEK_API_KEY", ""))
+    cloud_base_url: str = field(default_factory=lambda: _env("CLOUD_BASE_URL", "").strip())
+    cloud_model: str = field(default_factory=lambda: _env("CLOUD_MODEL", "") or _env("DEEPSEEK_MODEL", ""))
+    cloud_plan_model: str = field(default_factory=lambda: _env("CLOUD_PLAN_MODEL", "") or _env("DEEPSEEK_PLAN_MODEL", ""))
 
     # ---- Controlled web access (runs in the main process; the sandbox itself stays offline) ----
     web_enabled: bool = field(default_factory=lambda: _env_bool("WEB_ENABLED", True))
@@ -158,6 +169,21 @@ class Settings:
     @property
     def audit_log_path(self) -> Path:
         return self.data_dir / "audit.jsonl"
+    def __post_init__(self) -> None:
+        if self.cloud_provider not in CLOUD_PROVIDERS:
+            raise ValueError(f"CLOUD_PROVIDER must be one of {', '.join(CLOUD_PROVIDERS)}, not {self.cloud_provider!r}")
+        default_model, default_plan = CLOUD_DEFAULT_MODELS.get(self.cloud_provider, ("", ""))
+        self.cloud_model = self.cloud_model or default_model
+        self.cloud_plan_model = self.cloud_plan_model or default_plan
+
+    @property
+    def cloud_label(self) -> str:
+        """How the cloud side is named in the UI: the provider, or the host for an OpenAI-compatible endpoint."""
+        if self.cloud_provider == "openai-compatible":
+            from urllib.parse import urlparse
+            return urlparse(self.cloud_base_url).hostname or "OpenAI-compatible"
+        return CLOUD_PROVIDERS[self.cloud_provider]
+
 
     @property
     def outbound_log_path(self) -> Path:

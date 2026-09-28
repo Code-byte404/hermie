@@ -12,8 +12,8 @@ from .judge import ChoiceAnswer, ScoreAnswer
 class Route(str, Enum):
     LOCAL = "local"                # local only: just the executor
     LOCAL_VERIFY = "local_verify"  # local + self-check: escalate if the self-check fails (no private data only)
-    PLAN = "plan"                  # plan mode: DeepSeek planner + local executor; only redacted text and reports go out
-    CLOUD = "cloud"                # no private data, no local files needed: DeepSeek answers directly
+    PLAN = "plan"                  # plan mode: cloud planner + local executor; only redacted text and reports go out
+    CLOUD = "cloud"                # no private data, no local files needed: the cloud model answers directly
 
     @property
     def label(self) -> str:
@@ -114,7 +114,7 @@ def decide(sig: Signals, s: Settings, force: Force = Force.NONE) -> Decision:
     if wants_cloud is True:
         if sig.needs_workspace:
             return Decision(Route.PLAN, reasons + ["needs local file operations: planner + local executor"])
-        return Decision(Route.CLOUD, reasons + ["no local operations needed: DeepSeek completes it directly"])
+        return Decision(Route.CLOUD, reasons + ["no local operations needed: the cloud model completes it directly"])
     if wants_cloud is False:
         return Decision(Route.LOCAL, reasons)
     return Decision(Route.LOCAL_VERIFY, reasons + ["local first; escalate if the self-check fails"])
