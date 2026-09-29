@@ -23,6 +23,7 @@ from textual import on, work
 from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical, VerticalScroll
+from textual.css.query import NoMatches
 from textual.message import Message
 from textual.screen import ModalScreen
 from textual.widgets import (Button, Input, Label, Markdown, OptionList, RichLog, Select, Static, Switch, TabbedContent,
@@ -1047,4 +1048,8 @@ class HermieApp(App):
             s = await asyncio.to_thread(self.perf.sample)
         except Exception:   # a failed sample only affects this tab, not the task
             return
-        self.query_one(PerfPanel).show(s, self.perf.cpu_history, self.perf.gpu_history)
+        # The sample takes a thread hop; by the time it returns the panel may be mid-mount or the app tearing down.
+        try:
+            self.query_one(PerfPanel).show(s, self.perf.cpu_history, self.perf.gpu_history)
+        except NoMatches:
+            pass
