@@ -19,10 +19,10 @@ jobs:
           cache: pip
 
       - name: Install
-        # The voice and RouteLLM extras are not needed by the test suite (models are faked, imports are lazy).
+        # The anthropic extra is small and covers CLOUD_PROVIDER=anthropic; the voice and RouteLLM extras are not needed by the test suite (models are faked, imports are lazy).
         run: |
           python -m pip install --upgrade pip
-          pip install -e ".[test]"
+          pip install -e ".[test,anthropic]"
           python -m spacy download zh_core_web_sm
 
       - name: Test

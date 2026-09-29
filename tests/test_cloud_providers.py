@@ -39,6 +39,7 @@ def test_openai_compatible_needs_base_url():
 
 
 def test_anthropic_provider():
+    pytest.importorskip("anthropic", reason="optional extra: pip install 'hermie[anthropic]'")
     m = ModelFactory(_settings(cloud_provider="anthropic", cloud_plan_model="claude-opus-5-5"))
     model = m.planner()
     assert model.system == "anthropic" and model.model_name == "claude-opus-5-5"
