@@ -13,6 +13,7 @@ import json
 import logging
 import sys
 from pathlib import Path
+from typing import Sequence
 
 from .attachments import load_material
 from .config import RunMode, Settings
@@ -49,7 +50,7 @@ def read_material(path: Path, s: Settings) -> str:
     if not path.exists():
         raise SystemExit(f"✖ Material not found: {path}")
     m = load_material([path], max_file_chars=s.attach_max_file_chars, max_total_chars=s.attach_max_total_chars,
-                      deny_names=s.sandbox_deny_names)
+                      deny_names=s.sandbox_deny_names, workspace=s.workspace)
     for n in m.notes:
         print(f"⚠ Attachment: {n}", file=sys.stderr)
     return m.text
@@ -114,8 +115,10 @@ def main(argv: list[str] | None = None) -> None:
     if args.json:
         if not args.task:
             _parser().error("--json requires a task description")
-        material = read_material(Path(args.material).expanduser(), s) if args.material else ""
-        asyncio.run(_headless(s, args.task, material, Force(args.force) if args.force else Force.NONE))
+        path = Path(args.material).expanduser() if args.material else None
+        material = read_material(path, s) if path else ""
+        asyncio.run(_headless(s, args.task, material, Force(args.force) if args.force else Force.NONE,
+                              [path] if material else []))
         return
 
     from .core import Hermie
@@ -131,7 +134,7 @@ def main(argv: list[str] | None = None) -> None:
     HermieApp(s, agent=agent).run()
 
 
-async def _headless(s: Settings, task: str, material: str, force: Force) -> None:
+async def _headless(s: Settings, task: str, material: str, force: Force, read_roots: Sequence[Path] = ()) -> None:
     from .core import Hermie
 
     agent = Hermie(s)
@@ -150,7 +153,7 @@ async def _headless(s: Settings, task: str, material: str, force: Force) -> None
         return Approval.DENY
 
     agent.bus.approver = approver
-    result = await agent.run(task, material, force)
+    result = await agent.run(task, material, force, read_roots=read_roots)
     await agent.learning_idle()  # finish post-task learning (lessons, skills) before the process exits
     print(json.dumps({"event": "Result", **result.to_dict(), "stats": agent.session.stats.snapshot()},
                      ensure_ascii=False, default=str), flush=True)

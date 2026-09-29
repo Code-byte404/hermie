@@ -19,7 +19,7 @@ from typing import Optional
 from rich.markup import escape
 from rich.syntax import Syntax
 from rich.text import Text
-from textual import on, work
+from textual import events, on, work
 from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical, VerticalScroll
@@ -33,7 +33,7 @@ from textual.widgets.option_list import Option
 from ..attachments import Material, find_paths, human_size, load_material
 from ..config import RunMode, Settings, update_env
 from ..perf import PerfSample, PerfSampler, render_graph
-from .commands import filter_commands, find_command, help_markdown
+from .commands import filter_commands, find_command, help_markdown, is_command
 from ..voice import Recorder, Speaker, Transcriber, VoiceUnavailable, is_blank_transcript, phrase_for
 from ..events import (Approval, ApprovalRequest, ChatMessage, CommandFinished, CommandStarted, Event, InputRequest, Notice,
                       OutboundBlocked, OutboundSent, PlanUpdated, ReportArrived, ReviewArrived, RouteDecided,
@@ -126,6 +126,19 @@ class PromptInput(TextArea):
             self.insert("\n")
             return
         await super()._on_key(event)
+
+    async def _on_paste(self, event: events.Paste) -> None:
+        # A dragged file arrives as a paste of its path; keep it apart from a word typed right before it.
+        event.prevent_default()   # replaces TextArea._on_paste, which would insert the text a second time
+        text = event.text
+        if text.startswith(("/", "~", "'", '"')):
+            before = self.document.get_text_range((0, 0), self.cursor_location)
+            if before and not before[-1].isspace():
+                text = " " + text
+        if result := self._replace_via_keyboard(text, *self.selection):
+            self.move_cursor(result.end_location)
+        self.focus()
+        event.stop()   # handled; don't let it bubble to HermieApp.on_paste
 
 
 class ApprovalScreen(ModalScreen[Approval]):
@@ -441,6 +454,18 @@ class HermieApp(App):
         self._update_attachments()
 
     # ------------------------------------------------------------ attachments (paths dropped into the input box)
+    def on_paste(self, event: events.Paste) -> None:
+        """Textual delivers a paste (and a file dragged onto the terminal) to the focused widget only, so after a
+        click on the chat or a log pane a dropped path would vanish; send it to the input box instead.
+        Pastes the input box or a dialog's Input handled are stopped there and never reach this."""
+        if isinstance(self.screen, ModalScreen) or not event.text:
+            return
+        event.stop()
+        inp = self.query_one("#input", PromptInput)
+        inp.focus()
+        inp.move_cursor(inp.document.end)
+        inp.post_message(events.Paste(event.text))
+
     def _update_attachments(self) -> None:
         """A dragged file arrives as its path text; show what would be attached so the user sees it before sending."""
         strip = self.query_one("#attachments", Static)
@@ -468,7 +493,7 @@ class HermieApp(App):
             return Material()
         s = self.settings
         return load_material(paths, max_file_chars=s.attach_max_file_chars, max_total_chars=s.attach_max_total_chars,
-                             deny_names=s.sandbox_deny_names)
+                             deny_names=s.sandbox_deny_names, workspace=s.workspace)
 
     def _skills_cmd(self, arg: str) -> None:
         store = self.agent.session.skills
@@ -593,7 +618,7 @@ class HermieApp(App):
         self.query_one("#cmd-popup", OptionList).display = False
         self._popup_ids = ()
         value = ev.value
-        if value.startswith("/"):
+        if is_command(value):
             self._slash(value)
             return
         self._start_task(value, Force.NONE)
@@ -615,7 +640,7 @@ class HermieApp(App):
             for n in m.notes:
                 self._notice("warn", f"Attachment: {n}")
             self._pending_attachments = m.summary
-            await self.agent.run(task, m.text, force=force)
+            await self.agent.run(task, m.text, force=force, read_roots=m.roots)
         except asyncio.CancelledError:
             self.agent.cancel_running()
             self._notice("warn", "Interrupted. Add instructions to continue.", announce=True)

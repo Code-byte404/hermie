@@ -277,3 +277,51 @@ async def test_waiting_for_the_user_does_not_count_toward_timeout(isb):
 
 async def test_stdin_data_path_still_works(isb):
     assert (await isb.fs("write", path="x.txt", content="hi"))["bytes"] == 2
+
+
+@pytest.fixture
+def attached_dir():
+    # Under the home dir: tmp_path is in the per-user temp dir, which the sandbox can read and write anyway
+    d = Path.home() / ".hermie_attach_test"
+    import shutil
+    shutil.rmtree(d, ignore_errors=True)
+    (d / "src").mkdir(parents=True)
+    (d / "src" / "main.py").write_text("print('attached')")
+    (d / ".env").write_text("TOKEN=abc")
+    (d / "id_rsa").write_text("KEY")
+    yield d
+    shutil.rmtree(d, ignore_errors=True)
+
+
+async def test_attached_dir_is_readable_only_during_the_grant(sb, attached_dir):
+    main = attached_dir / "src" / "main.py"
+    assert (await sb.run_shell(f"cat {main}")).exit_code != 0
+    assert "error" in await sb.fs("read", path=str(main))
+    with sb.grant_read([attached_dir]) as granted:
+        assert granted == (attached_dir.resolve(),)
+        r = await sb.run_shell(f"cat {main}")
+        assert r.exit_code == 0 and "attached" in r.stdout
+        assert (await sb.fs("read", path=str(main)))["content"] == "print('attached')"
+        listed = [f["path"] for f in (await sb.fs("list", path=str(attached_dir)))["files"]]
+        assert str(main) in listed
+        # read-only: no writes, and credential / .env files stay unreadable
+        assert (await sb.run_shell(f"echo x > {attached_dir / 'new.txt'}")).exit_code != 0
+        assert "error" in await sb.fs("write", path=str(attached_dir / "new.txt"), content="x")
+        assert "error" in await sb.fs("edit", path=str(main), old="attached", new="changed")
+        assert not (attached_dir / "new.txt").exists() and "attached" in main.read_text()
+        for secret in (".env", "id_rsa"):
+            assert (await sb.run_shell(f"cat {attached_dir / secret}")).exit_code != 0, secret
+        # a sibling of the attached dir is not covered
+        assert (await sb.run_shell(f"ls {Path.home() / 'Documents'}")).exit_code != 0
+    assert (await sb.run_shell(f"cat {main}")).exit_code != 0
+    assert "error" in await sb.fs("read", path=str(main))
+
+
+def test_grant_read_refuses_broad_or_secret_paths(sb, attached_dir):
+    home = Path.home()
+    refused = [Path("/"), home, home.parent, sb.workspace, attached_dir / "id_rsa", attached_dir / ".env",
+               attached_dir / "missing"]
+    assert not any(sb.grantable(p) for p in refused)
+    with sb.grant_read(refused) as granted:
+        assert granted == ()
+    assert sb.grantable(attached_dir) and sb.grantable(attached_dir / "src" / "main.py")

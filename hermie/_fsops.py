@@ -19,8 +19,22 @@ def _resolve(root, path):
     return p
 
 
+def _resolve_read(a, path):
+    """Like _resolve, but also accepts a path inside a file or directory the user attached to the task
+    (read_roots, read-only: only op_read and op_list use this)."""
+    try:
+        return _resolve(a["root"], path)
+    except PermissionError:
+        p = os.path.realpath(os.path.join(a["root"], path))
+        for r in a.get("read_roots", ()):
+            r = os.path.realpath(r)
+            if os.path.commonpath([r, p]) == r:
+                return p
+        raise
+
+
 def op_read(a):
-    p = _resolve(a["root"], a["path"])
+    p = _resolve_read(a, a["path"])
     with open(p, "r", encoding="utf-8", errors="replace") as f:
         data = f.read()
     start = max(0, int(a.get("offset", 0)))
@@ -51,7 +65,9 @@ def op_edit(a):
 
 
 def op_list(a):
-    base = _resolve(a["root"], a.get("path", "."))
+    base = _resolve_read(a, a.get("path", "."))
+    root_real = os.path.realpath(a["root"])
+    inside = os.path.commonpath([root_real, base]) == root_real   # else an attached directory: show absolute paths
     depth = int(a.get("depth", 2))
     out = []
     base_depth = base.rstrip(os.sep).count(os.sep)
@@ -60,7 +76,7 @@ def op_list(a):
         level = dirpath.count(os.sep) - base_depth
         if level >= depth:
             dirnames[:] = []
-        rel = os.path.relpath(dirpath, a["root"])
+        rel = os.path.relpath(dirpath, root_real) if inside else dirpath
         for fn in sorted(filenames):
             fp = os.path.join(dirpath, fn)
             try:

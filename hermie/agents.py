@@ -236,7 +236,8 @@ async def _fs_tool(st: TaskState, tool: str, summary: str, op: str, **args) -> s
 
 
 async def read_file(ctx: RunContext[TaskState], path: str, offset: int = 0) -> str:
-    """Read a text file inside the workspace (relative path). Use offset to read long files in chunks."""
+    """Read a text file inside the workspace (relative path), or inside a file or directory the user attached to
+    the task (absolute path, read-only). Use offset to read long files in chunks."""
     return await _fs_tool(ctx.deps, "read_file", path, "read", path=path, offset=offset,
                           max_chars=ctx.deps.s.tool_output_max_chars)
 
@@ -252,7 +253,7 @@ async def edit_file(ctx: RunContext[TaskState], path: str, old: str, new: str) -
 
 
 async def list_files(ctx: RunContext[TaskState], path: str = ".", depth: int = 2) -> str:
-    """List the files inside the workspace with their sizes."""
+    """List the files inside the workspace with their sizes (or inside an attached directory: absolute path)."""
     return await _fs_tool(ctx.deps, "list_files", path, "list", path=path, depth=depth)
 
 

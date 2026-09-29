@@ -3,7 +3,8 @@
 - Once applied it is inherited by every child process and cannot be lifted from inside;
 - writes: only the workspace and the sandbox temp directory;
 - reads: system directories, toolchains, the workspace; the rest of the home directory (~/.ssh, credentials,
-  browser data) is never readable;
+  browser data) is never readable, except files and directories the user attached to the current task
+  (`Sandbox.grant_read`), which are readable, never writable, for that task only;
 - network: fully offline;
 - open / osascript / security and launching other applications are forbidden (otherwise apps outside the
   sandbox could be used to bypass it);
@@ -17,6 +18,7 @@ swapped for a VM-based implementation later.
 from __future__ import annotations
 
 import asyncio
+import fnmatch
 import json
 import os
 import re
@@ -24,9 +26,10 @@ import signal
 import subprocess
 import sys
 import time
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Awaitable, Callable, Optional, Protocol
+from typing import Awaitable, Callable, Iterable, Iterator, Optional, Protocol
 
 from .config import RunMode, Settings
 
@@ -88,18 +91,23 @@ def _glob_regex(pattern: str) -> str:
     return "".join(out)
 
 
-def _deny_read_rule(workspace: Path, names: tuple) -> Optional[str]:
-    """Deny reads by file name inside the workspace (placed after the allow rules: Seatbelt applies the last
-    matching rule)."""
+# Also unreadable inside attached paths: another project's .env is a secret, and nothing is built there
+_ATTACHED_DENY_NAMES = (".env", ".env.*")
+
+
+def _deny_read_rule(root: Path, names: tuple) -> Optional[str]:
+    """Deny reads by file name under root (placed after the allow rules: Seatbelt applies the last matching rule)."""
     if not names:
         return None
-    ws = re.escape(str(workspace))
-    regexes = " ".join(f'(regex #"^{ws}/(.*/)?{_glob_regex(n)}$")' for n in names)
+    r = re.escape(str(root))
+    regexes = " ".join(f'(regex #"^{r}(/.*)?/{_glob_regex(n)}$")' for n in names)
     return f"(deny file-read* {regexes})"
 
 
-def build_profile(workspace: Path, tmpdir: Path, extra_read: list[Path], deny_names: tuple = ()) -> str:
-    reads = [*_READ_SUBPATHS, *_developer_dir(), *map(str, extra_read)]
+def build_profile(workspace: Path, tmpdir: Path, extra_read: list[Path], deny_names: tuple = (),
+                  attached: Iterable[Path] = ()) -> str:
+    attached = list(attached)
+    reads = [*_READ_SUBPATHS, *_developer_dir(), *map(str, extra_read), *map(str, attached)]
     lines = [
         "(version 1)",
         "(deny default)",
@@ -119,6 +127,9 @@ def build_profile(workspace: Path, tmpdir: Path, extra_read: list[Path], deny_na
     ]
     if deny := _deny_read_rule(workspace, deny_names):
         lines.append(deny)
+    for root in attached:
+        if deny := _deny_read_rule(root, (*deny_names, *_ATTACHED_DENY_NAMES)):
+            lines.append(deny)
     return "\n".join(lines) + "\n"
 
 
@@ -187,10 +198,43 @@ class Sandbox:
         self.python = Path(sys.executable)
         self.env_prefix = Path(sys.prefix).resolve()
         self.profile_path = (settings.data_dir / "sandbox.sb").resolve()
-        self.profile_path.write_text(build_profile(
-            self.workspace, self.tmpdir, [self.env_prefix, FSOPS.parent], settings.sandbox_deny_names),
-            encoding="utf-8")
+        self.read_roots: tuple[Path, ...] = ()   # paths attached to the running task: read-only
+        self._write_profile()
         self._procs: set[asyncio.subprocess.Process] = set()
+
+    def _write_profile(self) -> None:
+        self.profile_path.write_text(build_profile(
+            self.workspace, self.tmpdir, [self.env_prefix, FSOPS.parent], self.s.sandbox_deny_names,
+            attached=self.read_roots), encoding="utf-8")
+
+    def grantable(self, path: Path) -> bool:
+        """Whether an attached path may be opened read-only: not the root, not the home directory or anything
+        containing it, not already inside the workspace (readable anyway), not a credential or .env file."""
+        try:
+            p = path.resolve(strict=True)
+        except OSError:
+            return False
+        home = Path.home().resolve()
+        if p == Path("/") or p in (home, *home.parents) or p.is_relative_to(self.workspace):
+            return False
+        return not (p.is_file() and any(fnmatch.fnmatch(p.name, n)
+                                        for n in (*self.s.sandbox_deny_names, *_ATTACHED_DENY_NAMES)))
+
+    @contextmanager
+    def grant_read(self, paths: Iterable[Path]) -> Iterator[tuple[Path, ...]]:
+        """Make the files/directories the user attached to a task readable (never writable) for its duration:
+        by the Seatbelt profile for commands, by _fsops for read_file / list_files. Yields what was granted."""
+        roots = tuple(dict.fromkeys(p.resolve() for p in paths if self.grantable(p)))
+        if not roots:
+            yield ()
+            return
+        previous, self.read_roots = self.read_roots, roots
+        self._write_profile()
+        try:
+            yield roots
+        finally:
+            self.read_roots = previous
+            self._write_profile()
 
     @property
     def sandboxed(self) -> bool:
@@ -338,7 +382,8 @@ class Sandbox:
                           round(time.monotonic() - t0, 3), timed_out, notes)
 
     async def fs(self, op: str, **args) -> dict:
-        payload = json.dumps({"root": str(self.workspace), **args}, ensure_ascii=False).encode()
+        payload = json.dumps({"root": str(self.workspace), "read_roots": [str(p) for p in self.read_roots], **args},
+                             ensure_ascii=False).encode()
         r = await self._exec([str(self.python), "-I", str(FSOPS), op], payload, 60)
         try:
             return json.loads(r.stdout)

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from pathlib import Path
 
 
 @dataclass(frozen=True)
@@ -35,6 +36,24 @@ _BY_NAME = {c.name: c for c in COMMANDS}
 
 def find_command(name: str) -> Command | None:
     return _BY_NAME.get(name)
+
+
+def is_command(text: str) -> bool:
+    """Whether a submitted line is a slash command rather than a task that starts with a path (a directory dropped
+    into an empty input box arrives as "/Users/..."). A known command name always wins; otherwise a first token with
+    a further "/", or one naming an existing path, is a path. What is left ("/hlep") is an unknown command."""
+    text = text.lstrip()
+    if not text.startswith("/"):
+        return False
+    head = text.split(maxsplit=1)[0]
+    if find_command(head):
+        return True
+    if "/" in head[1:]:
+        return False
+    try:
+        return not Path(head).exists()
+    except (OSError, ValueError):
+        return True
 
 
 def filter_commands(text: str) -> list[Command]:

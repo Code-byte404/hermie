@@ -186,6 +186,23 @@ async def test_auto_mode_skips_approval_but_keeps_sandbox(make_agent, settings):
         outside.unlink(missing_ok=True)
 
 
+async def test_attached_dir_outside_workspace_is_readable_for_that_task_only(make_agent):
+    import shutil
+    d = Path.home() / ".hermie_attach_task_test"
+    shutil.rmtree(d, ignore_errors=True)
+    d.mkdir()
+    (d / "notes.txt").write_text("attached body")
+    try:
+        ex = Script([tool("read_file", path=str(d / "notes.txt"))])
+        agent = make_agent(FakeJudge(task="repetitive"), executor=ex)
+        await agent.run(f"summarize {d}", read_roots=[d])
+        assert "attached body" in ex.sent_text()
+        assert agent.session.sandbox.read_roots == ()
+        assert "error" in await agent.session.sandbox.fs("read", path=str(d / "notes.txt"))
+    finally:
+        shutil.rmtree(d, ignore_errors=True)
+
+
 PROMPTING = 'printf "Your name? "; read x; echo "hi $x"'
 
 

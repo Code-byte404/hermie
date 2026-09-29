@@ -6,7 +6,8 @@ import logging
 import re
 import time
 from dataclasses import dataclass, field
-from typing import Optional
+from pathlib import Path
+from typing import Optional, Sequence
 
 from pydantic_ai import Agent
 from pydantic_ai.exceptions import UsageLimitExceeded
@@ -220,7 +221,10 @@ class Hermie:
     def cancel_running(self) -> None:
         self.session.sandbox.kill_all()
 
-    async def run(self, task: str, material: str = "", force: Force = Force.NONE) -> TaskResult:
+    async def run(self, task: str, material: str = "", force: Force = Force.NONE,
+                  read_roots: Sequence[Path] = ()) -> TaskResult:
+        """read_roots: the files/directories the user attached, readable (never writable) by the executor for this
+        task only (Sandbox.grant_read)."""
         text = f"{task}\n\n{material}".strip() if material else task
         # With lesson memory on, AGENT.md's "Lessons" section reaches the executor through recall_lessons instead of being
         # pasted in; with it off, the executor reads the section as before. The planner never gets it (_outbound_task).
@@ -233,7 +237,8 @@ class Hermie:
         self.bus.emit(ChatMessage("user", task))
         result: Optional[TaskResult] = None
         try:
-            result = await self.task_graph.run(state=st, deps=self)
+            with self.session.sandbox.grant_read(read_roots):
+                result = await self.task_graph.run(state=st, deps=self)
             routing = st.flow.routing
             result.reasons = routing.decision.reasons + result.reasons
             result.signals = routing.signals_dict()

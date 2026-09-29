@@ -26,6 +26,15 @@ def test_find_paths_handles_escaped_spaces_quotes_and_tilde(tmp_path, monkeypatc
     assert find_paths(f"read {tilde}") == [f]
 
 
+def test_find_paths_unescapes_shell_metacharacters(tmp_path):
+    # What Terminal / iTerm2 / Ghostty insert for a dropped "Q3 report (final) & notes's.pdf".
+    f = tmp_path / "Q3 report (final) & notes's.pdf"
+    f.write_text("x")
+    escaped = str(f).replace(" ", "\\ ").replace("(", "\\(").replace(")", "\\)").replace("&", "\\&").replace("'", "\\'")
+    assert find_paths(f"summarize {escaped} ") == [f]
+    assert find_paths(f"summarize{escaped}") == [f]   # dropped right after a word, no space
+
+
 def test_find_paths_ignores_missing_paths_and_dedupes(tmp_path):
     f = tmp_path / "a.txt"
     f.write_text("x")
@@ -69,6 +78,19 @@ def test_load_material_directory_gives_tree_only(tmp_path):
     assert "SECRET_CONTENT" not in m.text and "readme body" not in m.text
     assert ".git" not in m.text and "node_modules" not in m.text
     assert m.summary == [f"{d}/ (2 files)"]
+
+
+def test_load_material_directory_says_whether_tools_can_open_it(tmp_path):
+    ws = tmp_path / "ws"
+    inside = ws / "pkg"
+    outside = tmp_path / "elsewhere"
+    for d in (inside, outside):
+        d.mkdir(parents=True)
+        (d / "a.py").write_text("x")
+    m = load_material([inside, outside], max_file_chars=1000, max_total_chars=5000, workspace=ws)
+    assert "Inside the workspace at pkg/" in m.text
+    assert "Outside the workspace, attached read-only" in m.text
+    assert m.roots == [inside, outside]
 
 
 def test_load_material_refuses_credential_files(tmp_path):

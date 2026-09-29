@@ -1,6 +1,7 @@
 """UI tests (Textual Pilot, no real terminal needed)."""
 import asyncio
 
+from textual import events
 from textual.widgets import Markdown, RichLog, Static
 
 from hermie.config import RunMode
@@ -535,6 +536,50 @@ async def test_dropped_path_shows_attachment_strip(make_agent, tmp_path):
         inp.text = "summarize"
         await pilot.pause(0.1)
         assert not strip.display
+
+
+async def test_dropped_path_lands_in_input_even_when_another_pane_has_focus(make_agent, tmp_path):
+    # A file dragged onto the terminal arrives as a bracketed paste, which Textual gives to the focused widget only.
+    f = tmp_path / "report (v2).txt"
+    f.write_text("quarterly numbers")
+    dropped = str(f).replace(" ", "\\ ").replace("(", "\\(").replace(")", "\\)")
+    app = HermieApp(agent=make_agent(FakeJudge()))
+    async with app.run_test(size=(160, 45)) as pilot:
+        inp = app.query_one("#input")
+        await _type(pilot, "summarize")
+        await pilot.click("#log")
+        await pilot.pause(0.1)
+        assert app.focused is not inp
+        app.post_message(events.Paste(dropped))
+        await pilot.pause(0.2)
+        assert app.focused is inp
+        assert inp.text == f"summarize {dropped}"
+        strip = app.query_one("#attachments", Static)
+        assert strip.display and "report (v2).txt" in str(strip.render())
+
+
+async def test_prompt_starting_with_a_dropped_path_runs_as_a_task(make_agent, tmp_path):
+    d = tmp_path / "crypto-news"
+    d.mkdir()
+    (d / "README.md").write_text("news feed")
+    ex = Script(final=final())
+    app = HermieApp(agent=make_agent(FakeJudge(task="repetitive"), executor=ex))
+    async with app.run_test(size=(160, 45)) as pilot:
+        await _submit(pilot, f"{d} summarize this project")
+        await _wait_idle(pilot, app)
+        await pilot.pause(0.2)
+        assert not any("Unknown command" in t for _, t in app.transcript)
+        assert f"[Directory: {d}]" in ex.sent_text() and "README.md" in ex.sent_text()
+
+
+async def test_paste_into_a_dialog_stays_in_the_dialog(make_agent):
+    app = HermieApp(agent=make_agent(FakeJudge()))
+    async with app.run_test(size=(160, 45)) as pilot:
+        await _submit(pilot, "/model")
+        await _wait_screen(pilot, app, ModelScreen)
+        app.post_message(events.Paste("/tmp/x"))
+        await pilot.pause(0.2)
+        assert app.query_one("#input").text == ""
 
 
 async def test_submitting_with_attachment_feeds_content_to_executor(make_agent, tmp_path):

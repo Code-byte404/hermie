@@ -15,8 +15,10 @@ import re
 from dataclasses import dataclass, field
 from pathlib import Path
 
-# A quoted token, or a bare token in which spaces are backslash-escaped; must start like a path (/ or ~).
-_PATH_RE = re.compile(r"""(?:"([^"\n]+)"|'([^'\n]+)'|((?:~|/)(?:\\ |[^\s"'])*))""")
+# A quoted token, or a bare token in which spaces and shell metacharacters are backslash-escaped (terminals escape
+# a dropped "My File (1).pdf" as My\ File\ \(1\).pdf); must start like a path (/ or ~).
+_PATH_RE = re.compile(r"""(?:"([^"\n]+)"|'([^'\n]+)'|((?:~|/)(?:\\.|[^\s"'\\])*))""")
+_ESCAPE_RE = re.compile(r"\\(.)")
 _SKIP_DIRS = {".git", "node_modules", "__pycache__", ".venv", "venv", ".idea", ".vscode", ".DS_Store"}
 _TREE_MAX_ENTRIES = 400
 _NEVER_ATTACH = {Path("/"), Path.home()}   # "/" is also the slash-command prefix; neither is a sensible attachment
@@ -27,14 +29,16 @@ class Material:
     text: str = ""                      # what is appended to the task text (local only)
     summary: list[str] = field(default_factory=list)   # one line per attachment, for the UI
     notes: list[str] = field(default_factory=list)     # skipped / truncated items, for the UI
+    roots: list[Path] = field(default_factory=list)    # attached files/directories, opened read-only for the task
 
 
 def find_paths(text: str) -> list[Path]:
     """Existing files/directories mentioned in the text, in order, without duplicates."""
     found: list[Path] = []
     for m in _PATH_RE.finditer(text):
-        raw = next(g for g in m.groups() if g is not None)
-        raw = raw.replace("\\ ", " ").rstrip(".,;:")
+        quoted, single, bare = m.groups()
+        raw = quoted or single or _ESCAPE_RE.sub(r"\1", bare)
+        raw = raw.rstrip(".,;:")
         if not raw.startswith(("/", "~")):
             continue
         try:
@@ -189,20 +193,34 @@ def _tree(root: Path) -> tuple[list[str], int]:
     return lines, n_files
 
 
+def _dir_note(p: Path, workspace: Path | None) -> str:
+    """Tells the executor whether its file tools can open what the listing shows (they only reach the workspace)."""
+    if workspace is None:
+        return ""
+    try:
+        rel = p.resolve().relative_to(workspace.resolve())
+    except (OSError, ValueError):
+        return ("(Outside the workspace, attached read-only for this task: read_file / list_files take the absolute "
+                "paths below, and commands may read them; write any output into the workspace.)\n")
+    return f"(Inside the workspace at {rel.as_posix() or '.'}/; open files there with the file tools.)\n"
+
+
 def load_material(paths: list[Path], *, max_file_chars: int, max_total_chars: int,
-                  deny_names: tuple[str, ...] = ()) -> Material:
+                  deny_names: tuple[str, ...] = (), workspace: Path | None = None) -> Material:
     """Build the material block for the given attachments. Text files are included (truncated per file and in
-    total); binary files, credential files and anything past the total limit are skipped with a note."""
+    total); binary files, credential files and anything past the total limit are skipped with a note. With a
+    workspace, a directory's block says whether the executor can open its files."""
     m = Material()
     blocks: list[str] = []
     used = 0
     for p in paths:
         if p.is_dir():
             lines, n = _tree(p)
-            block = f"[Directory: {p}]\n" + "\n".join(lines)
+            block = f"[Directory: {p}]\n" + _dir_note(p, workspace) + "\n".join(lines)
             blocks.append(block)
             used += len(block)
             m.summary.append(f"{p}/ ({n} files)")
+            m.roots.append(p)
             continue
         if any(fnmatch.fnmatch(p.name, pat) for pat in deny_names):
             m.notes.append(f"{p.name}: credential file, not attached")
@@ -230,5 +248,6 @@ def load_material(paths: list[Path], *, max_file_chars: int, max_total_chars: in
         blocks.append(block)
         used += len(block)
         m.summary.append(f"{p} ({size})")
+        m.roots.append(p)
     m.text = "\n\n".join(blocks)
     return m
