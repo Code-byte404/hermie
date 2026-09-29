@@ -177,6 +177,15 @@ class Settings:
     lesson_embed_model: str = field(default_factory=lambda: _env("LESSON_EMBED_MODEL", "nomic-embed-text"))
     lessons_top_k: int = field(default_factory=lambda: _env_int("LESSONS_TOP_K", 5))
     lessons_min_sim: float = field(default_factory=lambda: _env_float("LESSONS_MIN_SIM", 0.55))
+    # Skill library (all local): Markdown playbooks distilled from reviewed multi-step successes, confirmed by a second
+    # similar success or /skills approve, recalled for similar steps, retired when they stop helping
+    skills_enabled: bool = field(default_factory=lambda: _env_bool("SKILLS_ENABLED", True))
+    skills_top_k: int = field(default_factory=lambda: _env_int("SKILLS_TOP_K", 2))
+    skills_min_sim: float = field(default_factory=lambda: _env_float("SKILLS_MIN_SIM", 0.6))
+    skill_min_tool_calls: int = field(default_factory=lambda: _env_int("SKILL_MIN_TOOL_CALLS", 4))
+    skill_merge_sim: float = field(default_factory=lambda: _env_float("SKILL_MERGE_SIM", 0.85))
+    skill_retire_uses: int = field(default_factory=lambda: _env_int("SKILL_RETIRE_USES", 5))
+    skill_retire_rate: float = field(default_factory=lambda: _env_float("SKILL_RETIRE_RATE", 0.3))
 
     def __post_init__(self) -> None:
         if self.cloud_provider not in CLOUD_PROVIDERS:
@@ -220,6 +229,10 @@ class Settings:
     @property
     def lessons_path(self) -> Path:
         return self.data_dir / "lessons.jsonl"
+
+    @property
+    def skills_dir(self) -> Path:
+        return self.data_dir / "skills"
 
     def ensure_dirs(self) -> None:
         self.workspace.mkdir(parents=True, exist_ok=True)
