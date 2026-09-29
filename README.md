@@ -26,6 +26,7 @@ Like a hermit crab, Hermie carries its own shell and only pokes its eyes out.
 - **Nothing leaves without a certificate.** Every outbound message passes a three-layer privacy gate (regex recognizers for phones, IDs, cards, secrets; Presidio NER; a local judge model for context). The cloud client only accepts the `CleanText` type that the gate produces. If any layer errors, the text counts as sensitive.
 - **The executor has to prove it.** A local reviewer reads the actual workspace diff before a task is allowed to report done. Failed reviews go back to the executor for a bounded number of fixes.
 - **You can see everything.** The Outbound tab shows every message sent to the cloud, verbatim. The Changes tab shows the diff. Every task is snapshotted first and can be rolled back.
+- **It learns on your machine.** When a review fails and the fix works, or the reviewer keeps raising the same problem, a local model writes a lesson. Lessons are embedded locally and the most relevant ones are handed to the executor before each step; the cloud planner never sees them. Every task also leaves a data-free trajectory line, and `hermie --calibrate` uses those to propose better routing thresholds.
 
 ## How a task is routed
 
@@ -36,12 +37,13 @@ Like a hermit crab, Hermie carries its own shell and only pokes its eyes out.
 | `cloud` | cloud model alone | no workspace needed, no private data (explanations, tutorials) |
 | `plan` | cloud planner driving the local executor step by step | needs planning across many steps |
 
-Routing is a pure function of three parallel signals: the privacy check, three yes/no questions to a local judge model, and a RouteLLM complexity score. Any hint that the task needs the workspace keeps it local. Any cloud error falls back to local.
+Routing is a pure function of three parallel signals: the privacy check, one structured request to a local judge model (task type, difficulty, does it need the workspace), and a RouteLLM complexity score. Any hint that the task needs the workspace keeps it local. Any cloud error falls back to local. The whole flow runs as an explicit graph; `hermie --graph` prints it.
 
 ## Requirements
 
 - macOS on Apple Silicon. The sandbox is Seatbelt, transcription is mlx-whisper, speech is `say`.
 - [Ollama](https://ollama.com) running locally with an executor model and a judge model pulled. Defaults: `qwen3.8:27b-mlx` as executor and reviewer, `gemma4:12b` as judge. A 32 GB machine runs both; a smaller judge model is the biggest speed win.
+- Optional: `ollama pull nomic-embed-text` for lesson memory (without it, lessons are matched by word overlap).
 - A cloud API key (DeepSeek by default; `CLOUD_PROVIDER` switches to OpenAI, Anthropic or an OpenAI-compatible endpoint), only if you want the `cloud` and `plan` routes. Everything else works fully offline.
 
 ## Install
@@ -69,6 +71,8 @@ cd ~/projects/my-app
 hermie                     # full-screen UI; high-risk commands prompt for approval
 hermie --auto              # no approval prompts; sandbox, gate, snapshots and audit unchanged
 hermie --json "task" file  # headless: JSON event stream, then the final result (file or directory as material)
+hermie --calibrate         # propose routing thresholds from your own recorded tasks (--apply writes .env)
+hermie --graph             # print the task graph as a Mermaid diagram
 ```
 
 `start.sh` in the repo does the whole warm-up: activates the env, starts Ollama if needed, pulls missing models, opens the UI.
@@ -87,15 +91,15 @@ What the gate cannot promise (probabilistic name detection, uncalibrated thresho
 
 ## Documentation
 
-- [User guide](docs/guide.md): the UI, `AGENT.md`, the self-verification loop, voice, web access, examples, evals and known limitations.
-- [Roadmap](docs/roadmap.md): the task graph, the self-improvement loop and what comes after.
+- [User guide](docs/guide.md): the UI, `AGENT.md`, the self-verification loop, lesson memory, calibration, voice, web access, examples, evals and known limitations.
+- [Roadmap](docs/roadmap.md): what shipped recently and what comes next.
 - [Architecture](docs/architecture.md): request flow, module responsibilities, privacy invariants.
 - [Design document](docs/design.md): the original design and its reasoning.
 - [Contributing](CONTRIBUTING.md) and [Security](SECURITY.md).
 
 ## Status
 
-Alpha. The routing thresholds shipped in `.env.example` are starting points; `evals/` has the tooling to calibrate them on your own requests. The test suite (fake models, real sandbox and detectors) runs with `pytest -q` and needs no Ollama or cloud key.
+Alpha. The routing thresholds shipped in `.env.example` are starting points; `hermie --calibrate` tunes them from your own tasks once enough are recorded, and `evals/` has the labelled cases that anchor that tuning. The test suite (fake models, real sandbox and detectors) runs with `pytest -q` and needs no Ollama or cloud key.
 
 ## License
 
