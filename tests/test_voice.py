@@ -8,7 +8,7 @@ import numpy as np
 import pytest
 
 from hermie.config import Settings
-from hermie.events import ApprovalRequest, Notice, PlanUpdated, TaskFinished
+from hermie.events import ApprovalRequest, InputRequest, Notice, PlanUpdated, TaskFinished
 from hermie.voice import (Recorder, Speaker, Transcriber, VoiceUnavailable, first_sentence, parse_voices,
                                 phrase_for)
 
@@ -40,6 +40,8 @@ def test_approval_phrases():
         "Approval needed, web request: news.example.com"
     assert phrase_for(ApprovalRequest("web_search", "industry news", "medium", "...")) == \
         "Approval needed, search request: industry news"
+    assert phrase_for(InputRequest("npx create-next-app web", "Ok to proceed? (y)")) == \
+        "A command is waiting for your input: npx create-next-app web"
 
 
 def test_notice_phrases():

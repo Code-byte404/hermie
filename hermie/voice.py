@@ -24,7 +24,7 @@ from urllib.parse import urlparse
 import numpy as np
 
 from .config import Settings
-from .events import ApprovalRequest, Event, Notice, TaskFinished
+from .events import ApprovalRequest, Event, InputRequest, Notice, TaskFinished
 from .policy import Route
 
 log = logging.getLogger(__name__)
@@ -64,9 +64,10 @@ def _artifact_count(output: str) -> int:
     return sum(1 for line in tail.splitlines() if line.strip().startswith("- "))
 
 
-def phrase_for(ev: Event | ApprovalRequest) -> Optional[str]:
-    """Whether to speak and what to say. Only three kinds are spoken: task finished (plus a one-sentence
-    summary), approval needed, error/fallback/interruption. Everything else returns None."""
+def phrase_for(ev: Event | ApprovalRequest | InputRequest) -> Optional[str]:
+    """Whether to speak and what to say. Only four kinds are spoken: task finished (plus a one-sentence
+    summary), approval needed, a command waiting for input, error/fallback/interruption. Everything else
+    returns None."""
     if isinstance(ev, TaskFinished):
         label = Route(ev.route).label if ev.route in Route._value2member_map_ else ev.route
         n = _artifact_count(ev.output)
@@ -79,6 +80,8 @@ def phrase_for(ev: Event | ApprovalRequest) -> Optional[str]:
         if ev.tool == "web_search":
             return f"Approval needed, search request: {ev.summary[:40]}"
         return f"Approval needed, {ev.risk}-risk command: {ev.summary[:40]}"
+    if isinstance(ev, InputRequest):
+        return f"A command is waiting for your input: {ev.command[:40]}"
     if isinstance(ev, Notice):
         if ev.level == "error" or (ev.level == "warn" and ("falling back" in ev.text or "Interrupted" in ev.text)):
             return ev.text if len(ev.text) <= 60 else ev.text[:60] + "..."

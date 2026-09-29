@@ -131,6 +131,9 @@ class Settings:
     data_dir: Path = field(default_factory=lambda: Path(_env("HERMIE_DATA_DIR", "~/.hermie")).expanduser())
     mode: RunMode = field(default_factory=lambda: RunMode(_env("RUN_MODE", "default")))
     command_timeout_s: float = field(default_factory=lambda: _env_float("COMMAND_TIMEOUT", 120))
+    # A command silent this long on what looks like a prompt is waiting for input: the user is asked (default mode),
+    # otherwise its stdin is closed. Time spent waiting for the user does not count toward COMMAND_TIMEOUT
+    command_idle_s: float = field(default_factory=lambda: _env_float("COMMAND_IDLE", 8))
     # Snapshots kept per workspace (pre-task snapshots + one before each delegation in plan mode); older ones are pruned automatically
     snapshot_keep: int = field(default_factory=lambda: _env_int("SNAPSHOT_KEEP", 20))
     # File names the executor may not read even inside the workspace (glob, matched on the file name): private keys, certificates, credential files.

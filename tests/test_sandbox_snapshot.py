@@ -190,3 +190,90 @@ def test_prune_git_snapshots_drops_refs(tmp_path):
     refs = subprocess.run(["git", "-C", str(ws), "for-each-ref", "refs/hermie/"], capture_output=True, text=True).stdout
     assert ids[2] in refs and ids[0] not in refs and ids[1] not in refs
     assert [x.id for x in m.list()] == [ids[2]]
+
+
+# ---------------- Commands that stop and wait for input
+
+from hermie.sandbox import looks_like_prompt
+
+
+def test_looks_like_prompt():
+    assert looks_like_prompt("Project name? ")                    # no trailing newline: the process is mid-line
+    assert looks_like_prompt("Need to install create-next-app\nOk to proceed? (y)\n")
+    assert looks_like_prompt("Overwrite? [y/N]\n")
+    assert looks_like_prompt("\x1b[36m?\x1b[0m Would you like to use TypeScript? \x1b[90m› No / Yes\x1b[0m\n")
+    assert not looks_like_prompt("compiling...\nstill compiling\n")
+    assert not looks_like_prompt("")
+
+
+@pytest.fixture
+def isb(settings):
+    settings.ensure_dirs()
+    settings.command_idle_s = 0.4
+    return Sandbox(settings)
+
+
+async def test_prompt_is_answered_through_ask(isb):
+    asked = []
+
+    async def ask(tail):
+        asked.append(tail)
+        return "bob"
+
+    r = await isb.run_shell('printf "Your name? "; read x; echo "hi $x"', timeout=20, ask=ask)
+    assert r.exit_code == 0 and "hi bob" in r.stdout
+    assert len(asked) == 1 and "Your name?" in asked[0]
+    assert "bob" in r.combined(4000)          # the model sees what was answered
+
+
+async def test_several_prompts_in_a_row(isb):
+    answers = iter(["a", "b"])
+
+    async def ask(tail):
+        return next(answers)
+
+    r = await isb.run_shell('printf "one? "; read x; printf "two? "; read y; echo "$x$y"', timeout=20, ask=ask)
+    assert r.exit_code == 0 and r.stdout.strip().endswith("ab")
+
+
+async def test_prompt_without_asker_gets_eof(isb):
+    r = await isb.run_shell('printf "Your name? "; read x || echo EOF_SEEN', timeout=20)
+    assert r.exit_code == 0 and "EOF_SEEN" in r.stdout and r.duration_s < 5
+
+
+async def test_user_can_stop_a_waiting_command(isb):
+    async def ask(tail):
+        return None
+
+    r = await isb.run_shell('printf "Continue? (y/n) "; read x; echo "went on"', timeout=20, ask=ask)
+    assert "went on" not in r.stdout and r.duration_s < 5
+    assert "stopped by the user" in r.combined(4000)
+
+
+async def test_prompt_that_ignores_eof_is_killed_with_a_hint(isb):
+    r = await isb.run_shell('printf "Continue? (y/n) "; sleep 30', timeout=20)
+    assert r.exit_code != 0 and r.duration_s < 5
+    assert "non-interactive" in r.combined(4000)
+
+
+async def test_silent_command_is_not_mistaken_for_a_prompt(isb):
+    async def ask(tail):
+        raise AssertionError("should not ask")
+
+    r = await isb.run_shell("echo building; sleep 1.5; echo done", timeout=20, ask=ask)
+    assert r.exit_code == 0 and "done" in r.stdout and not r.timed_out
+
+
+async def test_waiting_for_the_user_does_not_count_toward_timeout(isb):
+    import asyncio
+
+    async def ask(tail):
+        await asyncio.sleep(1.5)
+        return "y"
+
+    r = await isb.run_shell('printf "ok? "; read x; echo "got $x"', timeout=1.2, ask=ask)
+    assert not r.timed_out and "got y" in r.stdout
+
+
+async def test_stdin_data_path_still_works(isb):
+    assert (await isb.fs("write", path="x.txt", content="hi"))["bytes"] == 2

@@ -24,9 +24,9 @@ import signal
 import subprocess
 import sys
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Optional, Protocol
+from typing import Awaitable, Callable, Optional, Protocol
 
 from .config import RunMode, Settings
 
@@ -129,18 +129,49 @@ class ExecResult:
     stderr: str
     duration_s: float
     timed_out: bool = False
+    notes: list[str] = field(default_factory=list)   # what happened around input prompts, shown to the model
 
     def combined(self, limit: int) -> str:
         text = self.stdout + (("\n[stderr]\n" + self.stderr) if self.stderr.strip() else "")
         if self.timed_out:
             text += "\n[timed out; process was killed]"
+        text += "".join(f"\n{n}" for n in self.notes)
         if len(text) > limit:
             text = text[: limit // 2] + f"\n...({len(text) - limit} chars omitted)...\n" + text[-limit // 2:]
         return text
 
 
+# Given the tail of a command's output, returns the line to type into it, or None to stop the command
+InputAsker = Callable[[str], Awaitable[Optional[str]]]
+
+_ANSI = re.compile(r"\x1b\[[0-9;?]*[ -/]*[@-~]|\x1b[@-_]")
+# a question-mark line (inquirer/prompts style "? Name ›", or "...? (y)" / "[y/N]" / "› No / Yes" after the "?"),
+# an explicit yes/no or key prompt, or a password prompt
+_PROMPT_LINE = re.compile(r"^\?\s|\?\s*(\(.{0,20}\)|\[.{0,20}\]|›.{0,40})?\s*$|\((y/n|yes/no)\)|\[y/n\]"
+                          r"|press (enter|return|any key)|password|passphrase", re.I)
+NON_INTERACTIVE_HINT = ("[the command kept waiting for input after its stdin was closed: {line!r}. Rerun it with "
+                        "non-interactive flags (e.g. --yes / -y, CI=1) or pipe the answers in]")
+
+
+def looks_like_prompt(tail: str) -> bool:
+    """Whether output that has gone quiet ends on something that asks for input: a partial line (the cursor is
+    still on it), or a last line that reads like a question or a yes/no prompt."""
+    text = _ANSI.sub("", tail).replace("\r", "\n")
+    if not text.strip():
+        return False
+    if not text.endswith("\n"):
+        return True
+    last = text.rstrip().rsplit("\n", 1)[-1].strip()
+    return bool(_PROMPT_LINE.search(last))
+
+
+def _tail(buf: bytes, lines: int = 20) -> str:
+    return "\n".join(buf[-8000:].decode("utf-8", "replace").split("\n")[-lines:])
+
+
 class Executor(Protocol):
-    async def run_shell(self, command: str, timeout: float | None = None) -> ExecResult: ...
+    async def run_shell(self, command: str, timeout: float | None = None,
+                        ask: Optional[InputAsker] = None) -> ExecResult: ...
     async def fs(self, op: str, **args) -> dict: ...
 
 
@@ -218,8 +249,93 @@ class Sandbox:
         for p in list(self._procs):
             self._kill(p)
 
-    async def run_shell(self, command: str, timeout: float | None = None) -> ExecResult:
-        return await self._exec(["/bin/zsh", "-f", "-c", command], None, timeout or self.s.command_timeout_s)
+    async def run_shell(self, command: str, timeout: float | None = None,
+                        ask: Optional[InputAsker] = None) -> ExecResult:
+        """Run a shell command, reading its output as it comes. When it goes quiet on a prompt, `ask` (if any)
+        supplies the answer; otherwise its stdin is closed, and a command still waiting on the prompt after that
+        is stopped with a hint instead of hanging until the timeout."""
+        return await self._interactive(["/bin/zsh", "-f", "-c", command], timeout or self.s.command_timeout_s, ask)
+
+    async def _interactive(self, argv: list[str], timeout: float, ask: Optional[InputAsker]) -> ExecResult:
+        t0 = time.monotonic()
+        proc = await asyncio.create_subprocess_exec(
+            *self._wrap(argv), cwd=str(self.workspace), env=self._env(), stdin=asyncio.subprocess.PIPE,
+            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE, start_new_session=True)
+        self._procs.add(proc)
+        bufs = {"out": bytearray(), "err": bytearray()}
+        state = {"last": time.monotonic(), "stream": "out"}
+
+        async def pump(stream: asyncio.StreamReader, key: str) -> None:
+            while chunk := await stream.read(4096):
+                bufs[key] += chunk
+                state["last"], state["stream"] = time.monotonic(), key
+
+        pumps = [asyncio.create_task(pump(proc.stdout, "out")), asyncio.create_task(pump(proc.stderr, "err"))]
+        waiter = asyncio.create_task(proc.wait())
+        deadline, idle = t0 + timeout, max(self.s.command_idle_s, 0.1)
+        timed_out, notes = False, []
+        stdin_open, eof_prompt = True, None   # eof_prompt: the prompt line stdin was closed on
+
+        def close_stdin() -> None:
+            try:
+                proc.stdin.close()
+            except (BrokenPipeError, ConnectionResetError):
+                pass
+
+        try:
+            while True:
+                wait = min(deadline, state["last"] + idle) - time.monotonic()
+                await asyncio.wait({waiter}, timeout=max(wait, 0.01))
+                if waiter.done():
+                    break
+                now = time.monotonic()
+                if now >= deadline:
+                    timed_out = True
+                    self._kill(proc)
+                    break
+                if now - state["last"] < idle:
+                    continue
+                tail = _tail(bufs[state["stream"]])
+                prompt = looks_like_prompt(tail)
+                if prompt and stdin_open and ask is not None:
+                    asked_at = time.monotonic()
+                    reply = await ask(tail)
+                    deadline += time.monotonic() - asked_at   # the user's thinking time is not the command's
+                    if reply is None:
+                        notes.append("[stopped by the user while the command was waiting for input]")
+                        self._kill(proc)
+                        break
+                    notes.append(f"[the command asked for input; the user typed: {reply!r}]")
+                    try:
+                        proc.stdin.write(reply.encode() + b"\n")
+                        await proc.stdin.drain()
+                    except (BrokenPipeError, ConnectionResetError):
+                        stdin_open = False
+                elif stdin_open:   # nobody to answer, or just silent: give it EOF, as a non-interactive run would
+                    close_stdin()
+                    stdin_open = False
+                    if prompt:
+                        eof_prompt = _ANSI.sub("", tail).strip().rsplit("\n", 1)[-1].strip()
+                elif eof_prompt is not None:
+                    notes.append(NON_INTERACTIVE_HINT.format(line=eof_prompt[:200]))
+                    self._kill(proc)
+                    break
+                state["last"] = time.monotonic()
+        except asyncio.CancelledError:  # user pressed Esc to interrupt
+            self._kill(proc)
+            raise
+        finally:
+            self._procs.discard(proc)
+            try:  # after a kill a grandchild may still hold the pipes: don't wait forever for them
+                await asyncio.wait_for(asyncio.gather(waiter, *pumps, return_exceptions=True), timeout=5)
+            except (asyncio.TimeoutError, asyncio.CancelledError):
+                for t in (waiter, *pumps):
+                    t.cancel()
+                if not bufs["err"]:
+                    bufs["err"] += b"[process did not exit in time]"
+        return ExecResult(proc.returncode if proc.returncode is not None else -1,
+                          bufs["out"].decode("utf-8", "replace"), bufs["err"].decode("utf-8", "replace"),
+                          round(time.monotonic() - t0, 3), timed_out, notes)
 
     async def fs(self, op: str, **args) -> dict:
         payload = json.dumps({"root": str(self.workspace), **args}, ensure_ascii=False).encode()

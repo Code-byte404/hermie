@@ -35,7 +35,7 @@ from ..config import RunMode, Settings, update_env
 from ..perf import PerfSample, PerfSampler, render_graph
 from .commands import filter_commands, find_command, help_markdown
 from ..voice import Recorder, Speaker, Transcriber, VoiceUnavailable, is_blank_transcript, phrase_for
-from ..events import (Approval, ApprovalRequest, ChatMessage, CommandFinished, CommandStarted, Event, Notice,
+from ..events import (Approval, ApprovalRequest, ChatMessage, CommandFinished, CommandStarted, Event, InputRequest, Notice,
                       OutboundBlocked, OutboundSent, PlanUpdated, ReportArrived, ReviewArrived, RouteDecided,
                       SnapshotTaken, StatsUpdated, Tainted, TaskFinished)
 from ..policy import Force, Route
@@ -151,6 +151,44 @@ class ApprovalScreen(ModalScreen[Approval]):
 
     def action_choose(self, value: str) -> None:
         self.dismiss(Approval(value))
+
+
+class InputScreen(ModalScreen[Optional[str]]):
+    """A running command is waiting for input: Enter sends the typed line (empty = accept the default),
+    Esc stops the command."""
+
+    BINDINGS = [Binding("escape", "stop", "Stop command")]
+
+    def __init__(self, req: InputRequest):
+        super().__init__()
+        self.req = req
+
+    def compose(self) -> ComposeResult:
+        with Vertical(id="input-request"):
+            yield Label("⌨ The command is waiting for your input", id="input-title")
+            yield Static(Syntax(self.req.command, "bash", word_wrap=True), id="input-cmd")
+            yield Static(Text.from_ansi(self.req.output.rstrip()), id="input-output")
+            yield Input(placeholder="Type the answer and press Enter (empty = default)", id="input-reply")
+            with Horizontal(id="input-buttons"):
+                yield Button("Send (Enter)", id="send", variant="success")
+                yield Button("Stop command (Esc)", id="stop", variant="error")
+
+    def on_mount(self) -> None:
+        self.query_one("#input-reply", Input).focus()
+
+    @on(Input.Submitted, "#input-reply")
+    def submitted(self, ev: Input.Submitted) -> None:
+        self.dismiss(ev.value)
+
+    @on(Button.Pressed)
+    def pressed(self, ev: Button.Pressed) -> None:
+        if ev.button.id == "send":
+            self.dismiss(self.query_one("#input-reply", Input).value)
+        else:
+            self.dismiss(None)
+
+    def action_stop(self) -> None:
+        self.dismiss(None)
 
 
 _KEY_RE = re.compile(r"^(f([3-9]|1[0-2])|ctrl\+[a-z])$")
@@ -336,6 +374,7 @@ class HermieApp(App):
     def on_mount(self) -> None:
         self.agent.bus.subscribe(lambda ev: self.post_message(CoreEvent(ev)))
         self.agent.bus.approver = self._approve
+        self.agent.bus.input_provider = self._provide_input
         if self.settings.voice_key != "f5":
             self._bind_record_key(self.settings.voice_key, "f5")
         self._refresh_topbar()
@@ -886,6 +925,13 @@ class HermieApp(App):
             self.speaker.speak(phrase)
         fut: asyncio.Future = asyncio.get_running_loop().create_future()
         self.push_screen(ApprovalScreen(req), callback=lambda r: fut.done() or fut.set_result(r))
+        return await fut
+
+    async def _provide_input(self, req: InputRequest) -> Optional[str]:
+        if phrase := phrase_for(req):
+            self.speaker.speak(phrase)
+        fut: asyncio.Future = asyncio.get_running_loop().create_future()
+        self.push_screen(InputScreen(req), callback=lambda r: fut.done() or fut.set_result(r))
         return await fut
 
     # ------------------------------------------------------------ event rendering

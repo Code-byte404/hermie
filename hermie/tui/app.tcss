@@ -181,3 +181,31 @@ ApprovalScreen {
 #config .config-buttons Button {
     margin-right: 2;
 }
+
+InputScreen {
+    align: center middle;
+}
+#input-request {
+    width: 80%;
+    height: auto;
+    border: thick $warning;
+    background: $surface;
+    padding: 1 2;
+}
+#input-title {
+    text-style: bold;
+    color: $warning;
+    margin-bottom: 1;
+}
+#input-cmd, #input-output {
+    height: auto;
+    max-height: 20;
+    margin-bottom: 1;
+}
+#input-buttons {
+    height: auto;
+    margin-top: 1;
+}
+#input-buttons Button {
+    margin-right: 2;
+}

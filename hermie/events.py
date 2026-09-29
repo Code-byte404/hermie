@@ -1,7 +1,7 @@
 """Decouples the core from the UI: the core only emits events, the UI subscribes and renders.
 
-An approval request is the only event that flows back: the core awaits the approver's result;
-in auto mode it passes straight through.
+Approval and input requests are the only things that flow back: the core awaits the approver's result
+(in auto mode it passes straight through) or the text the user types into a command waiting for input.
 """
 from __future__ import annotations
 
@@ -136,14 +136,23 @@ class ApprovalRequest:
     reason: str
 
 
+@dataclass
+class InputRequest:
+    """A running command went quiet on a prompt: the user types the answer (a line) or stops the command."""
+    command: str
+    output: str   # tail of the command's output, ending with the prompt
+
+
 Subscriber = Callable[[Event], None]
 Approver = Callable[[ApprovalRequest], Awaitable[Approval]]
+InputProvider = Callable[[InputRequest], Awaitable[Optional[str]]]   # None = stop the command
 
 
 class EventBus:
     def __init__(self):
         self._subs: list[Subscriber] = []
         self.approver: Optional[Approver] = None
+        self.input_provider: Optional[InputProvider] = None   # set by an interactive UI; headless runs leave it unset
 
     def subscribe(self, fn: Subscriber) -> None:
         self._subs.append(fn)
@@ -159,3 +168,8 @@ class EventBus:
         if self.approver is None:
             return Approval.DENY  # with no UI to ask, high-risk operations in default mode are always denied
         return await self.approver(req)
+
+    async def request_input(self, req: InputRequest) -> Optional[str]:
+        if self.input_provider is None:
+            return None
+        return await self.input_provider(req)

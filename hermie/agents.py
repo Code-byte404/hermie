@@ -28,8 +28,8 @@ from .capabilities import (ActivityTracker, CommandGuard, ExecutorToolBudget, Ou
                            TaintTracker, command_finished, mark_tainted)
 from .mactools import xcode_available
 from .config import RunMode, Settings
-from .events import (Approval, ApprovalRequest, ChatMessage, CommandStarted, Notice, OutboundSent, PlanUpdated,
-                     ReportArrived)
+from .events import (Approval, ApprovalRequest, ChatMessage, CommandStarted, InputRequest, Notice, OutboundSent,
+                     PlanUpdated, ReportArrived)
 from .web import WebError, decode_for_check, smuggling_risk
 from .privacy import CleanText, PrivacyGate
 from .session import TaskState
@@ -123,6 +123,8 @@ EXECUTOR_INSTRUCTIONS = """You are the local executor running on the user's comp
 - Use the tools to complete the task: run_command runs a shell command; read_file / write_file / edit_file / list_files operate on files.
 - Everything runs in a sandbox: you can only write inside the workspace, you have no network access, and you cannot open GUI
   applications (open and osascript are unavailable). Handle Word/Excel/PDF with python (python-docx, openpyxl) or pandoc.
+- Prefer non-interactive commands: pass --yes / -y and every option on the command line (e.g. create-next-app with its
+  flags and --yes, npm init -y). A command that stops at a prompt is shown to the user to answer, which slows the task.
 - When the user wants you to "make" something (an app, a script, a website, a document, ...), create the complete files in the
   workspace and run them to verify wherever possible, instead of telling the user how to do it. Never put code only in answer --
   it must land in files.
@@ -214,7 +216,11 @@ HISTORY_DROPPED = ("[The earlier execution log was too long and compression time
 async def run_command(ctx: RunContext[TaskState], command: str) -> str:
     """Run one shell command in the workspace (zsh, offline sandbox). Returns the exit code and output."""
     st = ctx.deps
-    r = await st.session.sandbox.run_shell(command)
+    ask = None
+    if st.session.mode is not RunMode.AUTO and st.bus.input_provider is not None:
+        async def ask(output: str) -> Optional[str]:   # the command is waiting for input: let the user answer
+            return await st.bus.request_input(InputRequest(command, output))
+    r = await st.session.sandbox.run_shell(command, ask=ask)
     out = r.combined(st.s.tool_output_max_chars)
     command_finished(st, "run_command", command, r.exit_code, out, r.duration_s)
     return f"exit_code={r.exit_code}\n{out}"

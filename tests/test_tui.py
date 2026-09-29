@@ -5,7 +5,7 @@ from textual.widgets import Markdown, RichLog, Static
 
 from hermie.config import RunMode
 from hermie.perf import PerfSample
-from hermie.tui.app import ApprovalScreen, HermieApp, ModelScreen, PerfPanel, VoiceScreen
+from hermie.tui.app import ApprovalScreen, HermieApp, InputScreen, ModelScreen, PerfPanel, VoiceScreen
 
 from .conftest import FakeJudge, Script, final, review, text, tool
 
@@ -95,6 +95,41 @@ async def test_approval_modal_deny(make_agent, settings):
         await pilot.press("n")
         await _wait_idle(pilot, app)
     assert (settings.workspace / "keep.txt").exists()
+
+
+async def test_command_prompt_is_answered_in_the_app(make_agent, settings):
+    settings.command_idle_s = 0.3
+    ex = Script([tool("run_command", command='printf "Your name? "; read x; echo "hi $x"')])
+    agent = make_agent(FakeJudge(task="repetitive"), executor=ex, mode=RunMode.DEFAULT)
+    app = HermieApp(agent=agent)
+    async with app.run_test(size=(160, 45)) as pilot:
+        await _submit(pilot, "Greet me")
+        for _ in range(200):
+            await pilot.pause(0.05)
+            if isinstance(app.screen, InputScreen):
+                break
+        assert isinstance(app.screen, InputScreen)
+        assert "Your name?" in str(app.screen.query_one("#input-output").render())
+        app.screen.query_one("#input-reply").value = "bob"
+        await pilot.press("enter")
+        await _wait_idle(pilot, app)
+    assert "hi bob" in ex.sent_text()
+
+
+async def test_command_prompt_can_be_stopped_from_the_app(make_agent, settings):
+    settings.command_idle_s = 0.3
+    ex = Script([tool("run_command", command='printf "Continue? (y/n) "; read x; echo "went on"')])
+    agent = make_agent(FakeJudge(task="repetitive"), executor=ex, mode=RunMode.DEFAULT)
+    app = HermieApp(agent=agent)
+    async with app.run_test(size=(160, 45)) as pilot:
+        await _submit(pilot, "Go")
+        for _ in range(200):
+            await pilot.pause(0.05)
+            if isinstance(app.screen, InputScreen):
+                break
+        await pilot.press("escape")
+        await _wait_idle(pilot, app)
+    assert "stopped by the user" in ex.sent_text() and "went on" not in ex.sent_text()
 
 
 async def test_f2_cycles_mode(make_agent):

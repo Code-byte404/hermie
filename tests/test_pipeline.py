@@ -186,6 +186,36 @@ async def test_auto_mode_skips_approval_but_keeps_sandbox(make_agent, settings):
         outside.unlink(missing_ok=True)
 
 
+PROMPTING = 'printf "Your name? "; read x; echo "hi $x"'
+
+
+async def test_command_waiting_for_input_asks_the_user(make_agent, settings):
+    settings.command_idle_s = 0.4
+    ex = Script([tool("run_command", command=PROMPTING)])
+    agent = make_agent(FakeJudge(task="repetitive"), executor=ex, mode=RunMode.DEFAULT)
+    asked = []
+
+    async def provide(req):
+        asked.append(req)
+        return "bob"
+    agent.bus.input_provider = provide
+    await agent.run("Greet me")
+    assert asked and asked[0].command == PROMPTING and "Your name?" in asked[0].output
+    assert "hi bob" in ex.sent_text()
+
+
+async def test_auto_mode_never_asks_for_input(make_agent, settings):
+    settings.command_idle_s = 0.4
+    ex = Script([tool("run_command", command=PROMPTING)])
+    agent = make_agent(FakeJudge(task="repetitive"), executor=ex, mode=RunMode.AUTO)
+
+    async def never(req):
+        raise AssertionError("auto mode must not ask for input")
+    agent.bus.input_provider = never
+    await agent.run("Greet me")
+    assert "exit_code=0" in ex.sent_text() and "hi bob" not in ex.sent_text()
+
+
 async def test_taint_tracking(make_agent, settings):
     settings.workspace.mkdir(parents=True, exist_ok=True)
     (settings.workspace / "clients.csv").write_text(f"name,phone\nZhang Wei,{PHONE}\n")
