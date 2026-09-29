@@ -40,6 +40,8 @@ Review records go to `~/.hermie/reviews.jsonl` (contains local content). `python
 
 **Lesson memory.** Lessons are also kept in `~/.hermie/lessons.jsonl`, tagged with the project, the task type and the tools used, and embedded by a local Ollama model (`LESSON_EMBED_MODEL`, default `nomic-embed-text`; without it, lessons are matched by word overlap and a notice says so once). Before each executor run, the `LESSONS_TOP_K` most relevant lessons are put in front of the prompt: lessons from the same project always qualify, lessons from other projects only when they are similar enough (`LESSONS_MIN_SIM`). Lessons that keep being injected without the first review passing are ranked down. Lessons you write into AGENT.md by hand are picked up; lessons you delete from it are no longer used. The cloud planner never sees lessons: the AGENT.md it receives has the Lessons section removed. With `LESSONS_ENABLED=false` nothing is written or recalled, and the executor reads the Lessons section of AGENT.md as it is. A missing or unreadable AGENT.md never disables stored lessons.
 
+**Skill library.** When a step with at least `SKILL_MIN_TOOL_CALLS` tool calls passes review, and the task touched no sensitive data, the local model writes a playbook for that kind of step (when to use it, the steps, how to verify) into `~/.hermie/skills/`. It starts as a candidate and becomes active after a second similar success or `/skills approve ID`. Before each step, up to `SKILLS_TOP_K` active skills that are similar enough to the step (`SKILLS_MIN_SIM`, for skills from the same project too) are put in front of the executor prompt; the planner never sees them. A skill used `SKILL_RETIRE_USES` times whose first review passed less than `SKILL_RETIRE_RATE` of the time retires itself, with a notice; `/skills restore ID` brings it back. A distilled playbook that fails the privacy check is dropped. Skills are plain Markdown: open one (`/skills open ID`), edit it, change `status:` to `retired` or `active`, delete it, or write your own (front matter with `title:` and the sections `## When to use`, `## Steps`, `## Verify`); Hermie picks the change up on the next step. `/skills` lists them all.
+
 ## Voice
 
 Everything stays on the machine: audio stays in memory, recognition is local Whisper (`mlx-whisper`), speech is macOS `say`. Each sentence is synthesized to a temp file and played with `afplay`, so audio does not stutter while Ollama or whisper load the CPU.
@@ -90,6 +92,7 @@ The scenarios run in auto mode inside `~/HermieWork/demo` (created automatically
 - `~/.hermie/audit.jsonl`: route, signals, backend, outbound count, input hash
 - `~/.hermie/commands.jsonl`: every command the executor ran
 - `~/.hermie/reviews.jsonl`: every local review round's verdict (contains local content)
+- `~/.hermie/skills/`: the skill library (one Markdown playbook per skill, plus `index.jsonl` with status, counters and local embeddings)
 - `~/.hermie/lessons.jsonl`: the lesson memory (lesson lines, tags, local embeddings; never the task text)
 - `~/.hermie/trajectories.jsonl`: one line per task with the graph nodes it went through, their durations and decisions, the routing signals and counters; no task text or tool output. `hermie --graph` prints the graph as Mermaid
 - `~/.hermie/snapshots/`: the last `SNAPSHOT_KEEP` (default 20) snapshots per workspace

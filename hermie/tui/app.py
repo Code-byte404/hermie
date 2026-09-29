@@ -428,6 +428,34 @@ class HermieApp(App):
         return load_material(paths, max_file_chars=s.attach_max_file_chars, max_total_chars=s.attach_max_total_chars,
                              deny_names=s.sandbox_deny_names)
 
+    def _skills_cmd(self, arg: str) -> None:
+        store = self.agent.session.skills
+        if store is None:
+            self._notice("warn", "Skills are off (SKILLS_ENABLED=false)")
+            return
+        sub, _, sid = arg.partition(" ")
+        sid = sid.strip()
+        if sub in ("approve", "retire", "restore", "open"):
+            try:
+                if sub == "open":
+                    sk = next(k for k in store.all() if sid and k.id.startswith(sid))
+                    self._notice("info", f"{sk.title}: {store.path(sk)}")
+                    return
+                sk = store.set_status(sid, {"approve": "active", "retire": "retired", "restore": "active"}[sub])
+                self._notice("info", f"Skill {sk.id[:8]} is now {sk.status}: {sk.title}")
+            except (LookupError, StopIteration):
+                self._notice("error", f"No single skill matches {sid!r}")
+            return
+        store.sync()
+        lines = [f"**Skills** (files in `{store.dir}`)"]
+        for status in ("active", "candidate", "retired"):
+            items = [k for k in store.all() if k.status == status]
+            lines.append(f"\n**{status}** ({len(items)})")
+            lines += [f"- `{k.id[:8]}` {k.title} · used {k.uses}, helped {k.helped}, confirmed {k.confirmations}"
+                      for k in items] or ["- none"]
+        lines.append("\n`/skills approve ID` · `/skills retire ID` · `/skills restore ID` · `/skills open ID`")
+        self._chat_md("system", "\n".join(lines))
+
     def _update_popup(self) -> None:
         """Called on every keystroke: only rebuild the list when the candidate set actually changes, and only touch
         display when visibility changes; otherwise every key triggers a full-screen relayout and the UI stutters once
@@ -822,6 +850,8 @@ class HermieApp(App):
                           + f"\n\nSession running for {_mmss(st['session_elapsed_s'])}"
                           + (f", current task {_mmss(st['task_elapsed_s'])}" if st["task_elapsed_s"] is not None else "")
                           + (f", waiting for {st['current']}" if st["current"] else ""))
+        elif cmd == "/skills":
+            self._skills_cmd(arg)
         elif cmd == "/calibrate":
             from .. import calibrate
             from ..config import PROJECT_ROOT

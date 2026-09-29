@@ -533,3 +533,23 @@ async def test_calibrate_command_shows_report(make_agent, settings):
         await _submit(pilot, "/calibrate")
         await pilot.pause(0.2)
         assert any("Routing calibration" in t for who, t in app.transcript)
+
+
+async def test_skills_command_lists_and_changes_status(make_agent, settings):
+    agent = make_agent(FakeJudge(), skills_enabled=True)
+    body = "## When to use\ncsv\n\n## Steps\n1. csv\n\n## Verify\n- csv"
+    sk, _ = agent.session.skills.add_candidate("Convert a spreadsheet to csv", body, workspace="w", task_type="x")
+    app = HermieApp(agent=agent)
+    async with app.run_test(size=(160, 45)) as pilot:
+        await _submit(pilot, "/skills")
+        await pilot.pause(0.2)
+        assert any("Convert a spreadsheet to csv" in t and "candidate" in t for who, t in app.transcript)
+        await _submit(pilot, f"/skills approve {sk.id[:6]}")
+        await pilot.pause(0.1)
+        assert agent.session.skills.all()[0].status == "active"
+        await _submit(pilot, "/skills retire nosuchid")
+        await pilot.pause(0.1)
+        assert agent.session.skills.all()[0].status == "active"
+        await _submit(pilot, f"/skills retire {sk.id}")
+        await pilot.pause(0.1)
+        assert agent.session.skills.all()[0].status == "retired"

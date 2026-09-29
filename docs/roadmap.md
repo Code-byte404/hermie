@@ -12,14 +12,12 @@ What is planned next and why, in the order it will be built. Each item lands as 
 
 - **Task graph.** The request flow runs as an explicit graph on `pydantic-graph` (route, snapshot, review loop, self-check, plan, cloud, fallbacks). Every task leaves a data-free trajectory line, and `hermie --graph` prints the diagram from the code.
 - **Lesson memory.** Lessons from review-then-fix episodes and from problems the reviewer kept raising go into a local store with local embeddings; the most relevant ones are given to the executor before each step. The planner no longer receives lessons.
+- **Skill library.** Multi-step jobs that passed review become Markdown playbooks under `~/.hermie/skills/`, active once a second similar success (or the user) confirms them, given to the executor for similar steps, and retired when they stop helping.
 - **Routing calibration.** `hermie --calibrate` labels your recorded tasks from what happened after routing, sweeps the routing thresholds and proposes new values; `--apply` writes them to `.env` once there are enough labelled tasks. Privacy thresholds are never tuned from usage.
-
-## Next: self-improvement, phase 2
-
-A skill library: successful tool sequences turned into reusable, sandboxed skills the executor can call. Designed once phase 1 has produced enough trajectories to know which sequences recur.
 
 ## Also on the list
 
+- Skills as callable, parameterized tools once the playbooks show which procedures are stable.
 - A package-registry-only proxy so the executor can install dependencies without opening the sandbox to the network.
 - Linux support through a bubblewrap implementation of the sandbox interface.
 - Hermie as an MCP server, so other agents can delegate privacy-sensitive subtasks to it and get back only certified reports.

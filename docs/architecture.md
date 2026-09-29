@@ -85,13 +85,17 @@ title: Step graph
 ---
 stateDiagram-v2
   direction LR
+  recall_lessons
+  recall_skills
   execute
   review
   state review_outcome <<choice>>
   diagnose
   finish_step
 
-  [*] --> execute
+  [*] --> recall_lessons
+  recall_lessons --> recall_skills
+  recall_skills --> execute
   execute --> review
   review --> review_outcome
   review_outcome --> execute: failed, rounds left
@@ -118,6 +122,8 @@ stateDiagram-v2
 **`recon.py`** produces a deterministic workspace overview (sandboxed directory listing plus one probe command) for the planner. **`project_doc.py`** manages `AGENT.md` in the workspace: loaded into every executor prompt, appended to the planner's task through the same certify/redact path, progress entries written deterministically after every task, lessons written by a local model after a review-then-fix success (and for problems the reviewer raised twice without a fix). The planner receives AGENT.md without its Lessons section.
 
 **`memory.py`** is the lesson memory: `LessonStore` over `data_dir/lessons.jsonl` (lesson text, tags, an embedding of the lesson and of the task that produced it, never the task text) and `Embedder` over Ollama's `/api/embed`, falling back to word overlap. The step graph's `recall_lessons` node puts the most relevant lessons in front of the executor prompt; same-project lessons always qualify, others need `LESSONS_MIN_SIM`. `sync_doc` imports hand-written AGENT.md lessons and disables deleted ones.
+
+**`skills.py`** is the skill library: `SkillStore` over `data_dir/skills/*.md` (front matter `id`, `title`, `status`; sections When to use / Steps / Verify) plus `index.jsonl` (counters, embeddings, last seen mtime, so user edits are noticed and Hermie's own writes are not). The step graph's `review` node keeps passing runs with enough tool calls in memory (`TaskState.skill_episodes`); after the task, `Hermie._skills_after_task` distills at most two of them with the local model, drops any playbook that fails `gate.check`, never distills for a task that touched sensitive data, and adds a candidate or confirms (activates) a similar one. `recall_skills` injects active skills similar to the step; skills that keep not helping retire themselves. The planner never sees skills.
 
 **`calibrate.py`** reads `trajectories.jsonl`, labels each finished task with the routes that would have been right, replays the pure `policy.decide` over a threshold grid and reports the best configuration (`hermie --calibrate`, `/calibrate`). It writes `.env` only through `apply()`, only for `--apply`, only above `CALIBRATE_MIN_TASKS` labelled tasks. The eval scripts' `sweep` uses the same code.
 
