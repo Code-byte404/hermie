@@ -120,6 +120,18 @@ async def test_mac_screenshot_taints_and_asks_once_in_default_mode(make_agent, s
     assert r.tainted and any("screenshot" in e.reason for e in agent.events if isinstance(e, Tainted))
 
 
+async def test_mac_screenshot_never_asks_in_auto_mode(make_agent, settings, run):
+    ex = Script([tool("screenshot", target="mac")], final=final())
+    agent = make_agent(FakeJudge(task="repetitive"), executor=ex, mode=RunMode.AUTO)
+    agent.session.screen = ScreenCapture(settings, run=run)
+
+    async def never(req):
+        raise AssertionError("auto mode must not request approval")
+    agent.bus.approver = never
+    r = await agent.run("what is on my screen")
+    assert len(images_seen(ex)) == 1 and r.tainted
+
+
 async def test_mac_screenshot_denied_without_approver(make_agent, settings, run):
     ex = Script([tool("screenshot", target="mac")], final=final())
     agent = make_agent(FakeJudge(task="repetitive"), executor=ex, mode=RunMode.DEFAULT)

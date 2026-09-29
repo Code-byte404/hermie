@@ -4,8 +4,8 @@ import json
 import httpx
 import pytest
 
-from hermie.config import Settings
-from hermie.events import OutboundSent, Tainted
+from hermie.config import RunMode, Settings
+from hermie.events import Approval, OutboundSent, Tainted
 from hermie.web import WebClient, WebError, html_to_text
 
 from .conftest import FakeJudge, Script, final, tool
@@ -114,11 +114,19 @@ async def test_search_tool_hidden_without_key(make_agent):
     assert "web_fetch" not in names
 
 
-async def test_sandbox_curl_still_blocked_with_web_enabled(make_agent):
+async def test_sandbox_curl_needs_approval_in_default_mode(make_agent):
+    # The sandbox has network access; curl is still a high-risk command, so the user decides
     ex = Script([tool("run_command", command="curl -sS -m 5 https://example.com")], final=final())
-    agent = make_agent(FakeJudge(task="repetitive"), executor=ex)
+    agent = make_agent(FakeJudge(task="repetitive"), executor=ex, mode=RunMode.DEFAULT)
+    asked = []
+
+    async def deny(req):
+        asked.append(req)
+        return Approval.DENY
+    agent.bus.approver = deny
     await agent.run("try curl")
-    assert "exit_code=0" not in ex.sent_text().split("curl")[-1][:200]
+    assert asked and asked[0].risk == "high"
+    assert "User denied" in ex.sent_text()
 
 
 async def test_web_status_shown_in_stats(make_agent):
@@ -141,8 +149,6 @@ async def test_web_status_shown_in_stats(make_agent):
 
 from pydantic_ai.messages import ModelRequest, ToolReturnPart
 
-from hermie.config import RunMode
-from hermie.events import Approval
 from hermie.web import smuggling_risk
 
 
@@ -182,6 +188,10 @@ async def test_exposed_task_blocks_encoded_url_in_auto_mode(make_agent, settings
                 final=final())
     agent = make_agent(FakeJudge(task="repetitive"), executor=ex, tavily_api_key="tv-key")
     agent.session.web = web
+
+    async def never(req):   # auto mode blocks risky requests itself; it never asks
+        raise AssertionError("auto mode must not request approval")
+    agent.bus.approver = never
     r = await agent.run("look up news about the customers")
     returns = tool_returns(ex)
     assert r.tainted

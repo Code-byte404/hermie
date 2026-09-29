@@ -1,7 +1,7 @@
 """Controlled networking: web_fetch (fetch a page) and web_search (Tavily search).
 
-Runs in the main process (outside the sandbox) -- the sandbox itself stays fully offline, and the executor
-can only reach the network through these two tools:
+Runs in the main process (outside the sandbox). Commands in the sandbox can reach the network too (package
+installs, clones); these two tools are the checked path for reading the web:
 - the URL / search query is outbound content and must pass the privacy gate before the call (done by the
   tool functions in agents.py);
 - data flows in, never out: page content comes back locally, local material is never sent with the request;
@@ -86,8 +86,8 @@ def _is_private_host(host: str) -> bool:
 
 
 # ---------------------------------------------------------------- outbound smuggling detection
-# Once the executor has touched sensitive material, the URL / search query is the only channel to send it out
-# (the sandbox is offline). The privacy gate recognizes plaintext entities; encoded data (base64, hex, long digit
+# Once the executor has touched sensitive material, the URL / search query is a channel to send it out (commands
+# are the other one: curl / wget / ssh need approval in default mode, see capabilities.rule_risk). The privacy gate recognizes plaintext entities; encoded data (base64, hex, long digit
 # strings) gets past it, so rules cover that here. Enabled only after "sensitive content was touched", to avoid
 # false positives on ordinary URLs.
 

@@ -47,9 +47,26 @@ async def test_home_secrets_unreadable(sb):
     assert r.exit_code != 0 and "Operation not permitted" in r.stderr
 
 
-async def test_network_denied(sb):
-    r = await sb.run_shell("curl -sS -m 5 https://api.deepseek.com")
-    assert r.exit_code != 0
+async def test_network_allowed_and_caches_stay_out_of_the_workspace(sb):
+    # A local server instead of the internet: the test must not depend on connectivity
+    import asyncio
+
+    async def serve(reader, writer):
+        await reader.readline()
+        writer.write(b"HTTP/1.0 200 OK\r\nContent-Length: 2\r\n\r\nok")
+        await writer.drain()
+        writer.close()
+
+    server = await asyncio.start_server(serve, "127.0.0.1", 0)
+    port = server.sockets[0].getsockname()[1]
+    try:
+        r = await sb.run_shell(f"curl -sS -m 5 http://127.0.0.1:{port}/")
+        assert r.exit_code == 0 and r.stdout == "ok", r.stderr
+    finally:
+        server.close()
+    env = sb._env()
+    for key in ("npm_config_cache", "PIP_CACHE_DIR", "XDG_CACHE_HOME"):
+        assert Path(env[key]).is_relative_to(sb.tmpdir), key
 
 
 async def test_gui_apps_and_keychain_denied(sb):

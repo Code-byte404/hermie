@@ -121,7 +121,7 @@ def report_texts(r: ExecutorReport) -> list[str]:
 
 EXECUTOR_INSTRUCTIONS = """You are the local executor running on the user's computer; the current directory is the workspace.
 - Use the tools to complete the task: run_command runs a shell command; read_file / write_file / edit_file / list_files operate on files.
-- Everything runs in a sandbox: you can only write inside the workspace, you have no network access, and you cannot open GUI
+- Everything runs in a sandbox: you can only write inside the workspace, you have network access (installing packages, cloning repos), and you cannot open GUI
   applications (open and osascript are unavailable). Handle Word/Excel/PDF with python (python-docx, openpyxl) or pandoc.
 - Prefer non-interactive commands: pass --yes / -y and every option on the command line (e.g. create-next-app with its
   flags and --yes, npm init -y). A command that stops at a prompt is shown to the user to answer, which slows the task.
@@ -153,7 +153,7 @@ Tools:
   the last step is usually an overall acceptance check. The plan is shown to the user.
 - delegate(step, acceptance): hand one step to the local executor; acceptance is the acceptance criteria for that step (concrete,
   checkable conditions, 2-4 items). The executor is a smaller local model that can run commands and read/write workspace files in
-  an offline sandbox (python, pandoc etc. are available). Delegate one clear step at a time and state which files it should produce.
+  a sandbox with network access (python, pandoc etc. are available). Delegate one clear step at a time and state which files it should produce.
   A local reviewer checks the actual workspace changes against acceptance; if it fails, the executor must fix things before reporting.
 You receive a structured report: status, steps_done, artifacts, verification (checks the executor performed), issues, question,
 local_review (the local reviewer's verdict) and diagnosis (a cause diagnosis on failure). You never see file contents, and you must
@@ -165,10 +165,10 @@ When everything is finished, summarize briefly in English what was done, which f
 WEB_INSTRUCTIONS = """- When you need up-to-date information (news, prices, data, documentation): use web_search to find sources first, then
   web_fetch to read the full text, and cite the source and date in your answer.
   Never put private information from local material (phone numbers, names, internal code names, ...) into a search query or URL,
-  or the outbound check will block it. Commands like curl inside the sandbox still have no network access; only these two tools do."""
+  or the outbound check will block it. Prefer these two tools for reading the web: they check what leaves the machine."""
 WEB_FETCH_ONLY_INSTRUCTIONS = """- Use web_fetch (with a full URL) when you need to read a web page. There is no search tool; when you need a
   source, ask the user for the URL. Never put private information from local material into a URL, or the outbound check will block it.
-  curl inside the sandbox still has no network access."""
+  Prefer web_fetch over curl for reading pages: it checks what leaves the machine."""
 PLANNER_WEB_NOTE = ("\nThe executor has web access: web_search for the latest information, web_fetch to read a page's text. "
                     "When up-to-date data is needed, delegate the lookup to it and require it to cite sources.")
 
@@ -177,7 +177,7 @@ SCREENSHOT_INSTRUCTIONS = """- screenshot(target, device): captures the iOS simu
   your own eyes: after building and launching an app, take a screenshot and compare what you see with what was asked. The PNG is
   saved outside the workspace (do not try to read it with read_file); screencapture and "simctl io screenshot" do not work from
   run_command, only this tool does."""
-XCODE_INSTRUCTIONS = """- The Xcode toolchain is available through run_command (offline). Build an Xcode project for the simulator with
+XCODE_INSTRUCTIONS = """- The Xcode toolchain is available through run_command . Build an Xcode project for the simulator with
   xcodebuild -scheme <Scheme> -destination 'platform=iOS Simulator,name=<simulator name>' -derivedDataPath build build 2>&1 | tail -40
   (always pass -derivedDataPath inside the workspace; "xcodebuild -list" shows the schemes; the app lands under
   build/Build/Products/Debug-iphonesimulator/<App>.app). Swift packages: swift build, swift test. Command-line Swift: swiftc.
@@ -214,7 +214,7 @@ HISTORY_DROPPED = ("[The earlier execution log was too long and compression time
 # ====================================================================== Executor tools (all through the sandbox)
 
 async def run_command(ctx: RunContext[TaskState], command: str) -> str:
-    """Run one shell command in the workspace (zsh, offline sandbox). Returns the exit code and output."""
+    """Run one shell command in the workspace (zsh, sandboxed: writes only inside the workspace; network is available). Returns the exit code and output."""
     st = ctx.deps
     ask = None
     if st.session.mode is not RunMode.AUTO and st.bus.input_provider is not None:

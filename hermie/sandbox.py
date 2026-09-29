@@ -5,7 +5,9 @@
 - reads: system directories, toolchains, the workspace; the rest of the home directory (~/.ssh, credentials,
   browser data) is never readable, except files and directories the user attached to the current task
   (`Sandbox.grant_read`), which are readable, never writable, for that task only;
-- network: fully offline;
+- network: open (package installs, git clones, API calls from the user's own code). The executor's commands can
+  therefore send data out; curl / wget / ssh / pip install stay high-risk commands that need approval in default
+  mode (capabilities.rule_risk), and the executor's own web tools still go through the outbound check;
 - open / osascript / security and launching other applications are forbidden (otherwise apps outside the
   sandbox could be used to bypass it);
 - the environment is cleared, keeping only PATH/LANG etc.; CLOUD_API_KEY, SSH_AUTH_SOCK and the like never
@@ -121,7 +123,7 @@ def build_profile(workspace: Path, tmpdir: Path, extra_read: list[Path], deny_na
             f"(subpath {_q(p)})" for p in [workspace, tmpdir, *_user_temp_dirs()]) + ")",
         '(allow file-write* (literal "/dev/null") (literal "/dev/zero") (regex #"^/dev/tty") (regex #"^/dev/fd/"))',
         '(allow file-ioctl (regex #"^/dev/tty"))',
-        "(deny network*)",
+        "(allow network*)",
         "(deny appleevent-send)",
         "(deny process-exec " + " ".join(f"(literal {_q(p)})" for p in _DENY_EXEC) + ")",
     ]
@@ -247,7 +249,12 @@ class Sandbox:
         path = f"{self.env_prefix / 'bin'}:{dev}/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
         if not self.sandboxed:
             return {**os.environ, "PATH": path}
+        cache = self.tmpdir / "cache"   # HOME is the workspace: keep package-manager caches out of it
         return {"PATH": path, "HOME": str(self.workspace), "TMPDIR": str(self.tmpdir) + "/",
+                "XDG_CACHE_HOME": str(cache), "npm_config_cache": str(cache / "npm"),
+                "npm_config_store_dir": str(cache / "pnpm-store"), "PIP_CACHE_DIR": str(cache / "pip"),
+                "YARN_CACHE_FOLDER": str(cache / "yarn"), "CARGO_HOME": str(cache / "cargo"),
+                "GOPATH": str(cache / "go"), "GOMODCACHE": str(cache / "go" / "mod"),
                 "LANG": "zh_CN.UTF-8", "LC_ALL": "zh_CN.UTF-8", "PYTHONIOENCODING": "utf-8",
                 "TERM": "dumb", "GIT_CONFIG_NOSYSTEM": "1"}
 

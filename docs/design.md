@@ -119,7 +119,7 @@ If both fail, the task is handled locally end to end.
 
 - Context compression: long-session summaries must use a local model.
 - Observability reporting: cloud observability services such as Logfire are not enabled.
-- The executor itself: no network inside the sandbox by default (see section 9).
+- The executor itself: the sandbox has network access (package installs, clones), so its commands are an exit. Network commands (curl / wget / ssh / scp / rsync / pip install) are rated high risk and need approval in default mode; auto mode trusts them (see section 9).
 
 ## 7. Agent Layer (Pydantic AI)
 
@@ -191,7 +191,7 @@ Everything the executor does runs inside the macOS Seatbelt (sandbox-exec) sandb
 | --- | --- |
 | File writes | Workspace and temp directories only |
 | File reads | System directories, workspace, toolchains; \~/.ssh, cloud credentials, browser data etc. denied |
-| Network | Fully disabled by default |
+| Network | Open (installing dependencies was otherwise impossible); network commands need approval in default mode, package-manager caches live in the sandbox temp dir |
 | Keychain and credentials | Denied; credential channels such as the SSH agent are removed from the environment |
 | Apple Events and launching other apps | Denied (see below) |
 | Screen capture from the shell | Denied (screencapture, window server); screenshots go through the screenshot tool (see below) |
@@ -306,7 +306,7 @@ All Python, running on macOS. Versions are pinned at implementation time.
 | RouteLLM's discriminative power on Chinese unknown | Complexity signal may be useless | Decide whether to disable after measuring |
 | Small local models call tools unreliably and get lost in long tasks | Execution failures or infinite loops | Choose 8B+ models; few, simple tools; usage limits; judge supervises progress |
 | Executor report carries private data | Data flows to the cloud | Triple check: structured format + output validator + gate |
-| Prompt injection (malicious instructions inside files) | Executor misled | No network in the sandbox limits the blast radius; tool output is always treated as data |
+| Prompt injection (malicious instructions inside files) | Executor misled | Tool output is always treated as data; network commands need approval in default mode (the sandbox itself is online) |
 | Seatbelt is deprecated | Future macOS may remove it | Sandbox layer is a replaceable interface; VM as fallback plan |
 | Textual's company has shut down; the Pydantic AI capability API is new | Interface changes or slower maintenance | Pin versions; core decoupled from UI |
 | Chinese input method misbehaves in the full-screen UI | Poor input experience | Verify in the everyday terminal before writing the UI |
@@ -322,7 +322,7 @@ The executor comes first because it carries the most risk and uncertainty (sandb
 
 ## 16. Open Questions
 
-- [ ] Does the executor need network access to install dependencies when working on code? If so, add a local proxy that only allows package repositories, and assess its risk as an exit.
+- [x] Does the executor need network access to install dependencies when working on code? Yes: the sandbox is online (2026-09-29). A local proxy that logs hosts and blocks non-registry hosts after taint is the stricter option if the exit needs closing again.
 - [ ] Is a usable local Jev-like judge model already available? The specific model determines the first replacement implementation of the judge interface.
 - [ ] Which terminal is used day to day (iTerm2, Ghostty, WezTerm or the system Terminal)? This determines the target for the phase-0 Chinese input verification.
 - [ ] What executor and judge model sizes can the local hardware (memory, chip) run at the same time?

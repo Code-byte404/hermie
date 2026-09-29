@@ -21,7 +21,7 @@ Local models do the work inside a sandbox. The cloud planner only ever sees cert
 
 Like a hermit crab, Hermie carries its own shell and only pokes its eyes out.
 
-- **Repetitive and simple work stays local.** An Ollama model runs the task with file and shell tools inside a macOS Seatbelt sandbox: write access only to the workspace, no network, no keychain, no `~/.ssh`.
+- **Repetitive and simple work stays local.** An Ollama model runs the task with file and shell tools inside a macOS Seatbelt sandbox: write access only to the workspace, no keychain, no `~/.ssh`. The sandbox is online so dependencies can be installed; network commands such as `curl` or `pip install` ask for approval in default mode.
 - **Hard work gets a cloud planner, not a cloud executor.** For tasks that need overall planning, a cloud model (DeepSeek by default; OpenAI, Anthropic or any OpenAI-compatible endpoint) writes the plan and delegates steps one by one. It receives the de-identified task and fixed-structure step reports. It never receives file contents, diffs, or the executor's answer.
 - **Nothing leaves without a certificate.** Every outbound message passes a three-layer privacy gate (regex recognizers for phones, IDs, cards, secrets; Presidio NER; a local judge model for context). The cloud client only accepts the `CleanText` type that the gate produces. If any layer errors, the text counts as sensitive.
 - **The executor has to prove it.** A local reviewer reads the actual workspace diff before a task is allowed to report done. Failed reviews go back to the executor for a bounded number of fixes.

@@ -90,7 +90,7 @@ class Settings:
     cloud_model: str = field(default_factory=lambda: _env("CLOUD_MODEL", "") or _env("DEEPSEEK_MODEL", ""))
     cloud_plan_model: str = field(default_factory=lambda: _env("CLOUD_PLAN_MODEL", "") or _env("DEEPSEEK_PLAN_MODEL", ""))
 
-    # ---- Controlled web access (runs in the main process; the sandbox itself stays offline) ----
+    # ---- Controlled web access (runs in the main process, with the outbound check; commands in the sandbox can also reach the network) ----
     web_enabled: bool = field(default_factory=lambda: _env_bool("WEB_ENABLED", True))
     tavily_api_key: str = field(default_factory=lambda: _env("TAVILY_API_KEY", ""))
     web_allowed_domains: tuple = field(default_factory=lambda: tuple(
