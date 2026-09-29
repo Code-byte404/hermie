@@ -46,9 +46,9 @@ async def test_step_graph_review_fails_then_passes(make_agent):
     res = await run_step(agent, st, StepInput(prompt="Write it", task_text="Write it"))
     assert res.review is not None and res.review.passed and res.diagnosis == ""
     assert res.out.report.steps_done == ["fixed"]
-    assert nodes(st) == [("recall_lessons", "ok"), ("execute", "ok"), ("review", "again"), ("execute", "ok"), ("review", "done"),
+    assert nodes(st) == [("recall_lessons", "ok"), ("recall_skills", "ok"), ("execute", "ok"), ("review", "again"), ("execute", "ok"), ("review", "done"),
                          ("finish_step", "ok")]
-    assert st.trace[2]["passed"] is False and st.trace[2]["round"] == 1 and st.trace[4]["round"] == 2
+    assert st.trace[3]["passed"] is False and st.trace[3]["round"] == 1 and st.trace[5]["round"] == 2
     assert st.review_failures == 1 and st.review_fixed and st.step is None
     assert "Review failed (round 1)" in ex.sent_text() and "missing test" in ex.sent_text()
 
@@ -59,7 +59,7 @@ async def test_step_graph_no_review_when_rounds_zero(make_agent):
     st = TaskState(agent.session, "x")
     res = await run_step(agent, st, StepInput(prompt="x", task_text="x"))
     assert res.review is None and not rv.seen
-    assert nodes(st) == [("recall_lessons", "ok"), ("execute", "ok"), ("review", "done"), ("finish_step", "ok")]
+    assert nodes(st) == [("recall_lessons", "ok"), ("recall_skills", "ok"), ("execute", "ok"), ("review", "done"), ("finish_step", "ok")]
 
 
 async def test_step_graph_keeps_last_review_when_reviewer_errors(make_agent):
@@ -80,12 +80,12 @@ async def test_step_graph_diagnoses_only_when_asked(make_agent):
     st = TaskState(agent.session, "x")
     res = await run_step(agent, st, StepInput(prompt="x", task_text="x", diagnose=True))
     assert res.out.report.status is Status.PARTIAL and res.diagnosis == "Compilation failed in one file"
-    assert nodes(st) == [("recall_lessons", "ok"), ("execute", "ok"), ("review", "diagnose"), ("diagnose", "ok"), ("finish_step", "ok")]
+    assert nodes(st) == [("recall_lessons", "ok"), ("recall_skills", "ok"), ("execute", "ok"), ("review", "diagnose"), ("diagnose", "ok"), ("finish_step", "ok")]
     st2 = TaskState(agent.session, "x")
     ex2 = Script([final(status="partial", issues=["could not compile"])])
     agent2 = make_agent(FakeJudge(), executor=ex2, compressor=Script([text("unused")]), verify_rounds=1)
     res2 = await run_step(agent2, st2, StepInput(prompt="x", task_text="x"))
-    assert res2.diagnosis == "" and nodes(st2) == [("recall_lessons", "ok"), ("execute", "ok"), ("review", "done"), ("finish_step", "ok")]
+    assert res2.diagnosis == "" and nodes(st2) == [("recall_lessons", "ok"), ("recall_skills", "ok"), ("execute", "ok"), ("review", "done"), ("finish_step", "ok")]
 
 
 # ---------------------------------------------------------------- task graph
@@ -109,7 +109,7 @@ async def test_local_route_nodes(make_agent, settings):
     r = await agent.run("Rename the files")
     assert r.route == "local" and r.snapshot_id
     rec = _rec(settings)
-    assert nodes(rec) == [("route", "local"), ("snapshot", "execute"), ("recall_lessons", "ok"), ("execute", "ok"), ("review", "done"),
+    assert nodes(rec) == [("route", "local"), ("snapshot", "execute"), ("recall_lessons", "ok"), ("recall_skills", "ok"), ("execute", "ok"), ("review", "done"),
                           ("finish_step", "ok"), ("run_reviewed", "finish"), ("finish_local", "ok")]
     assert rec["nodes"][0]["reasons"] == r.reasons[:len(rec["nodes"][0]["reasons"])]
 
@@ -142,7 +142,7 @@ async def test_local_verify_escalation_cloud_failure_falls_back(make_agent, sett
     own = [x for x in r.reasons if x.startswith("Local self-check failed") or "unavailable" in x]
     assert own[0].startswith("Local self-check failed") and "unavailable, falling back to local" in own[1]
     rec = _rec(settings)
-    assert nodes(rec)[-8:] == [("cloud_direct", "fallback"), ("snapshot", "execute"), ("recall_lessons", "ok"), ("execute", "ok"), ("review", "done"),
+    assert nodes(rec)[-9:] == [("cloud_direct", "fallback"), ("snapshot", "execute"), ("recall_lessons", "ok"), ("recall_skills", "ok"), ("execute", "ok"), ("review", "done"),
                                ("finish_step", "ok"), ("run_reviewed", "finish"), ("finish_local", "ok")]
     assert rec["fallback"] is True and rec["escalated"] is True and len(ex.seen) == 2
 
@@ -222,7 +222,7 @@ async def test_task_graph_privacy_of_trajectory(make_agent, settings):
 def test_render_lists_every_node(make_agent):
     from hermie.graph import render
     src = render(make_agent(FakeJudge()))
-    for node in ("route", "snapshot", "recall_lessons", "run_reviewed", "self_check", "cloud_direct", "recon", "outbound_task", "plan",
+    for node in ("route", "snapshot", "recall_lessons", "recall_skills", "run_reviewed", "self_check", "cloud_direct", "recon", "outbound_task", "plan",
                  "finish_local", "finish_cloud", "finish_plan", "execute", "review", "diagnose", "finish_step"):
         assert f"\n  {node}\n" in src or f"  {node} -->" in src or f"--> {node}\n" in src, node
     assert src.count("stateDiagram-v2") == 2

@@ -155,7 +155,8 @@ def settings(tmp_path):
                     cloud_api_key="test-key", mode=RunMode.AUTO, routellm_enabled=False,
                     stuck_check_every=0, env_path=tmp_path / ".env",
                     # the self-verification loop is off by default; the relevant tests enable it explicitly
-                    verify_required=False, verify_rounds=0, recon_enabled=False, lessons_enabled=False)
+                    verify_required=False, verify_rounds=0, recon_enabled=False, lessons_enabled=False,
+                    skills_enabled=False)
 
 
 @pytest.fixture
@@ -177,6 +178,8 @@ def make_agent(settings, analyzer):
         agent.events = events
         if agent.session.lessons is not None:  # never reach a real Ollama for embeddings
             agent.session.lessons.embedder = FakeEmbedder()
+        if agent.session.skills is not None:
+            agent.session.skills.embedder = FakeEmbedder()
         return agent
     return _make
 

@@ -125,6 +125,7 @@ class Session:
     trajectory_log: Optional[JsonlLog] = None   # per-task node trajectory (data-free; data_dir only)
     lessons: Optional[Any] = None                 # memory.LessonStore (local lesson memory; data_dir only)
     lessons_notice_sent: bool = False             # "embeddings unavailable" is said once per session
+    skills: Optional[Any] = None                  # skills.SkillStore (local skill library; data_dir only)
 
     @property
     def mode(self) -> RunMode:
@@ -191,6 +192,9 @@ class TaskState:
     lessons_used: set[str] = field(default_factory=set)  # ids of every lesson injected during this task
     tools_used: set[str] = field(default_factory=set)    # tool names the executor called during this task (lesson tags)
     problem_counts: dict = field(default_factory=dict)   # problem_key -> [times raised, first sentence]; cleared on a pass
+    skill_episodes: list = field(default_factory=list)   # reviewed successes captured in memory for skill distillation
+    skills: list = field(default_factory=list)           # skills.Skill recalled for the current step
+    skills_used: set[str] = field(default_factory=set)   # ids of every skill injected during this task
 
     @property
     def s(self) -> Settings:

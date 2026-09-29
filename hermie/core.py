@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 import time
 from dataclasses import dataclass, field
 from typing import Optional
@@ -46,6 +47,30 @@ LESSON_PROMPT = (
     "sentence (at most 25 words), write down a lesson that will be useful for this project going forward:\n"
     "which approach works, or which pitfall to avoid. Output only that sentence, no prefix.\n\n"
 )
+
+SKILL_PROMPT = (
+    "Below is a step a local agent completed successfully (it passed review) and the tool calls it made. Write a short "
+    "reusable playbook for doing this kind of step again, in this exact Markdown shape:\n\n"
+    "# <title: what the playbook does, at most 10 words>\n\n## When to use\n<one or two sentences>\n\n## Steps\n"
+    "1. <step>\n...\n\n## Verify\n- <how to check it worked, a command if there is one>\n\n"
+    "Generalize: replace concrete file names, paths, values and names with a short description of what goes there. "
+    "Never include personal data, secrets, customer or company names. Keep only commands that were shown to work. "
+    "Output only the playbook.\n\n"
+)
+
+
+def split_playbook(text: str) -> Optional[tuple[str, str]]:
+    """(title, body) of a distilled playbook, or None when the output is not one. A surrounding code fence is removed."""
+    from .skills import HEADINGS
+    t = (text or "").strip()
+    fence = re.match(r"\A```[a-zA-Z]*\n(.*)\n```\Z", t, re.S)
+    if fence:
+        t = fence.group(1).strip()
+    first, _, rest = t.partition("\n")
+    if not first.startswith("# ") or not first[2:].strip() or not all(h in rest for h in HEADINGS):
+        return None
+    return first[2:].strip(), rest.strip()
+
 
 ABSTRACT_PROMPT = (
     "Rewrite the task below as an [Abstracted task description] to ask an external expert for help drafting an execution "
@@ -98,6 +123,9 @@ class Hermie:
             web = WebClient(s) if s.web_enabled else None
         from .memory import Embedder, LessonStore
         self.session.lessons = LessonStore(s.lessons_path, Embedder(s)) if s.lessons_enabled else None
+        if s.skills_enabled:
+            from .skills import SkillStore
+            self.session.skills = SkillStore(s.skills_dir, Embedder(s), s)
         self.session.web = web or None
         self.session.screen = ScreenCapture(s) if s.mac_tools else None
         self.router = EntryRouter(s, judge, gate, self.scorer)
@@ -210,6 +238,8 @@ class Hermie:
                     await self._write_lesson(st)
                 if self.s.lessons_enabled and self.session.lessons is not None:
                     await self._lessons_after_task(st)
+                if self.s.skills_enabled and self.session.skills is not None:
+                    await self._skills_after_task(st)
             r = result or TaskResult("", routing.decision.route.value if routing else "cancelled", "none",
                                      ["Task was interrupted or failed"])
             r.outbound_count, r.tainted = st.outbound_count, st.tainted
@@ -260,6 +290,10 @@ class Hermie:
 
     async def _run_executor(self, st: TaskState, prompt: str) -> ExecutorOutput:
         st.tool_calls, st.stuck, st.recent_calls, st.tool_seq = 0, False, [], []
+        if st.skills:
+            store = self.session.skills
+            prompt = ("[Skills: procedures that worked before - adapt, do not copy blindly]\n"
+                      + "\n\n".join(f"### {sk.title}\n{store.body(sk)}" for sk in st.skills) + "\n\n" + prompt)
         if st.lessons:
             prompt = "[Lessons from earlier tasks]\n" + "\n".join(f"- {l.text}" for l in st.lessons) + "\n\n" + prompt
         if st.project_doc:
@@ -416,6 +450,46 @@ class Hermie:
             self._embedding_notice()
         except Exception:
             log.exception("Lesson bookkeeping failed")
+
+    async def _skills_after_task(self, st: TaskState) -> None:
+        """Feedback for injected skills (retire the ones that keep not helping), then distill at most two reviewed
+        episodes of this task into candidate playbooks. Local model only; tasks that touched sensitive data never
+        distill; a playbook that fails the privacy check is dropped. Failures are logged and ignored."""
+        store = self.session.skills
+        try:
+            if st.skills_used and st.review_history:
+                helped = bool(st.review_history[0].get("passed"))
+                for sk in await asyncio.to_thread(store.feedback, sorted(st.skills_used), helped):
+                    self.bus.emit(Notice("info", f"Skill retired (it kept not helping): {sk.title}"))
+            if st.exposed or not st.skill_episodes:
+                return
+            from .memory import workspace_id
+            routing = st.flow.routing
+            task_type = routing.signals.task.choice if routing and routing.signals else ""
+            for ep in st.skill_episodes[:2]:
+                material = (f"Step:\n{ep['step']}\n\nTool calls:\n" + "\n".join(ep["calls"][-30:])
+                            + "\n\nReported steps:\n" + "\n".join(f"- {x}" for x in ep["steps"])
+                            + "\nVerification:\n" + "\n".join(f"- {x}" for x in ep["verification"]))
+                agent = Agent(self.models.compressor(), output_type=str, name="skill",
+                              capabilities=self.models.tracker("skill", "local"))
+                out = (await asyncio.wait_for(agent.run(SKILL_PROMPT + material), self.s.compress_timeout_s)).output
+                parsed = split_playbook(out)
+                if parsed is None:
+                    log.info("Skill distillation produced no playbook; dropped")
+                    continue
+                title, body = parsed
+                verdict = await asyncio.to_thread(st.gate.check, f"{title}\n{body}")
+                if verdict.sensitive:
+                    log.info("Distilled skill dropped by the privacy check (%s)", verdict.reason)
+                    continue
+                sk, merged = await asyncio.to_thread(store.add_candidate, title, body,
+                                                     workspace=workspace_id(self.s.workspace), task_type=task_type,
+                                                     key_text=ep["step"])
+                if merged and sk.status == "active" and sk.confirmations == 1:
+                    self.bus.emit(Notice("info", f"New skill confirmed and active: {sk.title}"))
+            self._embedding_notice()
+        except Exception:
+            log.exception("Skill bookkeeping failed")
 
     async def _outbound_task(self, st: TaskState, verdict: PrivacyVerdict, notes: list[str],
                              recon: str = "") -> Optional[CleanText]:

@@ -10,7 +10,7 @@ notes the body left with TaskState.trace_note), written to trajectories.jsonl by
 
 The step graph runs one executor task with the local review loop:
 
-    [*] --> recall_lessons --> execute --> review --> (again) execute | (done) finish_step
+    [*] --> recall_lessons --> recall_skills --> execute --> review --> (again) execute | (done) finish_step
                                                          | (diagnose) diagnose --> finish_step --> [*]
 
 Both the local routes (run_reviewed in the task graph) and the planner's delegate tool run it through run_step().
@@ -132,6 +132,25 @@ async def _recall_lessons(ctx: StepCtx) -> None:
     st.trace_note(lessons=len(st.lessons))
 
 
+@traced("recall_skills")
+async def _recall_skills(ctx: StepCtx) -> None:
+    """Recall active skills similar to this step (local store) for the executor prompt. Fail-open."""
+    st, agent = ctx.state, ctx.deps
+    st.skills = []
+    store = st.session.skills
+    if store is None or not agent.s.skills_enabled:
+        return
+    try:
+        st.skills = await asyncio.to_thread(store.recall, st.step.inp.task_text, k=agent.s.skills_top_k,
+                                            min_sim=agent.s.skills_min_sim)
+    except Exception as e:  # skills are a quality aid: a broken store must never stop the task
+        log.exception("Skill recall failed; continuing without skills")
+        st.trace_note(recall_error=type(e).__name__)
+        st.skills = []
+    st.skills_used.update(k.id for k in st.skills)
+    st.trace_note(skills=len(st.skills))
+
+
 @traced("execute")
 async def _execute(ctx: StepCtx) -> ExecutorOutput:
     st, agent = ctx.state, ctx.deps
@@ -168,6 +187,10 @@ async def _review(ctx: StepCtx) -> Literal["again", "done", "diagnose"]:
                                              "suggestions": review.suggestions})
             if review.passed:
                 st.problem_counts.clear()
+                if agent.s.skills_enabled and len(st.recent_calls) >= agent.s.skill_min_tool_calls:
+                    st.skill_episodes.append({"step": run.inp.task_text, "calls": list(st.recent_calls),
+                                              "steps": list(out.report.steps_done),
+                                              "verification": list(out.report.verification)})
                 if st.review_failures:
                     st.review_fixed = True
             else:
@@ -206,13 +229,15 @@ async def _finish_step(ctx: StepCtx) -> StepResult:
 def build_step_graph(agent: "Hermie"):
     g = GraphBuilder(name="step", state_type=TaskState, deps_type=object, output_type=StepResult)
     recall = g.step(_recall_lessons, node_id="recall_lessons")
+    recall_sk = g.step(_recall_skills, node_id="recall_skills")
     execute = g.step(_execute, node_id="execute")
     review = g.step(_review, node_id="review")
     diagnose = g.step(_diagnose, node_id="diagnose")
     finish = g.step(_finish_step, node_id="finish_step")
     g.add(
         g.edge_from(g.start_node).to(recall),
-        g.edge_from(recall).to(execute),
+        g.edge_from(recall).to(recall_sk),
+        g.edge_from(recall_sk).to(execute),
         g.edge_from(execute).to(review),
         g.edge_from(review).to(
             g.decision(node_id="review_outcome")
