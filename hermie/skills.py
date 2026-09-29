@@ -33,6 +33,7 @@ log = logging.getLogger(__name__)
 
 HEADINGS = ("## When to use", "## Steps", "## Verify")
 STATUSES = ("candidate", "active", "retired")
+SKILL_RELATED_SIM = 0.7   # playbook similarity required when the steps match (see add_candidate)
 _FRONT = re.compile(r"\A---\n(.*?)\n---\n(.*)\Z", re.S)
 
 
@@ -123,8 +124,10 @@ class SkillStore:
     def path(self, skill: Skill) -> Path:
         return self.dir / f"{skill.slug}.md"
 
-    def _write_file(self, skill: Skill, body: str) -> None:
+    def _write_file(self, skill: Skill, body: str, create: bool = False) -> None:
         p = self.path(skill)
+        if not create and not p.exists():
+            raise LookupError(f"skill file {p.name} no longer exists")
         p.write_text(_render(skill, body), encoding="utf-8")
         skill.mtime = p.stat().st_mtime
 
@@ -159,7 +162,12 @@ class SkillStore:
                            source="manual", workspace="", task_type="", created=time.strftime("%Y-%m-%dT%H:%M:%S"),
                            embedding=self._embed(front["title"], body))
                 self._skills[sk.id] = sk
-                self._write_file(sk, body)  # writes the id back so the file keeps its identity
+                sk.mtime = mtime
+                if "id" not in front:
+                    try:
+                        self._write_file(sk, body)  # writes the id back so the file keeps its identity
+                    except OSError:  # read-only file: keep it as it is, match it by name next time
+                        log.warning("Skill file %s is read-only; imported without writing its id back", p)
                 changed = True
             elif mtime != sk.mtime:
                 sk.slug, sk.title = p.stem, front["title"]
@@ -167,6 +175,9 @@ class SkillStore:
                     sk.status = front["status"]
                 sk.embedding = self._embed(sk.title, body)
                 sk.mtime = mtime
+                changed = True
+            if sk.slug != p.stem:  # renamed by the user (mv keeps the mtime)
+                sk.slug = p.stem
                 changed = True
             seen.add(sk.id)
         for sid in [k for k in self._skills if k not in seen]:
@@ -190,15 +201,21 @@ class SkillStore:
         """A freshly distilled playbook: confirms (and activates) a similar existing skill, or becomes a candidate."""
         title, body = title.strip(), body.strip()
         vec = self._embed(title, body)
+        key_vec = self.embedder.embed(key_text) if key_text else None
         with self._lock:
-            best, best_sim = None, 0.0
-            for sk in self._skills.values():
-                if sk.status == "retired":
-                    continue
-                sim = self._similarity(sk, f"{title}\n{body}", vec)
-                if sim > best_sim:
-                    best, best_sim = sk, sim
-            if best is not None and best_sim >= self.s.skill_merge_sim:
+            best = None
+            if vec is not None:  # without embeddings nothing is merged: two candidates are safer than a wrong merge
+                best_score = 0.0
+                for sk in self._skills.values():
+                    if sk.status == "retired" or sk.embedding is None:
+                        continue
+                    pb = _cos(vec, sk.embedding)                                    # playbook vs playbook
+                    ks = _cos(key_vec, sk.key_embedding) if key_vec and sk.key_embedding else 0.0  # step vs step
+                    # the same kind of step, written up differently: accept a looser playbook match
+                    ok = pb >= self.s.skill_merge_sim or (ks >= self.s.skill_merge_sim and pb >= SKILL_RELATED_SIM)
+                    if ok and max(pb, ks) > best_score:
+                        best, best_score = sk, max(pb, ks)
+            if best is not None:
                 best.confirmations += 1
                 if best.status == "candidate":
                     best.status = "active"
@@ -208,9 +225,9 @@ class SkillStore:
             sid = uuid.uuid4().hex[:12]
             sk = Skill(id=sid, slug=_slug(title, sid), title=title, status="candidate", source="distilled",
                        workspace=workspace, task_type=task_type, created=time.strftime("%Y-%m-%dT%H:%M:%S"),
-                       embedding=vec, key_embedding=self.embedder.embed(key_text) if key_text else None)
+                       embedding=vec, key_embedding=key_vec)
             self._skills[sid] = sk
-            self._write_file(sk, body)
+            self._write_file(sk, body, create=True)
             self._save()
             return sk, False
 
@@ -220,6 +237,8 @@ class SkillStore:
         if not live or k <= 0:
             return []
         vec = self.embedder.embed(query)
+        if vec is None:  # word overlap is too weak to pick procedures (measured); skills pause until embeddings return
+            return []
         scored = []
         for sk in live:
             sim = self._similarity(sk, query, vec)
@@ -250,6 +269,7 @@ class SkillStore:
     def set_status(self, id_prefix: str, status: str) -> Skill:
         if status not in STATUSES:
             raise ValueError(f"unknown status {status!r}")
+        self.sync()  # pick up renames and edits before writing
         matches = [k for k in self._skills.values() if id_prefix and k.id.startswith(id_prefix)]
         if len(matches) != 1:
             raise LookupError(f"{'no' if not matches else 'more than one'} skill matches {id_prefix!r}")

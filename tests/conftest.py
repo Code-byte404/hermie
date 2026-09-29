@@ -180,6 +180,7 @@ def make_agent(settings, analyzer):
             agent.session.lessons.embedder = FakeEmbedder()
         if agent.session.skills is not None:
             agent.session.skills.embedder = FakeEmbedder()
+        agent.learn_in_background = False  # deterministic tests: learning is awaited at the end of run()
         return agent
     return _make
 

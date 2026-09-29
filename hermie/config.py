@@ -183,7 +183,7 @@ class Settings:
     skills_top_k: int = field(default_factory=lambda: _env_int("SKILLS_TOP_K", 2))
     skills_min_sim: float = field(default_factory=lambda: _env_float("SKILLS_MIN_SIM", 0.6))
     skill_min_tool_calls: int = field(default_factory=lambda: _env_int("SKILL_MIN_TOOL_CALLS", 4))
-    skill_merge_sim: float = field(default_factory=lambda: _env_float("SKILL_MERGE_SIM", 0.85))
+    skill_merge_sim: float = field(default_factory=lambda: _env_float("SKILL_MERGE_SIM", 0.8))
     skill_retire_uses: int = field(default_factory=lambda: _env_int("SKILL_RETIRE_USES", 5))
     skill_retire_rate: float = field(default_factory=lambda: _env_float("SKILL_RETIRE_RATE", 0.3))
 

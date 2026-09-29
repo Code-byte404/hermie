@@ -86,6 +86,7 @@ class StepInput:
     task_text: str                                # what the reviewer judges against: the task, or the delegated step
     acceptance: list[str] = field(default_factory=list)
     diagnose: bool = False                        # plan mode: on failure, a data-free diagnosis for the planner
+    label: str = ""                               # short name of the step for skills (the task line, not the material)
 
 
 @dataclass
@@ -188,7 +189,7 @@ async def _review(ctx: StepCtx) -> Literal["again", "done", "diagnose"]:
             if review.passed:
                 st.problem_counts.clear()
                 if agent.s.skills_enabled and len(st.recent_calls) >= agent.s.skill_min_tool_calls:
-                    st.skill_episodes.append({"step": run.inp.task_text, "calls": list(st.recent_calls),
+                    st.skill_episodes.append({"step": run.inp.label or run.inp.task_text, "calls": list(st.recent_calls),
                                               "steps": list(out.report.steps_done),
                                               "verification": list(out.report.verification)})
                 if st.review_failures:
@@ -304,7 +305,7 @@ async def _snapshot(ctx: TaskCtx) -> Literal["execute", "plan"]:
 @traced("run_reviewed")
 async def _run_reviewed(ctx: TaskCtx) -> Literal["finish", "self_check"]:
     st, agent = ctx.state, ctx.deps
-    st.flow.last_step = await run_step(agent, st, StepInput(prompt=st.text, task_text=st.text))
+    st.flow.last_step = await run_step(agent, st, StepInput(prompt=st.text, task_text=st.text, label=st.flow.task))
     if st.route == Route.LOCAL_VERIFY.value and not st.flow.fallback:
         return "self_check"
     return "finish"

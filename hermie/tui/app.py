@@ -344,6 +344,8 @@ class HermieApp(App):
             self._notice("error", "No-sandbox mode: the executor can access the network and read/write the whole disk. The privacy gate is still on.")
         if not self.settings.cloud_api_key:
             self._notice("warn", "CLOUD_API_KEY not set: plan mode and cloud direct will fall back to local execution.")
+        for note in getattr(self.agent, "startup_notes", []):
+            self._notice("warn", note)
         self._warm_up()
 
     @work(thread=True, exclusive=True, group="warmup")

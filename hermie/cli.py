@@ -151,6 +151,7 @@ async def _headless(s: Settings, task: str, material: str, force: Force) -> None
 
     agent.bus.approver = approver
     result = await agent.run(task, material, force)
+    await agent.learning_idle()  # finish post-task learning (lessons, skills) before the process exits
     print(json.dumps({"event": "Result", **result.to_dict(), "stats": agent.session.stats.snapshot()},
                      ensure_ascii=False, default=str), flush=True)
 

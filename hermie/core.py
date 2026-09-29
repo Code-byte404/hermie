@@ -122,10 +122,21 @@ class Hermie:
         if web is None:
             web = WebClient(s) if s.web_enabled else None
         from .memory import Embedder, LessonStore
-        self.session.lessons = LessonStore(s.lessons_path, Embedder(s)) if s.lessons_enabled else None
+        embedder = Embedder(s)  # shared: one "embeddings unavailable" state for lessons and skills
+        self.startup_notes: list[str] = []   # problems found while starting; the UI shows them once it is up
+        self.session.lessons = LessonStore(s.lessons_path, embedder) if s.lessons_enabled else None
         if s.skills_enabled:
             from .skills import SkillStore
-            self.session.skills = SkillStore(s.skills_dir, Embedder(s), s)
+            try:
+                self.session.skills = SkillStore(s.skills_dir, embedder, s)
+            except OSError as e:  # an unreadable skills directory must not stop Hermie from starting
+                log.exception("Skill library unavailable")
+                self.startup_notes.append(f"Skill library unavailable ({type(e).__name__}: {s.skills_dir}); "
+                                          "skills are off for this session")
+        # Post-task learning (lessons, skills) runs after the task is recorded and reported, as a background task, so
+        # the result is not held up by local-model distillation and an interruption cannot lose the task record.
+        self.learn_in_background = True
+        self._learning: set[asyncio.Task] = set()
         self.session.web = web or None
         self.session.screen = ScreenCapture(s) if s.mac_tools else None
         self.router = EntryRouter(s, judge, gate, self.scorer)
@@ -230,16 +241,15 @@ class Hermie:
         finally:
             routing = st.flow.routing
             self.session.stats.task_started_at = None
+            interrupted: Optional[BaseException] = None
             if result is None:
                 st.cancel_checks()  # interrupted / failed: stop waiting for the background judge calls
             else:
-                await st.settle_checks()
-                if self.s.lessons_enabled and st.review_fixed:
-                    await self._write_lesson(st)
-                if self.s.lessons_enabled and self.session.lessons is not None:
-                    await self._lessons_after_task(st)
-                if self.s.skills_enabled and self.session.skills is not None:
-                    await self._skills_after_task(st)
+                try:
+                    await st.settle_checks()
+                except asyncio.CancelledError as e:  # still record the task below, then re-raise
+                    st.cancel_checks()
+                    interrupted = e
             r = result or TaskResult("", routing.decision.route.value if routing else "cancelled", "none",
                                      ["Task was interrupted or failed"])
             r.outbound_count, r.tainted = st.outbound_count, st.tainted
@@ -252,6 +262,35 @@ class Hermie:
             self._record_progress(task, r, st, interrupted=result is None)
             if result is not None:
                 self.bus.emit(TaskFinished(r.route, r.backend, r.output, st.outbound_count))
+            if interrupted is not None:
+                raise interrupted
+            if result is not None:
+                if self.learn_in_background:
+                    t = asyncio.ensure_future(self._learn(st))
+                    self._learning.add(t)
+                    t.add_done_callback(self._learning.discard)
+                else:
+                    await self._learn(st)
+
+    async def _learn(self, st: TaskState) -> None:
+        """Post-task learning, all local: a lesson after review-then-fix, lesson feedback and repeated-failure lessons,
+        skill feedback and distillation. Runs after the task is recorded; each part logs and swallows its own errors."""
+        if self.s.lessons_enabled and st.review_fixed:
+            await self._write_lesson(st)
+        if self.s.lessons_enabled and self.session.lessons is not None:
+            await self._lessons_after_task(st)
+        if self.s.skills_enabled and self.session.skills is not None:
+            await self._skills_after_task(st)
+
+    async def learning_idle(self) -> None:
+        """Wait for background post-task learning (the headless CLI calls this before exiting)."""
+        if self._learning:
+            await asyncio.gather(*list(self._learning), return_exceptions=True)
+
+    async def cancel_learning(self) -> None:
+        for t in list(self._learning):
+            t.cancel()
+        await self.learning_idle()
 
     def _record_progress(self, task: str, r: TaskResult, st: TaskState, interrupted: bool = False) -> None:
         """After a task ends (or is interrupted), append progress to the workspace AGENT.md (a deterministic write by
@@ -416,11 +455,11 @@ class Hermie:
         self._embedding_notice()
 
     def _embedding_notice(self) -> None:
-        store = self.session.lessons
-        if store is not None and getattr(store.embedder, "failed", False) and not self.session.lessons_notice_sent:
+        stores = [x for x in (self.session.lessons, self.session.skills) if x is not None]
+        if any(getattr(x.embedder, "failed", False) for x in stores) and not self.session.lessons_notice_sent:
             self.session.lessons_notice_sent = True
-            self.bus.emit(Notice("warn", f"Lesson embeddings unavailable ({self.s.lesson_embed_model} not reachable in "
-                                         "Ollama); lessons are matched by word overlap"))
+            self.bus.emit(Notice("warn", f"Local embeddings unavailable ({self.s.lesson_embed_model} not reachable in "
+                                         "Ollama): lessons are matched by word overlap and skills are paused"))
 
     async def _sync_lessons(self) -> None:
         """Import lessons written into AGENT.md by hand; stop using the ones the user deleted from it."""
