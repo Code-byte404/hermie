@@ -28,10 +28,11 @@ from typing import TYPE_CHECKING, Literal, Optional
 
 from pydantic_graph import GraphBuilder, StepContext, TypeExpression
 
-from .agents import (ExecutorOutput, Review, Status, build_cloud_agent, build_planner, require_clean, restore_local,
-                     stream_handler, usage_limits)
+from .agents import (ExecutorOutput, Review, Status, build_cloud_agent, require_clean, restore_local,
+                     stream_handler)
 from .audit import sha256
 from .events import ChatMessage, Notice, ReviewArrived, RouteDecided
+from .planning import build_planner, planner_usage_limits
 from .policy import Route
 from .recon import workspace_recon
 from .session import TaskState
@@ -395,8 +396,9 @@ async def _plan(ctx: TaskCtx) -> Literal["done", "midway", "fallback"]:
     st, agent = ctx.state, ctx.deps
     st.report_for_cloud = True
     try:
-        planner = build_planner(agent.models, agent._delegated_step)
-        res = await planner.run(require_clean(st.flow.outbound), deps=st, usage_limits=usage_limits(agent.s),
+        planner = build_planner(agent.models, agent, st.bus.clarifier is not None and not st.flow.escalated)
+        res = await planner.run(require_clean(st.flow.outbound), deps=st,
+                                usage_limits=planner_usage_limits(agent.s, agent.s.plan_delegation_cap),
                                 event_stream_handler=stream_handler("planner", st.bus))
     except Exception as e:
         log.exception("Plan mode failed")

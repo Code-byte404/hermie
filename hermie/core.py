@@ -236,6 +236,7 @@ class Hermie:
         st = TaskState(self.session, text,
                        project_doc=project_doc.load(self.s.workspace, include_lessons=not self.s.lessons_enabled),
                        flow=FlowState(task=task, force=force))
+        st.host = self
         await self._sync_lessons()
         t0 = time.time()
         self.session.stats.task_started_at = t0
@@ -447,8 +448,8 @@ class Hermie:
             parts.append("⚠ Local review failed:\n" + "\n".join(f"- {x}" for x in st.last_review.get("problems", [])))
         return "\n\n".join(parts) or "(the executor gave no answer)"
 
-    async def _delegated_step(self, st: TaskState, local_step: str,
-                              acceptance: list[str]) -> tuple[ExecutorOutput, Optional[Review], str]:
+    async def _delegated_step(self, st: TaskState, local_step: str, acceptance: list[str],
+                              plan_step: Optional[int] = None) -> tuple[ExecutorOutput, Optional[Review], str]:
         """One step delegated by the planner: execute -> local review against the acceptance criteria -> fix; on
         failure, produce a data-free diagnosis for the planner."""
         prompt = f"[Overall task]\n{st.text}\n\n[Current step delegated by the planner]\n{local_step}"

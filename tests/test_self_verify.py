@@ -142,7 +142,10 @@ async def test_local_verify_passes_with_review(make_agent):
 # ---------------- B. Planner: plan, acceptance criteria, review verdict passed back, diagnosis, budget
 
 async def test_planner_plan_acceptance_review_and_budget(make_agent, settings):
-    planner = Script([tool("set_plan", steps=["Generate the table", "Acceptance check"]),
+    planner = Script([tool("submit_plan", goal="A 3-column table", architecture="one CSV file",
+                           steps=[{"title": "Generate the table", "details": "write out.csv", "acceptance": ["out.csv exists"]},
+                                  {"title": "Acceptance check", "details": "check columns",
+                                   "acceptance": ["exactly 3 columns"]}]),
                       tool("delegate", step="Generate out.csv with 3 columns", acceptance=["out.csv exists", "exactly 3 columns"]),
                       text("Done")], name="planner")
     ex = Script([tool("write_file", path="out.csv", content="a,b,c\n"), tool("read_file", path="out.csv"),

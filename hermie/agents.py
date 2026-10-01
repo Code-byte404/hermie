@@ -16,7 +16,7 @@ from typing import Optional
 from urllib.parse import urlparse
 
 from pydantic import BaseModel, Field
-from pydantic_ai import Agent, ModelRetry, RunContext, Tool, UsageLimits
+from pydantic_ai import Agent, ModelRetry, RunContext, UsageLimits
 from dataclasses import replace
 
 from pydantic_ai.messages import (BinaryContent, ModelRequest, ModelResponse, PartDeltaEvent, PartStartEvent,
@@ -24,12 +24,11 @@ from pydantic_ai.messages import (BinaryContent, ModelRequest, ModelResponse, Pa
 from pydantic_ai.models import Model
 from pydantic_ai.settings import ModelSettings
 
-from .capabilities import (ActivityTracker, CommandGuard, ExecutorToolBudget, OutboundGuard, PlannerToolBudget,
-                           TaintTracker, command_finished, mark_tainted)
+from .capabilities import (ActivityTracker, CommandGuard, ExecutorToolBudget, OutboundGuard, TaintTracker,
+                           command_finished, mark_tainted)
 from .mactools import xcode_available
 from .config import RunMode, Settings
-from .events import (Approval, ApprovalRequest, ChatMessage, CommandStarted, InputRequest, Notice, OutboundSent,
-                     PlanUpdated, ReportArrived)
+from .events import (Approval, ApprovalRequest, ChatMessage, CommandStarted, InputRequest, Notice, OutboundSent)
 from .web import WebError, decode_for_check, smuggling_risk
 from .privacy import CleanText, PrivacyGate
 from .session import TaskState
@@ -144,24 +143,6 @@ EXECUTOR_INSTRUCTIONS = """You are the local executor running on the user's comp
   answer: the complete answer for the user; it may contain specific content (it stays on this machine only).
 """
 
-PLANNER_INSTRUCTIONS = """You are the planner. The task description you see has been de-identified: placeholders of the form <ENTITY_n>
-and "file#n" stand for hidden specifics; keep them exactly as they are when delegating, they are restored automatically on the local
-side. The task description may be followed by [Project doc AGENT.md] and [Workspace overview] (directory layout, project type,
-toolchain); use them to judge the current state first and do not redo work that is already finished.
-Tools:
-- set_plan(steps): give the overall plan first, one sentence per step; each step must be independently completable and verifiable;
-  the last step is usually an overall acceptance check. The plan is shown to the user.
-- delegate(step, acceptance): hand one step to the local executor; acceptance is the acceptance criteria for that step (concrete,
-  checkable conditions, 2-4 items). The executor is a smaller local model that can run commands and read/write workspace files in
-  a sandbox with network access (python, pandoc etc. are available). Delegate one clear step at a time and state which files it should produce.
-  A local reviewer checks the actual workspace changes against acceptance; if it fails, the executor must fix things before reporting.
-You receive a structured report: status, steps_done, artifacts, verification (checks the executor performed), issues, question,
-local_review (the local reviewer's verdict) and diagnosis (a cause diagnosis on failure). You never see file contents, and you must
-not ask the executor to send raw data to you.
-Reports include the remaining delegation budget: fit verification and fixes into it; if the same step fails twice, change approach or
-narrow the scope instead of retrying as is.
-When everything is finished, summarize briefly in English what was done, which files were produced and which acceptance checks passed."""
-
 WEB_INSTRUCTIONS = """- When you need up-to-date information (news, prices, data, documentation): use web_search to find sources first, then
   web_fetch to read the full text, and cite the source and date in your answer.
   Never put private information from local material (phone numbers, names, internal code names, ...) into a search query or URL,
@@ -169,8 +150,6 @@ WEB_INSTRUCTIONS = """- When you need up-to-date information (news, prices, data
 WEB_FETCH_ONLY_INSTRUCTIONS = """- Use web_fetch (with a full URL) when you need to read a web page. There is no search tool; when you need a
   source, ask the user for the URL. Never put private information from local material into a URL, or the outbound check will block it.
   Prefer web_fetch over curl for reading pages: it checks what leaves the machine."""
-PLANNER_WEB_NOTE = ("\nThe executor has web access: web_search for the latest information, web_fetch to read a page's text. "
-                    "When up-to-date data is needed, delegate the lookup to it and require it to cite sources.")
 
 SCREENSHOT_INSTRUCTIONS = """- screenshot(target, device): captures the iOS simulator screen (target="simulator"; device is "booted", a simulator name
   or a UDID) or the whole Mac display (target="mac") and attaches the image so you can look at it. Use it to check UI work with
@@ -188,10 +167,6 @@ XCODE_INSTRUCTIONS = """- The Xcode toolchain is available through run_command .
   --udid <udid>, axe type "<text>" --udid <udid>, axe swipe --start-x .. --start-y .. --end-x .. --end-y .. --udid <udid>,
   axe button home --udid <udid>. Typical loop for UI work: build -> install -> launch -> screenshot -> tap/type -> screenshot,
   and judge the result from the image, not from the build log alone."""
-PLANNER_MAC_NOTE = ("\nThe executor runs on a Mac with the Xcode toolchain: it can build Xcode projects and Swift packages, boot the "
-                    "iOS simulator, install and launch apps, drive the UI (tap, type, swipe) and take screenshots that it can look "
-                    "at itself. For app work, delegate build / run / visual check steps and require a screenshot-based check.")
-
 REVIEWER_INSTRUCTIONS = """You are the local reviewer, responsible for verifying whether the executor really completed the task. You see:
 the task (and acceptance criteria), the executor's report and answer, the actual workspace changes relative to the pre-task snapshot
 (diff), and the most recent command output.
@@ -595,76 +570,6 @@ def build_cloud_agent(models: ModelFactory, planning: bool) -> Agent[TaskState, 
     model = models.cloud(planning)
     return Agent(model, deps_type=TaskState, output_type=str, instructions=CLOUD_INSTRUCTIONS, name="cloud",
                  capabilities=[OutboundGuard(model_name=model.model_name), *models.tracker("cloud", "cloud")])
-
-
-def build_planner(models: ModelFactory, run_step) -> Agent[TaskState, str]:
-    """run_step(st, local_step, acceptance) -> (ExecutorOutput, Review | None, diagnosis: str), provided by the core."""
-    model = models.planner()
-
-    def _budget(st: TaskState) -> str:
-        return f"Remaining delegations: {max(0, st.s.max_delegations - st.delegations)}"
-
-    async def set_plan(ctx: RunContext[TaskState], steps: list[str]) -> str:
-        """Record the overall plan (one sentence per step; the last step is usually the acceptance check).
-        Then delegate step by step with delegate."""
-        st = ctx.deps
-        st.plan_outline = [restore_local(st, x) for x in steps]
-        st.bus.emit(PlanUpdated(list(st.plan_steps), list(st.plan_done), list(st.plan_outline)))
-        return st.remember(PrivacyGate.trusted_template(f"Plan recorded, {len(steps)} steps. {_budget(st)}")).text
-
-    async def delegate(ctx: RunContext[TaskState], step: str, acceptance: Optional[list[str]] = None) -> str:
-        """Delegate one concrete step to the local executor; acceptance is the acceptance criteria for this step.
-        Returns the structured report."""
-        st = ctx.deps
-        st.delegations += 1
-        local_step = restore_local(st, step)
-        local_acc = [restore_local(st, a) for a in (acceptance or [])]
-        st.plan_steps.append(local_step)
-        st.plan_done.append(False)
-        st.bus.emit(PlanUpdated(list(st.plan_steps), list(st.plan_done), list(st.plan_outline)))
-        try:
-            out, review, diagnosis = await run_step(st, local_step, local_acc)
-            report = out.report
-        except Exception as e:
-            log.exception("Executor run failed")
-            st.bus.emit(Notice("error", f"Executor run failed: {e}"))
-            return st.remember(PrivacyGate.trusted_template(
-                f"status: failed\nissues:\n- executor run failed ({type(e).__name__})\n{_budget(st)}")).text
-        st.plan_done[-1] = report.status is Status.DONE and (review is None or review.passed)
-        st.bus.emit(PlanUpdated(list(st.plan_steps), list(st.plan_done), list(st.plan_outline)))
-        # Degrade the outbound content step by step: full (with review and diagnosis) -> without diagnosis
-        # -> without review details -> status only
-        candidates = [(format_report(report, review, diagnosis), {"review": review, "diagnosis": diagnosis}),
-                      (format_report(report, review), {"review": review}),
-                      (format_report(report), {})]
-        clean, shown = None, {}
-        for text, extra in candidates:
-            try:
-                clean = await asyncio.to_thread(st.gate.certify, f"{text}\n{_budget(st)}")
-            except PermissionError:
-                continue
-            shown = report.model_dump(mode="json", exclude_none=True)
-            if extra.get("review") is not None:
-                shown["local_review"] = extra["review"].model_dump()
-            if extra.get("diagnosis"):
-                shown["diagnosis"] = extra["diagnosis"]
-            break
-        if clean is None:  # last resort: keep only status
-            st.report_stripped = True
-            clean = PrivacyGate.trusted_template(f"status: {report.status.value}\n{_budget(st)}")
-            shown = {"status": report.status.value}
-        st.bus.emit(ReportArrived(shown, st.report_stripped))
-        return st.remember(clean).text
-
-    instructions = PLANNER_INSTRUCTIONS + (PLANNER_WEB_NOTE if models.s.web_enabled else "")
-    if models.s.mac_tools and xcode_available():
-        instructions += PLANNER_MAC_NOTE
-    return Agent(model, deps_type=TaskState, output_type=str, instructions=instructions, name="planner",
-                 # delegate is sequential: parallel delegations would share the executor, its history and
-                 # TaskState.step, and the planner is told to delegate step by step anyway
-                 tools=[set_plan, Tool(delegate, sequential=True)],
-                 capabilities=[OutboundGuard(model_name=model.model_name), PlannerToolBudget(),
-                               *models.tracker("planner", "cloud")])
 
 
 def restore_local(st: TaskState, text: str) -> str:

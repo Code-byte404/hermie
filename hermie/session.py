@@ -208,6 +208,7 @@ class TaskState:
     plan_approved_by: str = ""                    # user / auto
     delegation_budget: int = 0                    # 0 = settings.max_delegations (no plan yet)
     plan_path: Optional[Path] = None              # where PLAN.md was written
+    host: Optional[Any] = None                    # the Hermie instance (planner tools call its helpers)
     answers: list[str] = field(default_factory=list)
     artifacts: list[dict] = field(default_factory=list)
     last_report: Optional[dict] = None

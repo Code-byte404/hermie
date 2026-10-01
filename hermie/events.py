@@ -37,7 +37,7 @@ class RouteDecided(Event):
 class PlanUpdated(Event):
     steps: list[str]       # steps the planner delegated (the cloud-side text before placeholder restoration is not shown)
     done: list[bool]
-    outline: list[str] = field(default_factory=list)  # the overall plan from the planner's set_plan (may exceed what was delegated)
+    outline: list[str] = field(default_factory=list)  # the overall plan from the planner's submit_plan (may exceed what was delegated)
 
 
 @dataclass

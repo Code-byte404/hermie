@@ -299,10 +299,18 @@ class ExecutorToolBudget(AbstractCapability[TaskState]):
 
 @dataclass
 class PlannerToolBudget(AbstractCapability[TaskState]):
+    """Hide planner tools whose budget is spent: delegate (delegations), ask_user (question rounds), revise_plan."""
+
     async def prepare_tools(self, ctx: RunContext[TaskState], tool_defs: list[ToolDefinition]):
-        if ctx.deps.delegations >= ctx.deps.s.max_delegations:
-            return []
-        return tool_defs
+        st = ctx.deps
+        hidden = set()
+        if st.delegations >= st.delegation_limit:
+            hidden.add("delegate")
+        if st.question_rounds >= st.s.plan_max_question_rounds:
+            hidden.add("ask_user")
+        if st.plan_revisions >= st.s.plan_max_revisions:
+            hidden.add("revise_plan")
+        return [t for t in tool_defs if t.name not in hidden]
 
 
 async def timed(coro):

@@ -7,7 +7,8 @@ import math
 from typing import Callable
 
 import pytest
-from pydantic_ai.messages import ModelRequest, ModelResponse, TextPart, ToolCallPart, ToolReturnPart, UserPromptPart
+from pydantic_ai.messages import (ModelRequest, ModelResponse, RetryPromptPart, TextPart, ToolCallPart, ToolReturnPart,
+                                  UserPromptPart)
 from pydantic_ai.models.function import AgentInfo, DeltaToolCall, FunctionModel
 
 from hermie.agents import SMUGGLE_QUESTION, ModelFactory
@@ -88,10 +89,12 @@ class Script:
         self.steps = list(steps or [])
         self.final = final
         self.seen: list[list] = []   # the messages the model saw on each call
+        self.infos: list[AgentInfo] = []   # the tools offered on each call
         self.model = FunctionModel(self._call, stream_function=self._stream, model_name=name)
 
     def _call(self, messages, info: AgentInfo) -> ModelResponse:
         self.seen.append(list(messages))
+        self.infos.append(info)
         if self.steps:
             return self.steps.pop(0)(messages, info)
         if self.final:
@@ -123,6 +126,8 @@ class Script:
                                 out.extend(c for c in p.content if isinstance(c, str))
                         elif isinstance(p, ToolReturnPart):
                             out.append(p.model_response_str())
+                        elif isinstance(p, RetryPromptPart):
+                            out.append(p.model_response())
         return "\n".join(out)
 
 

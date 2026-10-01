@@ -66,7 +66,10 @@ async def test_task_flow_renders_route_chat_and_perf(make_agent):
 
 
 async def test_plan_mode_shows_outbound_and_plan(make_agent):
-    planner = Script([tool("set_plan", steps=["generate report", "acceptance"]), tool("delegate", step="generate report report.md"),
+    planner = Script([tool("submit_plan", goal="A report", architecture="one markdown file",
+                           steps=[{"title": "generate report", "details": "write report.md", "acceptance": ["report.md exists"]},
+                                  {"title": "acceptance", "details": "check the report", "acceptance": ["report is complete"]}]),
+                      tool("delegate", step="generate report report.md"),
                       text("done")], name="planner")
     agent = make_agent(FakeJudge(task="planning"), planner=planner, reviewer=Script([review(True)]), verify_rounds=1)
     app = HermieApp(agent=agent)
@@ -79,7 +82,7 @@ async def test_plan_mode_shows_outbound_and_plan(make_agent):
         assert app.query_one("#outbound", RichLog).lines
         plan = str(app.query_one("#plan", Static).render())
         assert "generate report" in plan and "acceptance" in plan and "delegated" in plan
-        assert "outbound 3" in str(app.query_one("#topbar", Static).render())   # task, set_plan return, report
+        assert "outbound 3" in str(app.query_one("#topbar", Static).render())   # task, submit_plan return, report
         assert any("Local review · round 1 · passed" in t for _, t in app.transcript)
 
 
