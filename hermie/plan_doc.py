@@ -79,16 +79,18 @@ def executor_block(plan: "Plan", done: list[bool], current: Optional[int]) -> st
     return "\n".join(lines)
 
 
-_DIFF_HEAD = re.compile(r"^diff (?:--git a/|-ruN \S*?/)(\S+)")
+# git: "diff --git a/<path> b/<path>"; clone workspaces (snapshot.diff): "diff -ruN --exclude=.git snapshot/<path> ..."
+_DIFF_HEAD = re.compile(r"^diff (?:--git a/|-ruN (?:--\S+ )*\S*?/)(\S+)")
 
 
 def strip_from_diff(diff: str, name: str) -> str:
-    """Drop the file sections of `name` from a unified diff (git or diff -ruN form)."""
+    """Drop the file sections of `name` from a unified diff (git or diff -ruN form). The plan file lives at the
+    workspace root, so only that exact workspace-relative path matches (a user's docs/PLAN.md stays)."""
     out, skip = [], False
     for line in diff.splitlines(keepends=True):
         m = _DIFF_HEAD.match(line)
         if m:
-            skip = m.group(1) == name or m.group(1).endswith("/" + name)
+            skip = m.group(1) == name
         if not skip:
             out.append(line)
     return "".join(out)

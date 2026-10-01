@@ -199,6 +199,7 @@ class TaskState:
     plan_done: list[bool] = field(default_factory=list)
     plan: Optional[Any] = None                    # planning.Plan as the planner wrote it (placeholders kept)
     plan_local: Optional[Any] = None              # the same, restored locally (UI, PLAN.md, executor)
+    plan_proposed_local: Optional[Any] = None     # the last plan shown for approval (diff base during design)
     plan_step_done: list[bool] = field(default_factory=list)   # per plan step: delegated and passed review
     plan_revisions: int = 0                       # change requests answered + revise_plan calls
     question_rounds: int = 0

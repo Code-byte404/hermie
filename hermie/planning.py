@@ -11,6 +11,7 @@ from typing import TYPE_CHECKING, Optional
 
 from pydantic import BaseModel, Field
 from pydantic_ai import Agent, ModelRetry, RunContext, Tool, ToolOutput, UsageLimits
+from pydantic_ai.messages import RetryPromptPart
 
 from . import plan_doc
 from .agents import ModelFactory, Status, format_report, restore_local
@@ -122,6 +123,11 @@ PLANNER_MAC_NOTE = ("\nThe executor runs on a Mac with the Xcode toolchain: it c
                     "at itself. For app work, delegate build / run / visual check steps and require a screenshot-based check.")
 
 
+# A planner tool call that fails validation (too many questions, a bad plan) is sent back this many times in a row
+# before the run gives up; pydantic-ai's default of 1 turned two bad ask_user calls into a fallback to local.
+TOOL_RETRIES = 3
+
+
 class PlanRejected(Exception):
     """The user rejected the plan: nothing is executed."""
 
@@ -213,25 +219,42 @@ async def ask(st: TaskState, host: "Hermie", questions: list[Question]) -> str:
         raise
     except Exception:   # a broken dialog must not stop the task: the planner decides itself
         log.exception("Clarification dialog failed")
+        st.bus.emit(Notice("error", "Question dialog failed; the planner decides itself"))
         answers = []
     return (await answers_text(st, host, questions, answers)).text
 
 
-async def review_plan(st: TaskState, host: "Hermie", plan: Plan, revising: bool = False) -> tuple[str, Optional[str]]:
-    """Validate, show, and get a decision on a submitted plan. Returns ("approve", None), ("revise", certified
-    feedback) or ("reject", None). On approve the plan becomes the task's plan (state, PLAN.md, events).
-    revising: called from revise_plan, whose approval is counted in plan_revisions only after this returns."""
+# The design phase's change request goes out as the retry prompt of the submit_plan output tool
+SUBMIT_PLAN = "submit_plan"
+
+
+def _outgoing(text: str, retry_tool: Optional[str]) -> str:
+    """The exact string the planner receives for `text`: as is (a tool result), or rendered as pydantic-ai renders
+    the retry prompt of a ModelRetry raised for `retry_tool`."""
+    return text if retry_tool is None else RetryPromptPart(content=text, tool_name=retry_tool).model_response()
+
+
+async def review_plan(st: TaskState, host: "Hermie", plan: Plan, revising: bool = False,
+                      retry_tool: Optional[str] = None) -> tuple[str, Optional[str]]:
+    """Validate, show, and get a decision on a submitted plan. Returns ("approve", None), ("revise", feedback) or
+    ("reject", None). On approve the plan becomes the task's plan (state, PLAN.md, events).
+    revising: called from revise_plan, whose approval is counted in plan_revisions only after this returns.
+    retry_tool: the feedback is raised as a ModelRetry of that output tool; the rendered retry prompt (what actually
+    goes out) is what gets certified and remembered, so the outbound guard does not run the gate on it again."""
     if problems := plan_problems(plan, st.s.plan_max_steps):
         raise ModelRetry("; ".join(problems))
     local = localize_plan(st, plan)
     # The proposal's number: every change request answered and every approved revise_plan counts one
     revision = st.plan_revisions + (2 if revising and st.plan_local is not None else 1)
     ask_user = st.s.mode is RunMode.DEFAULT and st.bus.plan_reviewer is not None
-    action, feedback = "approve", ""
+    action, feedback, approved_by = "approve", "", "user" if ask_user else "auto"
     if ask_user:
         final = st.plan_revisions >= st.s.plan_max_revisions
+        # what changed: against the approved plan for revise_plan, against the last proposal during design
+        base = st.plan_local if revising else st.plan_proposed_local
+        st.plan_proposed_local = local
         req = PlanReviewRequest(local.model_dump(), plan_doc.render(local, []), revision,
-                                plan_doc.diff_steps(st.plan_local, local), final)
+                                plan_doc.diff_steps(base, local), final)
         try:
             decision = await st.bus.request_plan_review(req)
             action, feedback = decision.action, decision.feedback
@@ -239,7 +262,8 @@ async def review_plan(st: TaskState, host: "Hermie", plan: Plan, revising: bool 
             raise
         except Exception:
             log.exception("Plan review dialog failed; approving")
-            action = "approve"
+            st.bus.emit(Notice("error", "Plan review dialog failed; the plan was approved automatically"))
+            action, approved_by = "approve", "auto"
         if action == "revise" and final:
             action = "approve"
     if action == "reject":
@@ -247,25 +271,27 @@ async def review_plan(st: TaskState, host: "Hermie", plan: Plan, revising: bool 
     if action == "revise":
         st.plan_revisions += 1
         clean, how = await host._certify_outbound(st, feedback.strip() or "Please improve the plan.", [])
-        out = None
+        msg = None
         if clean is not None:
+            msg = f"The user asked for changes:\n{clean.text}"
             try:
-                # remember the exact string that goes out (as a ModelRetry / tool result), so OutboundGuard sees a known hash
-                out = st.remember(await asyncio.to_thread(st.gate.certify, f"The user asked for changes:\n{clean.text}"))
+                # remember the exact string that goes out (tool result or rendered retry), so OutboundGuard sees a known hash
+                st.remember(await asyncio.to_thread(st.gate.certify, _outgoing(msg, retry_tool)))
             except PermissionError:
-                out = None
-        if out is None:
+                msg = None
+        if msg is None:
             st.answers_withheld += 1
             st.sensitive_input = True
             st.bus.emit(Notice("warn", "Your change request was withheld: it could not be sent without private data"))
-            return "revise", st.remember(PrivacyGate.trusted_template(
-                "The user asked for changes that could not be sent (private). Ask a multiple-choice question instead.")).text
+            msg = "The user asked for changes that could not be sent (private). Ask a multiple-choice question instead."
+            st.remember(PrivacyGate.trusted_template(_outgoing(msg, retry_tool)))   # fixed text + pydantic-ai's fixed suffix
+            return "revise", msg
         if how != "original":
             st.answers_redacted += 1
             st.sensitive_input = True
             st.bus.emit(Notice("info", f"Your change request was sent as: {restore_preview(clean.text)}"))
-        return "revise", out.text
-    _accept(st, plan, local, "user" if ask_user else "auto", revision)
+        return "revise", msg
+    _accept(st, plan, local, approved_by, revision)
     return "approve", None
 
 
@@ -311,13 +337,13 @@ def build_designer(models: ModelFactory, host: "Hermie", can_ask: bool) -> Agent
                                          description="Submit the detailed plan for the user's approval",
                                          max_retries=models.s.plan_max_revisions + 2),
                   instructions=DESIGN_INSTRUCTIONS + _notes(models),
-                  tools=[Tool(_ask_user, name="ask_user", sequential=True)] if can_ask else [],
+                  tools=[Tool(_ask_user, name="ask_user", sequential=True, max_retries=TOOL_RETRIES)] if can_ask else [],
                   capabilities=[OutboundGuard(model_name=model.model_name), PlannerToolBudget(),
                                 *models.tracker("designer", "cloud")])
 
     @agent.output_validator
     async def _review(ctx: RunContext[TaskState], plan: Plan) -> Plan:
-        action, feedback = await review_plan(ctx.deps, host, plan)
+        action, feedback = await review_plan(ctx.deps, host, plan, retry_tool=SUBMIT_PLAN)
         if action == "reject":
             raise PlanRejected()
         if action == "revise":
@@ -329,8 +355,10 @@ def build_designer(models: ModelFactory, host: "Hermie", can_ask: bool) -> Agent
 
 def build_planner(models: ModelFactory, host: "Hermie", can_ask: bool) -> Agent[TaskState, str]:
     """The execution phase. With the design phase off (PLAN_DESIGN=false) it also offers submit_plan, auto-approved.
-    can_ask: an interactive UI is attached and the task did not arrive here by escalation."""
+    can_ask: an interactive UI is attached and the task did not arrive here by escalation. Questions and revise_plan
+    exist only with the design phase on: PLAN_DESIGN=false is the old behaviour (no questions, no approval)."""
     model = models.planner()
+    can_ask = can_ask and models.s.plan_design
 
     async def submit_plan(ctx: RunContext[TaskState], plan: Plan) -> str:
         """Record the overall plan. Then delegate step by step."""
@@ -404,11 +432,13 @@ def build_planner(models: ModelFactory, host: "Hermie", can_ask: bool) -> Agent[
         st.bus.emit(ReportArrived(shown, st.report_stripped))
         return st.remember(clean).text
 
-    tools = [Tool(delegate, sequential=True), Tool(revise_plan, sequential=True)]
-    if not models.s.plan_design:
-        tools.append(Tool(submit_plan, sequential=True))
+    tools = [Tool(delegate, sequential=True, max_retries=TOOL_RETRIES)]
+    if models.s.plan_design:
+        tools.append(Tool(revise_plan, sequential=True, max_retries=TOOL_RETRIES))
+    else:
+        tools.append(Tool(submit_plan, sequential=True, max_retries=TOOL_RETRIES))
     if can_ask:
-        tools.append(Tool(_ask_user, name="ask_user", sequential=True))
+        tools.append(Tool(_ask_user, name="ask_user", sequential=True, max_retries=TOOL_RETRIES))
     instructions = (EXECUTE_INSTRUCTIONS if models.s.plan_design else
                     EXECUTE_INSTRUCTIONS + "\nFirst record a plan with submit_plan (it is accepted as is), then delegate.")
     return Agent(model, deps_type=TaskState, output_type=str, instructions=instructions + _notes(models),

@@ -220,8 +220,9 @@ class InputScreen(ModalScreen[Optional[str]]):
 
 class ClarifyScreen(ModalScreen[Optional[list[ClarifyAnswer]]]):
     """The planner's questions, one per page: Enter takes the highlighted option (the recommended one is first and
-    highlighted), "Other..." opens a text box, Esc skips the question, Ctrl+X stops the task. With timeout_s (AUTO
-    mode) the recommended options are taken for the remaining questions when the countdown ends."""
+    highlighted), "Other..." opens a text box (Esc there returns to the options), Esc skips the question, Ctrl+X
+    stops the task. With timeout_s (AUTO mode) the recommended options are taken for the remaining questions when the
+    countdown ends."""
 
     # ctrl+x needs priority: the "Other..." Input binds ctrl+x to cut and the focused widget would win
     BINDINGS = [Binding("escape", "skip", "Skip question"), Binding("ctrl+x", "stop", "Stop the task", priority=True)]
@@ -323,6 +324,11 @@ class ClarifyScreen(ModalScreen[Optional[list[ClarifyAnswer]]]):
         self._record(ClarifyAnswer(text=ev.value) if ev.value.strip() else ClarifyAnswer())
 
     def action_skip(self) -> None:
+        other = self.query_one("#clarify-other", Input)
+        if other.display:   # Esc while typing an answer: back to the options, the question stays open
+            other.value, other.display = "", False
+            self.query_one("#clarify-options", OptionList).focus()
+            return
         self._record(ClarifyAnswer())
 
     def action_stop(self) -> None:

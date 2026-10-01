@@ -845,3 +845,22 @@ async def test_clarify_countdown_stops_once_the_user_types(make_agent):
         await pilot.press(*"Android", "enter")
         await pilot.pause(0.1)
         assert fut.result()[0].text == "Android"
+
+
+async def test_clarify_escape_in_other_box_returns_to_options(make_agent):
+    app = HermieApp(agent=make_agent(FakeJudge()))
+    req = ClarifyRequest(1, [QuestionView("Platform?", ["iOS", "Web"])])
+    async with app.run_test(size=(160, 45)) as pilot:
+        screen = ClarifyScreen(req)
+        fut = await _show(app, screen)
+        await pilot.pause(0.1)
+        await pilot.press("down", "down", "enter")          # open "Other..."
+        await pilot.pause(0.1)
+        await pilot.press(*"And", "escape")                  # leave the box: the question is not skipped
+        await pilot.pause(0.1)
+        assert not fut.done()
+        assert not screen.query_one("#clarify-other").display
+        assert screen.focused is screen.query_one("#clarify-options")
+        await pilot.press("escape")                          # Esc on the options still skips
+        await pilot.pause(0.1)
+        assert fut.result()[0].option is None and fut.result()[0].text is None

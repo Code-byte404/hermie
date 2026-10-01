@@ -48,6 +48,10 @@ def ask(*qs):
     return tool("ask_user", questions=[{"question": q, "options": ["iOS", "Web"], "why": "platform"} for q in qs])
 
 
+def _designed(make_agent, planner, mode=RunMode.DEFAULT, judge=None, **kw):
+    return make_agent(judge or FakeJudge(task="planning"), planner=planner, plan_design=True, mode=mode, **kw)
+
+
 async def test_submit_plan_in_execution_phase_without_design(make_agent):
     """PLAN_DESIGN=false (the test default): submit_plan is a plain tool in the plan run and is auto-approved."""
     planner = Script([submit(), tool("delegate", step="Build the skeleton", plan_step=1), text("Done")], name="planner")
@@ -65,7 +69,7 @@ async def test_ask_user_sends_cloud_option_text_not_restored_text(make_agent):
     planner = Script([tool("ask_user", questions=[{"question": "Contact <CN_MOBILE_1> by?",
                                                    "options": ["SMS to <CN_MOBILE_1>", "Email"]}]),
                       submit(), text("Done")], name="planner")
-    agent = make_agent(FakeJudge(task="planning"), planner=planner)
+    agent = _designed(make_agent, planner)
     seen = []
 
     async def clarifier(req):
@@ -79,11 +83,11 @@ async def test_ask_user_sends_cloud_option_text_not_restored_text(make_agent):
 
 
 async def test_free_text_answer_with_second_phone_keeps_both_mappings(make_agent):
-    planner = Script([ask("Who gets the alerts?"),
+    planner = Script([ask("Who gets the alerts?"), submit(),
                       tool("delegate", step="Send a test alert to <CN_MOBILE_2> and <CN_MOBILE_1>"),
                       text("Done")], name="planner")
     ex = Script(final=final())
-    agent = make_agent(FakeJudge(task="planning"), planner=planner, executor=ex)
+    agent = _designed(make_agent, planner, executor=ex)
 
     async def clarifier(req):
         return [ClarifyAnswer(text=f"Only {PHONE2}")]
@@ -98,9 +102,9 @@ async def test_free_text_answer_with_second_phone_keeps_both_mappings(make_agent
 
 
 async def test_withheld_answer_sends_template_and_marks_task_sensitive(make_agent):
-    planner = Script([ask("What is the project about?"), text("Done")], name="planner")
+    planner = Script([ask("What is the project about?"), submit(), text("Done")], name="planner")
     comp = Script([text("still about the merger with Acme")], name="comp")
-    agent = make_agent(FakeJudge(task="planning", secrets=("merger",)), planner=planner, compressor=comp)
+    agent = _designed(make_agent, planner, judge=FakeJudge(task="planning", secrets=("merger",)), compressor=comp)
 
     async def clarifier(req):
         return [ClarifyAnswer(text="the secret merger with Acme")]
@@ -115,8 +119,8 @@ async def test_withheld_answer_sends_template_and_marks_task_sensitive(make_agen
 
 
 async def test_short_or_failed_clarifier_answers_are_skipped(make_agent):
-    planner = Script([ask("Platform?", "Data source?"), ask("Offline?"), text("Done")], name="planner")
-    agent = make_agent(FakeJudge(task="planning"), planner=planner)
+    planner = Script([ask("Platform?", "Data source?"), ask("Offline?"), submit(), text("Done")], name="planner")
+    agent = _designed(make_agent, planner)
     calls = []
 
     async def clarifier(req):
@@ -133,8 +137,8 @@ async def test_short_or_failed_clarifier_answers_are_skipped(make_agent):
 
 
 async def test_question_round_limit_hides_ask_user(make_agent):
-    planner = Script([ask("a?"), ask("b?"), text("Done")], name="planner")
-    agent = make_agent(FakeJudge(task="planning"), planner=planner, plan_max_question_rounds=1)
+    planner = Script([ask("a?"), ask("b?"), submit(), text("Done")], name="planner")
+    agent = _designed(make_agent, planner, plan_max_question_rounds=1)
 
     async def clarifier(req):
         return [ClarifyAnswer(option=0)]
@@ -166,15 +170,16 @@ def revise(**over):
 
 async def test_plan_proposed_revision_numbers_count_up(make_agent):
     planner = Script([submit(), revise(goal="v2"), revise(goal="v3"), text("Done")], name="planner")
-    agent = make_agent(FakeJudge(task="planning"), planner=planner)
+    agent = _designed(make_agent, planner, mode=RunMode.AUTO)
     await agent.run("Build a news app")
     assert [e.revision for e in agent.events if isinstance(e, PlanProposed)] == [1, 2, 3]
 
 
 async def test_change_request_notifies_what_was_sent(make_agent):
     planner = Script([submit(), revise(goal="v2"), revise(goal="v3"), text("Done")], name="planner")
-    agent = make_agent(FakeJudge(task="planning"), planner=planner, mode=RunMode.DEFAULT)
-    decisions = [PlanDecision("revise", f"Text alerts to {PHONE} too"), PlanDecision("approve")]
+    agent = _designed(make_agent, planner)
+    decisions = [PlanDecision("approve"), PlanDecision("revise", f"Text alerts to {PHONE} too"),
+                 PlanDecision("approve")]
     revisions = []
 
     async def reviewer(req):
@@ -186,28 +191,24 @@ async def test_change_request_notifies_what_was_sent(make_agent):
     assert PHONE not in sent and "The user asked for changes:" in sent
     notices = [e.text for e in agent.events if isinstance(e, Notice)]
     assert any(n.startswith("Your change request was sent as:") and PHONE not in n for n in notices)
-    assert revisions == [2, 3]
+    assert revisions == [1, 2, 3]       # 1: the design-phase proposal, 2-3: revise_plan
     assert [e.revision for e in agent.events if isinstance(e, PlanProposed)] == [1, 3]
 
 
 async def test_withheld_change_request_notifies(make_agent):
     planner = Script([submit(), revise(goal="v2"), text("Done")], name="planner")
     comp = Script([text("still about the merger with Acme")], name="comp")
-    agent = make_agent(FakeJudge(task="planning", secrets=("merger",)), planner=planner, compressor=comp,
-                       mode=RunMode.DEFAULT)
+    agent = _designed(make_agent, planner, judge=FakeJudge(task="planning", secrets=("merger",)), compressor=comp)
+    decisions = [PlanDecision("approve"), PlanDecision("revise", "mention the secret merger with Acme")]
 
     async def reviewer(req):
-        return PlanDecision("revise", "mention the secret merger with Acme")
+        return decisions.pop(0)
     agent.bus.plan_reviewer = reviewer
     await agent.run("Build a news app")
     sent = planner.sent_text()
     assert "merger" not in sent and "could not be sent (private)" in sent
     notices = [e.text for e in agent.events if isinstance(e, Notice)]
     assert any("Your change request was withheld" in n for n in notices)
-
-
-def _designed(make_agent, planner, mode=RunMode.DEFAULT, **kw):
-    return make_agent(FakeJudge(task="planning"), planner=planner, plan_design=True, mode=mode, **kw)
 
 
 async def test_design_asks_then_plan_is_approved_then_executed(make_agent):
@@ -379,3 +380,117 @@ async def test_headless_prints_plan_proposed(make_agent, capsys, monkeypatch):
     await cli._headless(agent.s, "Build a news app", "", Force.NONE)
     events = [json.loads(l)["event"] for l in capsys.readouterr().out.splitlines() if l.startswith("{")]
     assert "PlanProposed" in events and events[-1] == "Result"
+
+
+async def test_plan_design_off_never_asks_or_reviews(make_agent):
+    """PLAN_DESIGN=false is the old behaviour: no questions, no approval, even with a UI attached in DEFAULT mode."""
+    planner = Script([submit(), text("Done")], name="planner")
+    agent = make_agent(FakeJudge(task="planning"), planner=planner, mode=RunMode.DEFAULT)
+    called = []
+
+    async def clarifier(req):
+        called.append("clarifier")
+        return [ClarifyAnswer(option=0)]
+
+    async def reviewer(req):
+        called.append("reviewer")
+        return PlanDecision("approve")
+    agent.bus.clarifier, agent.bus.plan_reviewer = clarifier, reviewer
+    r = await agent.run("Build a news app")
+    assert r.route == "plan" and not called
+    for info in planner.infos:
+        names = {t.name for t in info.function_tools}
+        assert "ask_user" not in names and "revise_plan" not in names
+    assert [e.approved_by for e in agent.events if isinstance(e, PlanProposed)] == ["auto"]
+
+
+async def test_design_change_request_is_certified_once(make_agent, monkeypatch):
+    """The change request goes out as a retry prompt; its exact rendering is certified up front, so the outbound
+    guard does not run the gate (and the judge) on it a second time."""
+    from hermie.privacy import PrivacyGate
+    certified = []
+    real = PrivacyGate.certify
+
+    def spy(self, text):
+        certified.append(text)
+        return real(self, text)
+    monkeypatch.setattr(PrivacyGate, "certify", spy)
+    planner = Script([submit(), submit(assumptions=["Dark mode"]), text("Done")], name="planner")
+    agent = _designed(make_agent, planner)
+    decisions = [PlanDecision("revise", "Add dark mode"), PlanDecision("approve")]
+
+    async def reviewer(req):
+        return decisions.pop(0)
+    agent.bus.plan_reviewer = reviewer
+    r = await agent.run("Build a news app")
+    assert r.backend != "ollama" and not decisions
+    assert len([t for t in certified if "The user asked for changes" in t]) == 1
+    assert "The user asked for changes:\nAdd dark mode" in planner.sent_text()
+
+
+async def test_failed_plan_review_dialog_is_announced_and_auto(make_agent):
+    planner = Script([submit(), text("Done")], name="planner")
+    agent = _designed(make_agent, planner)
+
+    async def reviewer(req):
+        raise RuntimeError("dialog crashed")
+    agent.bus.plan_reviewer = reviewer
+    r = await agent.run("Build a news app")
+    assert r.route == "plan"
+    assert ("error", "Plan review dialog failed; the plan was approved automatically") in [
+        (e.level, e.text) for e in agent.events if isinstance(e, Notice)]
+    assert [e.approved_by for e in agent.events if isinstance(e, PlanProposed)] == ["auto"]
+
+
+async def test_failed_question_dialog_is_announced(make_agent):
+    planner = Script([ask("Platform?"), submit(), text("Done")], name="planner")
+    agent = _designed(make_agent, planner, mode=RunMode.AUTO)
+
+    async def clarifier(req):
+        raise RuntimeError("dialog crashed")
+    agent.bus.clarifier = clarifier
+    await agent.run("Build a news app")
+    assert ("error", "Question dialog failed; the planner decides itself") in [
+        (e.level, e.text) for e in agent.events if isinstance(e, Notice)]
+    assert "Q1: user skipped" in planner.sent_text()
+
+
+async def test_design_revision_shows_added_step(make_agent):
+    third = {"title": "Offline cache", "details": "Cache feeds on disk", "acceptance": ["works offline"]}
+    planner = Script([submit(), submit(steps=STEPS + [third]), text("Done")], name="planner")
+    agent = _designed(make_agent, planner)
+    decisions = [PlanDecision("revise", "Add an offline cache"), PlanDecision("approve")]
+    reviews = []
+
+    async def reviewer(req):
+        reviews.append(req)
+        return decisions.pop(0)
+    agent.bus.plan_reviewer = reviewer
+    await agent.run("Build a news app")
+    assert len(reviews) == 2 and reviews[1].changed["added"] == [3]
+
+
+async def test_invalid_questions_are_retried_not_fatal(make_agent):
+    five = ask("a?", "b?", "c?", "d?", "e?")
+    planner = Script([five, five, ask("Platform?"), submit(), text("Done")], name="planner")
+    agent = _designed(make_agent, planner)
+
+    async def clarifier(req):
+        return [ClarifyAnswer(option=0)]
+    agent.bus.clarifier = clarifier
+    r = await agent.run("Build a news app")
+    assert r.route == "plan" and r.backend != "ollama"
+    assert "Q1: iOS" in planner.sent_text()
+
+
+async def test_rejected_run_trajectory_has_design_rejected_and_no_plan(make_agent, settings):
+    planner = Script([submit(), text("never")], name="planner")
+    agent = _designed(make_agent, planner)
+
+    async def reviewer(req):
+        return PlanDecision("reject")
+    agent.bus.plan_reviewer = reviewer
+    await agent.run("Build a news app")
+    record = json.loads(agent.s.trajectory_log_path.read_text().splitlines()[-1])
+    nodes = {n["node"]: n for n in record["nodes"]}
+    assert nodes["design"]["status"] == "rejected" and "plan" not in nodes

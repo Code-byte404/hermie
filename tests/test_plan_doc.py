@@ -75,10 +75,16 @@ def test_strip_from_diff_drops_only_the_plan_file():
            "diff --git a/app.py b/app.py\n--- a/app.py\n+++ b/app.py\n@@ -1 +1 @@\n-a\n+b\n")
     out = plan_doc.strip_from_diff(git, "PLAN.md")
     assert "PLAN.md" not in out and "app.py" in out and "+b" in out
-    clone = ("diff -ruN snapshot/PLAN.md workspace/PLAN.md\n--- snapshot/PLAN.md\n+++ workspace/PLAN.md\n+z\n"
-             "diff -ruN snapshot/m.py workspace/m.py\n+q\n")
+    # the real clone-workspace form (snapshot.diff: diff -ruN --exclude=.git, paths renamed snapshot/ workspace/)
+    clone = ("diff -ruN --exclude=.git snapshot/PLAN.md workspace/PLAN.md\n--- snapshot/PLAN.md\n"
+             "+++ workspace/PLAN.md\n+z\n"
+             "diff -ruN --exclude=.git snapshot/m.py workspace/m.py\n+q\n"
+             "diff -ruN --exclude=.git snapshot/docs/PLAN.md workspace/docs/PLAN.md\n+mine\n")
     out = plan_doc.strip_from_diff(clone, "PLAN.md")
-    assert "PLAN.md" not in out and "m.py" in out
+    assert "snapshot/PLAN.md" not in out and "+z" not in out and "m.py" in out
+    assert "docs/PLAN.md" in out and "+mine" in out             # the user's own docs/PLAN.md stays visible
+    git2 = "diff --git a/docs/PLAN.md b/docs/PLAN.md\n+mine\n"
+    assert plan_doc.strip_from_diff(git2, "PLAN.md") == git2
 
 
 def test_diff_steps():
