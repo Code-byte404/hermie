@@ -5,6 +5,7 @@ import asyncio
 import threading
 import time
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable, Optional
 
 from .audit import AuditLog, JsonlLog, sha256
@@ -160,6 +161,8 @@ class FlowState:
     plan_summary: Optional[str] = None            # planner's final text, restored locally
     cloud_output: Optional[str] = None            # cloud-direct answer
     last_step: Optional[Any] = None               # graph.StepResult of the last run_reviewed
+    design_messages: Optional[list] = None        # the design run's all_messages(); the plan node continues from them
+    plan_rejected: bool = False                   # the user rejected the plan: nothing was executed
 
 
 @dataclass
@@ -189,11 +192,22 @@ class TaskState:
     review_fixed: bool = False                          # a failed review was later fixed successfully (basis for writing a lesson)
     last_review: Optional[dict] = None
     review_history: list[dict] = field(default_factory=list)
-    plan_outline: list[str] = field(default_factory=list)  # overall plan given by the planner's set_plan
+    plan_outline: list[str] = field(default_factory=list)  # overall plan given by the planner's submit_plan
     delegations: int = 0
     report_stripped: bool = False
     plan_steps: list[str] = field(default_factory=list)
     plan_done: list[bool] = field(default_factory=list)
+    plan: Optional[Any] = None                    # planning.Plan as the planner wrote it (placeholders kept)
+    plan_local: Optional[Any] = None              # the same, restored locally (UI, PLAN.md, executor)
+    plan_step_done: list[bool] = field(default_factory=list)   # per plan step: delegated and passed review
+    plan_revisions: int = 0                       # change requests answered + revise_plan calls
+    question_rounds: int = 0
+    questions_asked: int = 0
+    answers_redacted: int = 0                     # answers that went out redacted or abstracted
+    answers_withheld: int = 0
+    plan_approved_by: str = ""                    # user / auto
+    delegation_budget: int = 0                    # 0 = settings.max_delegations (no plan yet)
+    plan_path: Optional[Path] = None              # where PLAN.md was written
     answers: list[str] = field(default_factory=list)
     artifacts: list[dict] = field(default_factory=list)
     last_report: Optional[dict] = None
@@ -228,6 +242,10 @@ class TaskState:
         """Whether the executor has touched sensitive content (task text contained private data, or a tool read some).
         The web outbound policy tightens based on this."""
         return self.tainted or self.sensitive_input
+
+    @property
+    def delegation_limit(self) -> int:
+        return self.delegation_budget or self.s.max_delegations
 
     def remember(self, clean: "CleanText") -> "CleanText":
         """Register a certified piece of content; the outbound guard lets it through based on this."""

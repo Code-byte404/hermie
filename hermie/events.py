@@ -137,6 +137,14 @@ class TaskFinished(Event):
     elapsed_s: float = 0.0
 
 
+@dataclass
+class PlanProposed(Event):
+    """A plan the planner submitted was accepted (by the user or automatically); restored local text."""
+    plan: dict
+    revision: int
+    approved_by: str   # user / auto
+
+
 class Approval(str, Enum):
     ALLOW = "allow"
     DENY = "deny"
@@ -158,9 +166,47 @@ class InputRequest:
     output: str   # tail of the command's output, ending with the prompt
 
 
+@dataclass
+class QuestionView:
+    question: str
+    options: list[str]   # the recommended option first
+    why: str = ""
+
+
+@dataclass
+class ClarifyRequest:
+    """The planner asks the user (restored local text). timeout_s: answer with the recommended options after this."""
+    round: int
+    questions: list[QuestionView]
+    timeout_s: Optional[float] = None
+
+
+@dataclass
+class ClarifyAnswer:
+    option: Optional[int] = None   # 0-based index into QuestionView.options
+    text: Optional[str] = None     # free text ("Other"); both None = skipped
+
+
+@dataclass
+class PlanReviewRequest:
+    plan: dict           # restored Plan.model_dump()
+    markdown: str        # plan_doc.render() of it
+    revision: int        # 1 = first submission
+    changed: dict        # plan_doc.diff_steps() against the previous submission
+    final: bool = False  # no more change requests possible: approve or reject
+
+
+@dataclass
+class PlanDecision:
+    action: str          # approve / revise / reject
+    feedback: str = ""   # the change request (local text; goes out only through the gate)
+
+
 Subscriber = Callable[[Event], None]
 Approver = Callable[[ApprovalRequest], Awaitable[Approval]]
 InputProvider = Callable[[InputRequest], Awaitable[Optional[str]]]   # None = stop the command
+Clarifier = Callable[[ClarifyRequest], Awaitable[Optional[list[ClarifyAnswer]]]]   # None = stop the task
+PlanReviewer = Callable[[PlanReviewRequest], Awaitable[PlanDecision]]
 
 
 class EventBus:
@@ -168,6 +214,8 @@ class EventBus:
         self._subs: list[Subscriber] = []
         self.approver: Optional[Approver] = None
         self.input_provider: Optional[InputProvider] = None   # set by an interactive UI; headless runs leave it unset
+        self.clarifier: Optional[Clarifier] = None         # planner questions; headless runs leave it unset
+        self.plan_reviewer: Optional[PlanReviewer] = None  # plan approval; unset = approve automatically
         self._user_wait_s = 0.0   # time spent waiting for approvals / input (not charged to the executor's time limit)
         self._waiting_since: Optional[float] = None
 
@@ -205,3 +253,13 @@ class EventBus:
         if self.input_provider is None:
             return None
         return await self._wait_for_user(self.input_provider(req))
+
+    async def request_clarification(self, req: ClarifyRequest) -> Optional[list[ClarifyAnswer]]:
+        if self.clarifier is None:
+            return None
+        return await self._wait_for_user(self.clarifier(req))
+
+    async def request_plan_review(self, req: PlanReviewRequest) -> PlanDecision:
+        if self.plan_reviewer is None:
+            return PlanDecision("approve")
+        return await self._wait_for_user(self.plan_reviewer(req))
