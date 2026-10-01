@@ -223,7 +223,8 @@ class ClarifyScreen(ModalScreen[Optional[list[ClarifyAnswer]]]):
     highlighted), "Other..." opens a text box, Esc skips the question, Ctrl+X stops the task. With timeout_s (AUTO
     mode) the recommended options are taken for the remaining questions when the countdown ends."""
 
-    BINDINGS = [Binding("escape", "skip", "Skip question"), Binding("ctrl+x", "stop", "Stop the task")]
+    # ctrl+x needs priority: the "Other..." Input binds ctrl+x to cut and the focused widget would win
+    BINDINGS = [Binding("escape", "skip", "Skip question"), Binding("ctrl+x", "stop", "Stop the task", priority=True)]
     OTHER = "Other..."
 
     def __init__(self, req: ClarifyRequest):
@@ -231,6 +232,8 @@ class ClarifyScreen(ModalScreen[Optional[list[ClarifyAnswer]]]):
         self.req = req
         self.answers: list[ClarifyAnswer] = []
         self.left = req.timeout_s
+        self._timer = None
+        self._answered = False   # not _closed: that name is MessagePump's own flag
 
     def compose(self) -> ComposeResult:
         with Vertical(id="clarify"):
@@ -243,41 +246,64 @@ class ClarifyScreen(ModalScreen[Optional[list[ClarifyAnswer]]]):
     def on_mount(self) -> None:
         self._page()
         if self.left:
-            self.set_interval(1.0, self._tick)
+            self._timer = self.set_interval(1.0, self._tick)
 
     def _page(self) -> None:
         i = len(self.answers)
         q = self.req.questions[i]
-        self.query_one("#clarify-title", Label).update(
-            f"? Planner question {i + 1}/{len(self.req.questions)} · round {self.req.round}" + self._countdown())
-        self.query_one("#clarify-question", Static).update(q.question + (f"\n[dim]{escape(q.why)}[/dim]" if q.why else ""))
+        self._title()
+        self.query_one("#clarify-question", Static).update(
+            escape(q.question) + (f"\n[dim]{escape(q.why)}[/dim]" if q.why else ""))
         opts = self.query_one("#clarify-options", OptionList)
         opts.clear_options()
-        opts.add_options([Option(o + ("  (recommended)" if k == 0 else "")) for k, o in enumerate(q.options)]
+        opts.add_options([Option(escape(o) + ("  (recommended)" if k == 0 else "")) for k, o in enumerate(q.options)]
                          + [Option(self.OTHER)])
         opts.highlighted = 0
         other = self.query_one("#clarify-other", Input)
         other.value, other.display = "", False
         opts.focus()
 
-    def _countdown(self) -> str:
-        return f" · recommended answers in {int(self.left)}s" if self.left else ""
+    def _title(self) -> None:
+        i = len(self.answers)
+        countdown = f" · recommended answers in {int(self.left)}s" if self.left else ""
+        self.query_one("#clarify-title", Label).update(
+            f"? Planner question {i + 1}/{len(self.req.questions)} · round {self.req.round}" + countdown)
+
+    def _stop_countdown(self) -> None:
+        """The user is present (typing an answer): no automatic answers any more."""
+        if self._timer is not None:
+            self._timer.stop()
+            self._timer = None
+        if self.left:
+            self.left = None
+            self._title()
+
+    def _close(self, result: Optional[list[ClarifyAnswer]]) -> None:
+        if self._answered:   # a countdown tick and a key press can race; dismiss pops the screen unconditionally
+            return
+        self._answered = True
+        if self._timer is not None:
+            self._timer.stop()
+            self._timer = None
+        self.dismiss(result)
 
     def _tick(self) -> None:
+        if self._answered or not self.left:
+            return
         self.left -= 1
         if self.left <= 0:
             while len(self.answers) < len(self.req.questions):
                 self.answers.append(ClarifyAnswer(option=0))
-            self.dismiss(self.answers)
+            self._close(self.answers)
             return
-        i = len(self.answers)
-        self.query_one("#clarify-title", Label).update(
-            f"? Planner question {i + 1}/{len(self.req.questions)} · round {self.req.round}" + self._countdown())
+        self._title()
 
     def _record(self, answer: ClarifyAnswer) -> None:
+        if self._answered:
+            return
         self.answers.append(answer)
         if len(self.answers) == len(self.req.questions):
-            self.dismiss(self.answers)
+            self._close(self.answers)
         else:
             self._page()
 
@@ -285,6 +311,7 @@ class ClarifyScreen(ModalScreen[Optional[list[ClarifyAnswer]]]):
     def chosen(self, ev: OptionList.OptionSelected) -> None:
         q = self.req.questions[len(self.answers)]
         if ev.option_index == len(q.options):
+            self._stop_countdown()
             other = self.query_one("#clarify-other", Input)
             other.display = True
             other.focus()
@@ -299,7 +326,7 @@ class ClarifyScreen(ModalScreen[Optional[list[ClarifyAnswer]]]):
         self._record(ClarifyAnswer())
 
     def action_stop(self) -> None:
-        self.dismiss(None)
+        self._close(None)
 
 
 class PlanScreen(ModalScreen[PlanDecision]):
@@ -316,10 +343,11 @@ class PlanScreen(ModalScreen[PlanDecision]):
         title = "📋 Plan for your approval" if self.req.revision == 1 else f"📋 Revised plan (rev {self.req.revision})"
         ch = self.req.changed or {}
         if any(ch.get(k) for k in ("added", "changed", "removed")):
-            title += (f" · added {ch.get('added') or '-'} · changed {ch.get('changed') or '-'}"
+            nums = lambda xs: ", ".join(str(x) for x in xs) if xs else "-"
+            title += (f" · added {nums(ch.get('added'))} · changed {nums(ch.get('changed'))}"
                       f" · removed {len(ch.get('removed') or [])}")
         with Vertical(id="plan-review"):
-            yield Label(title, id="plan-review-title")
+            yield Label(escape(title), id="plan-review-title")
             with VerticalScroll(id="plan-review-body"):   # Markdown itself is not focusable; the scroll is (arrows scroll)
                 yield Markdown(self.req.markdown.replace("<!-- hermie-plan -->\n", ""))
             yield TextArea(id="plan-review-feedback")
@@ -1147,9 +1175,12 @@ class HermieApp(App):
         fut: asyncio.Future = asyncio.get_running_loop().create_future()
         self.push_screen(ClarifyScreen(req), callback=lambda r: fut.done() or fut.set_result(r))
         answer = await self._wait_user("planner questions", fut)
-        if answer is None:   # Ctrl+X in the dialog: stop the task the same way Esc on the main screen does
+        if answer is None:
+            # Ctrl+X in the dialog: stop the task. Not action_interrupt(): while recording it only cancels the
+            # recording and the task would go on.
             self._log("  ↳ you stopped the task")
-            self.action_interrupt()
+            self.workers.cancel_group(self, "task")
+            self.agent.cancel_running()
             return []
         self._log(f"  ↳ you answered {len(answer)} question(s)")
         return answer

@@ -796,3 +796,52 @@ async def test_status_line_while_waiting_for_plan_review(make_agent):
         assert "plan review" in str(app.query_one("#status", Static).render())
         await pilot.press("enter")
         await _wait_idle(pilot, app)
+
+
+async def test_clarify_ctrl_x_stops_from_the_other_box(make_agent):
+    app = HermieApp(agent=make_agent(FakeJudge()))
+    req = ClarifyRequest(1, [QuestionView("Platform?", ["iOS", "Web"])])
+    async with app.run_test(size=(160, 45)) as pilot:
+        fut = await _show(app, ClarifyScreen(req))
+        await pilot.pause(0.1)
+        await pilot.press("down", "down", "enter")          # open "Other..."
+        await pilot.pause(0.1)
+        await pilot.press(*"And", "ctrl+x")                  # Input binds ctrl+x to cut; the screen must win
+        await pilot.pause(0.1)
+        assert fut.result() is None
+
+
+async def test_clarify_and_plan_show_planner_text_verbatim(make_agent):
+    from rich.text import Text
+    app = HermieApp(agent=make_agent(FakeJudge()))
+    req = ClarifyRequest(1, [QuestionView("Use [x] checkboxes?", ["arr[i]", "[b]plain[/b]"], "why [y]")])
+    async with app.run_test(size=(160, 45)) as pilot:
+        screen = ClarifyScreen(req)
+        await _show(app, screen)
+        await pilot.pause(0.1)
+        shown = str(screen.query_one("#clarify-question", Static).render())
+        assert "Use [x] checkboxes?" in shown and "why [y]" in shown
+        opts = screen.query_one("#clarify-options")
+        prompts = [Text.from_markup(str(opts.get_option_at_index(k).prompt)).plain for k in range(2)]
+        assert prompts == ["arr[i]  (recommended)", "[b]plain[/b]"]
+        await pilot.press("ctrl+x")
+        await pilot.pause(0.1)
+        plan = PlanScreen(PlanReviewRequest({}, "# P\n", 2, {"added": [2, 3], "changed": [], "removed": ["x"]}))
+        await _show(app, plan)
+        await pilot.pause(0.1)
+        title = str(plan.query_one("#plan-review-title", Static).render())
+        assert "added 2, 3 · changed - · removed 1" in title and "[" not in title
+
+
+async def test_clarify_countdown_stops_once_the_user_types(make_agent):
+    app = HermieApp(agent=make_agent(FakeJudge()))
+    req = ClarifyRequest(1, [QuestionView("Platform?", ["iOS", "Web"])], timeout_s=1)
+    async with app.run_test(size=(160, 45)) as pilot:
+        fut = await _show(app, ClarifyScreen(req))
+        await pilot.pause(0.05)
+        await pilot.press("down", "down", "enter")
+        await pilot.pause(1.5)                               # past the countdown
+        assert not fut.done()
+        await pilot.press(*"Android", "enter")
+        await pilot.pause(0.1)
+        assert fut.result()[0].text == "Android"
