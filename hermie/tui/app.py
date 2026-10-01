@@ -35,8 +35,9 @@ from ..config import RunMode, Settings, update_env
 from ..perf import PerfSample, PerfSampler, render_graph
 from .commands import filter_commands, find_command, help_markdown, is_command
 from ..voice import Recorder, Speaker, Transcriber, VoiceUnavailable, is_blank_transcript, phrase_for
-from ..events import (Approval, ApprovalRequest, ChatMessage, CommandFinished, CommandStarted, Event, ExecutorProgress,
-                      InputRequest, Notice, OutboundBlocked, OutboundSent, PlanUpdated, ReportArrived, ReviewArrived,
+from ..events import (Approval, ApprovalRequest, ChatMessage, ClarifyAnswer, ClarifyRequest, CommandFinished,
+                      CommandStarted, Event, ExecutorProgress, InputRequest, Notice, OutboundBlocked, OutboundSent,
+                      PlanDecision, PlanProposed, PlanReviewRequest, PlanUpdated, ReportArrived, ReviewArrived,
                       RouteDecided, SnapshotTaken, StatsUpdated, Tainted, TaskFinished)
 from ..policy import Force, Route
 
@@ -99,13 +100,15 @@ class CoreEvent(Message):
 
 # How each report status is shown when a task finishes: (icon, word, status-line style)
 _FINISH = {"done": ("✔", "Done", "done"), "partial": ("◐", "Partially done", "partial"),
-           "failed": ("✖", "Failed", "failed"), "needs_clarification": ("❓", "Needs your clarification", "partial")}
+           "failed": ("✖", "Failed", "failed"), "needs_clarification": ("❓", "Needs your clarification", "partial"),
+           "rejected": ("⊘", "Plan rejected, nothing executed", "stopped")}
 # What the app is doing while a request from this agent role is in flight
 _ROLE_DOING = {"executor": "🔒 Local executor is thinking", "reviewer": "🔍 Local reviewer is checking the work",
                "compressor": "🗜 Local model is compressing history", "planner": "☁ Cloud planner is thinking",
                "cloud": "☁ Cloud model is answering", "diagnosis": "🩺 Local model is diagnosing a failed step",
                "abstraction": "🔒 Local model is abstracting the task before it goes to the cloud",
-               "lesson": "📚 Local model is writing a lesson", "skill": "📚 Local model is distilling a skill"}
+               "lesson": "📚 Local model is writing a lesson", "skill": "📚 Local model is distilling a skill",
+               "designer": "☁ Cloud planner is designing the plan"}
 
 
 class PromptInput(TextArea):
@@ -213,6 +216,146 @@ class InputScreen(ModalScreen[Optional[str]]):
 
     def action_stop(self) -> None:
         self.dismiss(None)
+
+
+class ClarifyScreen(ModalScreen[Optional[list[ClarifyAnswer]]]):
+    """The planner's questions, one per page: Enter takes the highlighted option (the recommended one is first and
+    highlighted), "Other..." opens a text box, Esc skips the question, Ctrl+X stops the task. With timeout_s (AUTO
+    mode) the recommended options are taken for the remaining questions when the countdown ends."""
+
+    BINDINGS = [Binding("escape", "skip", "Skip question"), Binding("ctrl+x", "stop", "Stop the task")]
+    OTHER = "Other..."
+
+    def __init__(self, req: ClarifyRequest):
+        super().__init__()
+        self.req = req
+        self.answers: list[ClarifyAnswer] = []
+        self.left = req.timeout_s
+
+    def compose(self) -> ComposeResult:
+        with Vertical(id="clarify"):
+            yield Label("", id="clarify-title")
+            yield Static("", id="clarify-question")
+            yield OptionList(id="clarify-options")
+            yield Input(placeholder="Type your answer and press Enter", id="clarify-other")
+            yield Static("Enter choose · ↑↓ move · Esc skip (planner decides) · Ctrl+X stop the task", id="clarify-help")
+
+    def on_mount(self) -> None:
+        self._page()
+        if self.left:
+            self.set_interval(1.0, self._tick)
+
+    def _page(self) -> None:
+        i = len(self.answers)
+        q = self.req.questions[i]
+        self.query_one("#clarify-title", Label).update(
+            f"? Planner question {i + 1}/{len(self.req.questions)} · round {self.req.round}" + self._countdown())
+        self.query_one("#clarify-question", Static).update(q.question + (f"\n[dim]{escape(q.why)}[/dim]" if q.why else ""))
+        opts = self.query_one("#clarify-options", OptionList)
+        opts.clear_options()
+        opts.add_options([Option(o + ("  (recommended)" if k == 0 else "")) for k, o in enumerate(q.options)]
+                         + [Option(self.OTHER)])
+        opts.highlighted = 0
+        other = self.query_one("#clarify-other", Input)
+        other.value, other.display = "", False
+        opts.focus()
+
+    def _countdown(self) -> str:
+        return f" · recommended answers in {int(self.left)}s" if self.left else ""
+
+    def _tick(self) -> None:
+        self.left -= 1
+        if self.left <= 0:
+            while len(self.answers) < len(self.req.questions):
+                self.answers.append(ClarifyAnswer(option=0))
+            self.dismiss(self.answers)
+            return
+        i = len(self.answers)
+        self.query_one("#clarify-title", Label).update(
+            f"? Planner question {i + 1}/{len(self.req.questions)} · round {self.req.round}" + self._countdown())
+
+    def _record(self, answer: ClarifyAnswer) -> None:
+        self.answers.append(answer)
+        if len(self.answers) == len(self.req.questions):
+            self.dismiss(self.answers)
+        else:
+            self._page()
+
+    @on(OptionList.OptionSelected, "#clarify-options")
+    def chosen(self, ev: OptionList.OptionSelected) -> None:
+        q = self.req.questions[len(self.answers)]
+        if ev.option_index == len(q.options):
+            other = self.query_one("#clarify-other", Input)
+            other.display = True
+            other.focus()
+            return
+        self._record(ClarifyAnswer(option=ev.option_index))
+
+    @on(Input.Submitted, "#clarify-other")
+    def typed(self, ev: Input.Submitted) -> None:
+        self._record(ClarifyAnswer(text=ev.value) if ev.value.strip() else ClarifyAnswer())
+
+    def action_skip(self) -> None:
+        self._record(ClarifyAnswer())
+
+    def action_stop(self) -> None:
+        self.dismiss(None)
+
+
+class PlanScreen(ModalScreen[PlanDecision]):
+    """The plan to approve: Enter approves, c opens a change request (Ctrl+S sends), x or Esc rejects."""
+
+    BINDINGS = [Binding("enter", "approve", "Approve", priority=True), Binding("c", "change", "Request changes"),
+                Binding("x,escape", "reject", "Reject"), Binding("ctrl+s", "send", "Send changes", priority=True)]
+
+    def __init__(self, req: PlanReviewRequest):
+        super().__init__()
+        self.req = req
+
+    def compose(self) -> ComposeResult:
+        title = "📋 Plan for your approval" if self.req.revision == 1 else f"📋 Revised plan (rev {self.req.revision})"
+        ch = self.req.changed or {}
+        if any(ch.get(k) for k in ("added", "changed", "removed")):
+            title += (f" · added {ch.get('added') or '-'} · changed {ch.get('changed') or '-'}"
+                      f" · removed {len(ch.get('removed') or [])}")
+        with Vertical(id="plan-review"):
+            yield Label(title, id="plan-review-title")
+            with VerticalScroll(id="plan-review-body"):   # Markdown itself is not focusable; the scroll is (arrows scroll)
+                yield Markdown(self.req.markdown.replace("<!-- hermie-plan -->\n", ""))
+            yield TextArea(id="plan-review-feedback")
+            help_ = "Enter approve · x/Esc reject" + ("" if self.req.final else " · c request changes (Ctrl+S sends)")
+            yield Static(help_, id="plan-review-help")
+
+    def on_mount(self) -> None:
+        self.query_one("#plan-review-body", VerticalScroll).focus()   # the feedback box starts hidden (app.tcss)
+
+    def _editing(self) -> bool:
+        return self.query_one("#plan-review-feedback", TextArea).display
+
+    def action_approve(self) -> None:
+        if self._editing():   # Enter inside the change request is a newline
+            self.query_one("#plan-review-feedback", TextArea).insert("\n")
+            return
+        self.dismiss(PlanDecision("approve"))
+
+    def action_change(self) -> None:
+        if self.req.final or self._editing():
+            return
+        box = self.query_one("#plan-review-feedback", TextArea)
+        box.display = True
+        box.focus()
+
+    def action_send(self) -> None:
+        if self._editing():
+            text = self.query_one("#plan-review-feedback", TextArea).text.strip()
+            self.dismiss(PlanDecision("revise", text) if text else PlanDecision("approve"))
+
+    def action_reject(self) -> None:
+        if self._editing():   # Esc closes the change request box first
+            self.query_one("#plan-review-feedback", TextArea).display = False
+            self.query_one("#plan-review-body", VerticalScroll).focus()
+            return
+        self.dismiss(PlanDecision("reject"))
 
 
 _KEY_RE = re.compile(r"^(f([3-9]|1[0-2])|ctrl\+[a-z])$")
@@ -410,6 +553,8 @@ class HermieApp(App):
         self.agent.bus.subscribe(lambda ev: self.post_message(CoreEvent(ev)))
         self.agent.bus.approver = self._approve
         self.agent.bus.input_provider = self._provide_input
+        self.agent.bus.clarifier = self._clarify
+        self.agent.bus.plan_reviewer = self._review_plan
         if self.settings.voice_key != "f5":
             self._bind_record_key(self.settings.voice_key, "f5")
         self._refresh_topbar()
@@ -996,6 +1141,28 @@ class HermieApp(App):
         self._log("  ↳ you stopped the command" if answer is None else "  ↳ you typed a reply")
         return answer
 
+    async def _clarify(self, req: ClarifyRequest) -> Optional[list[ClarifyAnswer]]:
+        if phrase := phrase_for(req):
+            self.speaker.speak(phrase)
+        fut: asyncio.Future = asyncio.get_running_loop().create_future()
+        self.push_screen(ClarifyScreen(req), callback=lambda r: fut.done() or fut.set_result(r))
+        answer = await self._wait_user("planner questions", fut)
+        if answer is None:   # Ctrl+X in the dialog: stop the task the same way Esc on the main screen does
+            self._log("  ↳ you stopped the task")
+            self.action_interrupt()
+            return []
+        self._log(f"  ↳ you answered {len(answer)} question(s)")
+        return answer
+
+    async def _review_plan(self, req: PlanReviewRequest) -> PlanDecision:
+        if phrase := phrase_for(req):
+            self.speaker.speak(phrase)
+        fut: asyncio.Future = asyncio.get_running_loop().create_future()
+        self.push_screen(PlanScreen(req), callback=lambda r: fut.done() or fut.set_result(r))
+        decision = await self._wait_user("plan review", fut)
+        self._log(f"  ↳ plan {decision.action}")
+        return decision
+
     async def _wait_user(self, what: str, fut: asyncio.Future):
         self._waiting_user = (what, time.monotonic())
         self._log(f"[b red]⏸ Waiting for you:[/] {escape(what)}")
@@ -1041,6 +1208,11 @@ class HermieApp(App):
                 mark = "[green]✓[/green]" if done else ("[yellow]●[/yellow]" if i == len(ev.steps) else "✗")
                 lines.append(f"{mark} {i} {escape(step[:60])}")
             self.query_one("#plan", Static).update("\n".join(lines))
+        elif isinstance(ev, PlanProposed):
+            if ev.approved_by == "auto":
+                self._notice("info", f"Plan accepted automatically ({len(ev.plan.get('steps', []))} steps); "
+                                     "it is in PLAN.md")
+            self._log(f"📋 Plan rev {ev.revision} accepted ({ev.approved_by})")
         elif isinstance(ev, ReviewArrived):
             head = f"**🔍 Local review · round {ev.round} · {'passed' if ev.passed else 'failed'}**"
             if not ev.passed and not ev.final:

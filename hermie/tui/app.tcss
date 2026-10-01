@@ -221,3 +221,35 @@ InputScreen {
 #input-buttons Button {
     margin-right: 2;
 }
+
+ClarifyScreen, PlanScreen {
+    align: center middle;
+}
+#clarify, #plan-review {
+    width: 80%;
+    height: auto;
+    border: thick $warning;
+    background: $surface;
+    padding: 1 2;
+}
+#clarify-title, #plan-review-title {
+    text-style: bold;
+    color: $warning;
+    margin-bottom: 1;
+}
+#clarify-question {
+    height: auto;
+    margin-bottom: 1;
+}
+#clarify-options {
+    height: auto;
+    max-height: 12;
+}
+#clarify-help, #plan-review-help {
+    color: $text-muted;
+    margin-top: 1;
+}
+#plan-review { width: 90%; height: 85%; }
+#plan-review-body { height: 1fr; overflow-y: auto; }
+#plan-review-feedback { height: 6; display: none; }
+#clarify-other { margin-top: 1; }

@@ -7,9 +7,11 @@ from textual import events
 from textual.widgets import Markdown, RichLog, Static
 
 from hermie.config import RunMode
-from hermie.events import CommandFinished, CommandStarted, TaskFinished
+from hermie.events import (ClarifyAnswer, ClarifyRequest, CommandFinished, CommandStarted, PlanDecision,
+                           PlanReviewRequest, QuestionView, TaskFinished)
 from hermie.perf import PerfSample
-from hermie.tui.app import ApprovalScreen, HermieApp, InputScreen, ModelScreen, PerfPanel, VoiceScreen
+from hermie.tui.app import (ApprovalScreen, ClarifyScreen, HermieApp, InputScreen, ModelScreen, PerfPanel, PlanScreen,
+                            VoiceScreen)
 
 from .conftest import FakeJudge, Script, final, review, text, tool
 
@@ -701,3 +703,96 @@ async def test_skills_command_lists_and_changes_status(make_agent, settings):
         await _submit(pilot, f"/skills retire {sk.id}")
         await pilot.pause(0.1)
         assert agent.session.skills.all()[0].status == "retired"
+
+
+async def _show(app, screen):
+    fut = asyncio.get_running_loop().create_future()
+    app.push_screen(screen, callback=lambda r: fut.done() or fut.set_result(r))
+    return fut
+
+
+async def test_clarify_enter_through_takes_recommendations(make_agent):
+    app = HermieApp(agent=make_agent(FakeJudge()))
+    req = ClarifyRequest(1, [QuestionView("Platform?", ["iOS", "Web"], "build target"),
+                             QuestionView("Source?", ["RSS", "API", "Own backend"])])
+    async with app.run_test(size=(160, 45)) as pilot:
+        fut = await _show(app, ClarifyScreen(req))
+        await pilot.pause(0.1)
+        await pilot.press("enter")
+        await pilot.pause(0.1)
+        await pilot.press("enter")
+        await pilot.pause(0.1)
+        assert [a.option for a in fut.result()] == [0, 0]
+
+
+async def test_clarify_other_text_skip_and_stop(make_agent):
+    app = HermieApp(agent=make_agent(FakeJudge()))
+    req = ClarifyRequest(1, [QuestionView("Platform?", ["iOS", "Web"]), QuestionView("Source?", ["RSS", "API"])])
+    async with app.run_test(size=(160, 45)) as pilot:
+        fut = await _show(app, ClarifyScreen(req))
+        await pilot.pause(0.1)
+        await pilot.press("down", "down", "enter")          # "Other..." is the last option
+        await pilot.pause(0.1)
+        await pilot.press(*"Android", "enter")
+        await pilot.pause(0.1)
+        await pilot.press("escape")                          # skip the second question
+        await pilot.pause(0.1)
+        res = fut.result()
+        assert res[0].text == "Android" and res[1].option is None and res[1].text is None
+        fut2 = await _show(app, ClarifyScreen(req))
+        await pilot.pause(0.1)
+        await pilot.press("ctrl+x")
+        await pilot.pause(0.1)
+        assert fut2.result() is None
+
+
+async def test_clarify_countdown_submits_recommendations(make_agent):
+    app = HermieApp(agent=make_agent(FakeJudge()))
+    req = ClarifyRequest(1, [QuestionView("Platform?", ["iOS", "Web"])], timeout_s=1)
+    async with app.run_test(size=(160, 45)) as pilot:
+        fut = await _show(app, ClarifyScreen(req))
+        for _ in range(40):
+            await pilot.pause(0.1)
+            if fut.done():
+                break
+        assert [a.option for a in fut.result()] == [0]
+
+
+async def test_plan_screen_approve_change_reject(make_agent):
+    app = HermieApp(agent=make_agent(FakeJudge()))
+    req = PlanReviewRequest({"goal": "g"}, "<!-- hermie-plan -->\n# Plan\n## Assumptions\n- English UI\n", 1, {})
+    async with app.run_test(size=(160, 45)) as pilot:
+        fut = await _show(app, PlanScreen(req))
+        await pilot.pause(0.1)
+        await pilot.press("enter")
+        await pilot.pause(0.1)
+        assert fut.result().action == "approve"
+        fut = await _show(app, PlanScreen(req))
+        await pilot.pause(0.1)
+        await pilot.press("c")
+        await pilot.pause(0.1)
+        await pilot.press(*"Add dark mode", "ctrl+s")
+        await pilot.pause(0.1)
+        assert fut.result() == PlanDecision("revise", "Add dark mode")
+        fut = await _show(app, PlanScreen(req))
+        await pilot.pause(0.1)
+        await pilot.press("escape")
+        await pilot.pause(0.1)
+        assert fut.result().action == "reject"
+
+
+async def test_status_line_while_waiting_for_plan_review(make_agent):
+    planner = Script([tool("submit_plan", goal="g", architecture="a",
+                           steps=[{"title": "s", "details": "d", "acceptance": ["ok"]}]), text("Done")], name="planner")
+    agent = make_agent(FakeJudge(task="planning"), planner=planner, plan_design=True, mode=RunMode.DEFAULT)
+    app = HermieApp(agent=agent)
+    async with app.run_test(size=(160, 45)) as pilot:
+        await _submit(pilot, "Build a news app")
+        for _ in range(100):
+            await pilot.pause(0.05)
+            if isinstance(app.screen, PlanScreen):
+                break
+        assert isinstance(app.screen, PlanScreen)
+        assert "plan review" in str(app.query_one("#status", Static).render())
+        await pilot.press("enter")
+        await _wait_idle(pilot, app)
