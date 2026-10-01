@@ -368,3 +368,14 @@ async def test_user_plan_md_not_overwritten_or_sent(make_agent, settings):
     assert (settings.workspace / "PLAN.md").read_text() == "my private roadmap\n"
     assert (settings.workspace / "HERMIE_PLAN.md").exists()
     assert "my private roadmap" not in planner.sent_text()
+
+
+async def test_headless_prints_plan_proposed(make_agent, capsys, monkeypatch):
+    from hermie import cli
+    from hermie.policy import Force
+    planner = Script([submit(), text("Done")], name="planner")
+    agent = make_agent(FakeJudge(task="planning"), planner=planner, plan_design=True)
+    monkeypatch.setattr("hermie.core.Hermie", lambda s: agent)   # _headless imports Hermie from .core at call time
+    await cli._headless(agent.s, "Build a news app", "", Force.NONE)
+    events = [json.loads(l)["event"] for l in capsys.readouterr().out.splitlines() if l.startswith("{")]
+    assert "PlanProposed" in events and events[-1] == "Result"

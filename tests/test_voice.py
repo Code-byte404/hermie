@@ -265,3 +265,9 @@ def test_preview_plays_even_when_disabled_with_given_voice():
     assert _wait_for(lambda: len(plays(procs)) == 2)
     assert says(procs)[1].argv[:3] == ["/usr/bin/say", "-v", "Tingting"] and says(procs)[1].argv[-1] == "default voice"
     sp.close()
+
+
+def test_planner_requests_are_spoken():
+    from hermie.events import ClarifyRequest, PlanReviewRequest, QuestionView
+    assert phrase_for(ClarifyRequest(1, [QuestionView("q", ["a", "b"])])) == "The planner has questions"
+    assert phrase_for(PlanReviewRequest({}, "", 1, {})) == "Plan ready for review"
