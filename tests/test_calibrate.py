@@ -118,3 +118,10 @@ def test_report_says_when_no_eval_signals(tmp_path):
     _write(s, [rec("local", nodes=[ex(), rv(True)])])
     md = calibrate.format_report(calibrate.build_report(s, eval_signals=tmp_path / "missing.jsonl"))
     assert "No eval signals" in md
+
+
+def test_rejected_plan_is_not_labelled():
+    from hermie.calibrate import label
+    rec = {"route": "plan", "backend": "deepseek-plan+ollama", "signals": {"task_type": "planning"},
+           "nodes": [{"node": "design", "status": "rejected"}], "input_sha256": "x"}
+    assert label(rec, []) is None

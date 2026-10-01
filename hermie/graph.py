@@ -32,8 +32,9 @@ from .agents import (ExecutorOutput, Review, Status, build_cloud_agent, require_
                      stream_handler)
 from .audit import sha256
 from .events import ChatMessage, Notice, ReviewArrived, RouteDecided
-from .planning import build_planner, planner_usage_limits
+from .planning import PlanRejected, build_designer, build_planner, planner_usage_limits
 from .policy import Route
+from .privacy import PrivacyGate
 from .recon import workspace_recon
 from .session import TaskState
 
@@ -47,7 +48,8 @@ log = logging.getLogger(__name__)
 DECISIONS = frozenset({"again", "done", "diagnose",                       # step graph
                        "local", "local_verify", "cloud", "plan",           # route
                        "execute", "finish", "self_check", "passed", "escalate_plan", "escalate_cloud",
-                       "certified", "fallback", "midway"})
+                       "certified", "fallback", "midway",
+                       "approved", "auto", "rejected"})                     # design
 
 
 def traced(node: str):
@@ -391,13 +393,47 @@ async def _outbound_task(ctx: TaskCtx) -> Literal["certified", "fallback"]:
     return "certified"
 
 
+@traced("design")
+async def _design(ctx: TaskCtx) -> Literal["approved", "auto", "rejected", "fallback"]:
+    """The planner's design phase: questions (interactive UI, not after an escalation) and a structured plan the user
+    approves. The plan node continues this conversation. PLAN_DESIGN=false skips it."""
+    st, agent = ctx.state, ctx.deps
+    if not agent.s.plan_design:
+        return "auto"
+    can_ask = st.bus.clarifier is not None and not st.flow.escalated
+    try:
+        designer = build_designer(agent.models, agent, can_ask)
+        res = await designer.run(require_clean(st.flow.outbound), deps=st,
+                                 usage_limits=planner_usage_limits(agent.s, 0),
+                                 event_stream_handler=stream_handler("planner", st.bus))
+    except PlanRejected:
+        st.flow.plan_rejected = True
+        st.trace_note(questions=st.questions_asked, rounds=st.question_rounds, plan_revisions=st.plan_revisions)
+        return "rejected"
+    except Exception as e:
+        log.exception("Plan design failed")
+        st.trace_note(error=type(e).__name__)
+        return _fallback(st, f"Planner unavailable; running fully local: {e}", notify=False)
+    st.flow.design_messages = res.all_messages()
+    st.trace_note(questions=st.questions_asked, rounds=st.question_rounds, plan_steps=len(st.plan.steps),
+                  plan_revisions=st.plan_revisions, answers_redacted=st.answers_redacted,
+                  answers_withheld=st.answers_withheld)
+    return "approved" if st.plan_approved_by == "user" else "auto"
+
+
 @traced("plan")
 async def _plan(ctx: TaskCtx) -> Literal["done", "midway", "fallback"]:
     st, agent = ctx.state, ctx.deps
     st.report_for_cloud = True
     try:
+        if st.flow.design_messages is not None:
+            prompt = st.remember(PrivacyGate.trusted_template(
+                "Plan approved. Execute it step by step with delegate, giving plan_step for each planned step."))
+            history = st.flow.design_messages
+        else:
+            prompt, history = st.flow.outbound, None
         planner = build_planner(agent.models, agent, st.bus.clarifier is not None and not st.flow.escalated)
-        res = await planner.run(require_clean(st.flow.outbound), deps=st,
+        res = await planner.run(require_clean(prompt), deps=st, message_history=history,
                                 usage_limits=planner_usage_limits(agent.s, agent.s.plan_delegation_cap),
                                 event_stream_handler=stream_handler("planner", st.bus))
     except Exception as e:
@@ -440,6 +476,9 @@ async def _finish_cloud(ctx: TaskCtx) -> "TaskResult":
 async def _finish_plan(ctx: TaskCtx) -> "TaskResult":
     st, agent = ctx.state, ctx.deps
     backend = f"{agent.s.cloud_provider}-plan+ollama"
+    if st.flow.plan_rejected:
+        return _result(st, "Plan rejected; nothing was executed.", Route.PLAN, backend, st.flow.task_snapshot_id,
+                       local_work=False)
     if st.flow.plan_summary is None:  # planner failed midway
         return _result(st, agent._local_output(st), Route.PLAN, backend, st.flow.task_snapshot_id)
     output = st.flow.plan_summary + ("\n\n---\nLocal execution result:\n" + agent._local_output(st)
@@ -457,6 +496,7 @@ def build_task_graph(agent: "Hermie"):
     cloud_direct = g.step(_cloud_direct, node_id="cloud_direct")
     recon = g.step(_recon, node_id="recon")
     outbound_task = g.step(_outbound_task, node_id="outbound_task")
+    design = g.step(_design, node_id="design")
     plan = g.step(_plan, node_id="plan")
     finish_local = g.step(_finish_local, node_id="finish_local")
     finish_cloud = g.step(_finish_cloud, node_id="finish_cloud")
@@ -491,8 +531,13 @@ def build_task_graph(agent: "Hermie"):
             .branch(lit("fallback").label("no cloud key: run locally").to(snapshot))),
         g.edge_from(outbound_task).to(
             g.decision(node_id="outbound_outcome")
-            .branch(lit("certified").label("certified").to(plan))
+            .branch(lit("certified").label("certified").to(design))
             .branch(lit("fallback").label("not certifiable: run locally").to(snapshot))),
+        g.edge_from(design).to(
+            g.decision(node_id="design_outcome")
+            .branch(lit("approved", "auto").label("plan approved").to(plan))
+            .branch(lit("rejected").label("rejected by the user").to(finish_plan))
+            .branch(lit("fallback").label("failed: run locally").to(snapshot))),
         g.edge_from(plan).to(
             g.decision(node_id="plan_outcome")
             .branch(lit("done", "midway").label("done, or failed after local work").to(finish_plan))

@@ -222,7 +222,7 @@ async def test_task_graph_privacy_of_trajectory(make_agent, settings):
 def test_render_lists_every_node(make_agent):
     from hermie.graph import render
     src = render(make_agent(FakeJudge()))
-    for node in ("route", "snapshot", "recall_lessons", "recall_skills", "run_reviewed", "self_check", "cloud_direct", "recon", "outbound_task", "plan",
+    for node in ("route", "snapshot", "recall_lessons", "recall_skills", "run_reviewed", "self_check", "cloud_direct", "recon", "outbound_task", "design", "plan",
                  "finish_local", "finish_cloud", "finish_plan", "execute", "review", "diagnose", "finish_step"):
         assert f"\n  {node}\n" in src or f"  {node} -->" in src or f"--> {node}\n" in src, node
     assert src.count("stateDiagram-v2") == 2

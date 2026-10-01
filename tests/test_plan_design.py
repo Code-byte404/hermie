@@ -204,3 +204,122 @@ async def test_withheld_change_request_notifies(make_agent):
     assert "merger" not in sent and "could not be sent (private)" in sent
     notices = [e.text for e in agent.events if isinstance(e, Notice)]
     assert any("Your change request was withheld" in n for n in notices)
+
+
+def _designed(make_agent, planner, mode=RunMode.DEFAULT, **kw):
+    return make_agent(FakeJudge(task="planning"), planner=planner, plan_design=True, mode=mode, **kw)
+
+
+async def test_design_asks_then_plan_is_approved_then_executed(make_agent):
+    planner = Script([ask("Platform?"), submit(decisions=["Platform: iOS"]),
+                      tool("delegate", step="Build the skeleton", plan_step=1), text("Done")], name="planner")
+    agent = _designed(make_agent, planner)
+    reviews = []
+
+    async def clarifier(req):
+        return [ClarifyAnswer(option=0)]
+
+    async def reviewer(req):
+        reviews.append(req)
+        return PlanDecision("approve")
+    agent.bus.clarifier, agent.bus.plan_reviewer = clarifier, reviewer
+    r = await agent.run("Build a news app")
+    assert r.route == "plan" and len(reviews) == 1 and reviews[0].revision == 1
+    design_tools = {t.name for t in planner.infos[0].function_tools}
+    assert "delegate" not in design_tools and "ask_user" in design_tools
+    exec_tools = {t.name for t in planner.infos[2].function_tools}
+    assert "delegate" in exec_tools and "revise_plan" in exec_tools
+    assert "Plan approved" in planner.sent_text()
+    assert [e.approved_by for e in agent.events if isinstance(e, PlanProposed)] == ["user"]
+
+
+async def test_change_request_then_approve(make_agent):
+    planner = Script([submit(), submit(assumptions=["Dark mode"]), text("Done")], name="planner")
+    agent = _designed(make_agent, planner)
+    decisions = [PlanDecision("revise", "Add dark mode"), PlanDecision("approve")]
+
+    async def reviewer(req):
+        return decisions.pop(0)
+    agent.bus.plan_reviewer = reviewer
+    await agent.run("Build a news app")
+    assert "The user asked for changes:\nAdd dark mode" in planner.sent_text()
+    assert not decisions
+
+
+async def test_reject_after_revision_executes_nothing(make_agent, settings):
+    planner = Script([submit(), submit(), text("never")], name="planner")
+    ex = Script(final=final())
+    agent = _designed(make_agent, planner, executor=ex)
+    decisions = [PlanDecision("revise", "Use Flutter"), PlanDecision("reject")]
+
+    async def reviewer(req):
+        return decisions.pop(0)
+    agent.bus.plan_reviewer = reviewer
+    r = await agent.run("Build a news app")
+    assert "Plan rejected" in r.output and not ex.seen
+    assert not (settings.workspace / "PLAN.md").exists()
+    from hermie.events import TaskFinished
+    assert [e.status for e in agent.events if isinstance(e, TaskFinished)] == ["rejected"]
+
+
+async def test_auto_mode_auto_approves_and_passes_timeout(make_agent):
+    planner = Script([ask("Platform?"), submit(), text("Done")], name="planner")
+    agent = _designed(make_agent, planner, mode=RunMode.AUTO, plan_auto_answer_s=7)
+    seen = []
+
+    async def clarifier(req):
+        seen.append(req.timeout_s)
+        return [ClarifyAnswer(option=0)]
+
+    async def reviewer(req):
+        raise AssertionError("AUTO mode must not ask for approval")
+    agent.bus.clarifier, agent.bus.plan_reviewer = clarifier, reviewer
+    await agent.run("Build a news app")
+    assert seen == [7]
+    assert [e.approved_by for e in agent.events if isinstance(e, PlanProposed)] == ["auto"]
+
+
+async def test_headless_design_auto_approves_without_questions(make_agent):
+    planner = Script([submit(), text("Done")], name="planner")
+    agent = _designed(make_agent, planner)
+    r = await agent.run("Build a news app")
+    assert "ask_user" not in {t.name for t in planner.infos[0].function_tools}
+    assert [e.approved_by for e in agent.events if isinstance(e, PlanProposed)] == ["auto"]
+    assert r.route == "plan"
+
+
+async def test_design_failure_falls_back_local(make_agent):
+    def boom(m, info):
+        raise RuntimeError("cloud down")
+    agent = _designed(make_agent, Script([boom], name="planner"))
+    r = await agent.run("Build a news app")
+    assert r.backend == "ollama"
+
+
+async def test_escalation_designs_without_questions(make_agent):
+    """local_verify whose self-check fails with a workspace escalates to recon -> design: no questions there or later."""
+    planner = Script([submit(), text("Done")], name="planner")
+    agent = make_agent(FakeJudge(task="complex", conf=0.4, cx=1, cx_conf=0.4, verify=0.1, needs_ws=True),
+                       planner=planner, executor=Script(final=final()), plan_design=True)
+    asked = []
+
+    async def clarifier(req):
+        asked.append(req)
+        return [ClarifyAnswer(option=0)]
+    agent.bus.clarifier = clarifier
+    r = await agent.run("Compare the two designs and fix the code")
+    assert r.route == "local_verify" and r.backend.endswith("-plan+ollama")
+    assert all("ask_user" not in {t.name for t in info.function_tools} for info in planner.infos)
+    assert not asked
+
+
+async def test_answer_phone_never_reaches_trajectory(make_agent, settings):
+    planner = Script([ask("Who?"), submit(), text("Done")], name="planner")
+    agent = _designed(make_agent, planner)
+
+    async def clarifier(req):
+        return [ClarifyAnswer(text=f"call {PHONE}")]
+    agent.bus.clarifier = clarifier
+    await agent.run("Build a news app")
+    traj = (settings.data_dir / "trajectories.jsonl").read_text()
+    assert PHONE not in traj and '"node": "design"' in traj and PHONE not in planner.sent_text()

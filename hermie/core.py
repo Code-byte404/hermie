@@ -272,8 +272,8 @@ class Hermie:
                 self.session.trajectory_log.write(task_record(st, r, time.time() - t0, interrupted=result is None))
             self._record_progress(task, r, st, interrupted=result is None)
             if result is not None:
-                self.bus.emit(TaskFinished(r.route, r.backend, r.output, st.outbound_count,
-                                           status=str((r.report or {}).get("status") or ""),
+                status = "rejected" if st.flow.plan_rejected else str((r.report or {}).get("status") or "")
+                self.bus.emit(TaskFinished(r.route, r.backend, r.output, st.outbound_count, status=status,
                                            elapsed_s=round(time.time() - t0, 1)))
             if interrupted is not None:
                 raise interrupted

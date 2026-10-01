@@ -80,6 +80,8 @@ def label(rec: dict, later: list[dict]) -> Optional[list[str]]:
     """The routes that would have been right for this finished task, or None when it cannot be judged."""
     if rec.get("interrupted") or rec.get("fallback") or rec.get("sensitive"):
         return None
+    if any(n.get("node") == "design" and n.get("status") == "rejected" for n in rec.get("nodes", [])):
+        return None   # a rejected plan says nothing about whether the route was right
     if "task_type" not in rec.get("signals", {}):
         return None
     route, force = rec["route"], rec.get("force", "none")
