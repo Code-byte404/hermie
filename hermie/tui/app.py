@@ -103,8 +103,8 @@ _FINISH = {"done": ("✔", "Done", "done"), "partial": ("◐", "Partially done",
            "failed": ("✖", "Failed", "failed"), "needs_clarification": ("❓", "Needs your clarification", "partial"),
            "rejected": ("⊘", "Plan rejected, nothing executed", "stopped")}
 # What the app is doing while a request from this agent role is in flight
-_ROLE_DOING = {"executor": "🔒 Local executor is thinking", "reviewer": "🔍 Local reviewer is checking the work",
-               "compressor": "🗜 Local model is compressing history", "planner": "☁ Cloud planner is thinking",
+_ROLE_DOING = {"executor": "🔒 Local executor is writing its reply", "reviewer": "🔍 Local reviewer is checking the work",
+               "compressor": "🗜 Local model is compressing history", "planner": "☁ Cloud planner is writing its reply",
                "cloud": "☁ Cloud model is answering", "diagnosis": "🩺 Local model is diagnosing a failed step",
                "abstraction": "🔒 Local model is abstracting the task before it goes to the cloud",
                "lesson": "📚 Local model is writing a lesson", "skill": "📚 Local model is distilling a skill",

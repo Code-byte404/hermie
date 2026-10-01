@@ -285,7 +285,7 @@ async def test_status_line_says_what_is_running_waiting_or_finished(make_agent):
         stats = app.agent.session.stats
         stats.request_started("local", "qwen", "executor")
         await pilot.pause(0.1)
-        assert shown().startswith("🔒 Local executor is thinking")
+        assert shown().startswith("🔒 Local executor is writing its reply")
         assert status.has_class("busy")
         app.post_message(CoreEvent(CommandStarted("run_command", "npm run build")))
         await pilot.pause(0.1)
