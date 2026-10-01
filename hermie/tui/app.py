@@ -35,9 +35,9 @@ from ..config import RunMode, Settings, update_env
 from ..perf import PerfSample, PerfSampler, render_graph
 from .commands import filter_commands, find_command, help_markdown, is_command
 from ..voice import Recorder, Speaker, Transcriber, VoiceUnavailable, is_blank_transcript, phrase_for
-from ..events import (Approval, ApprovalRequest, ChatMessage, CommandFinished, CommandStarted, Event, InputRequest, Notice,
-                      OutboundBlocked, OutboundSent, PlanUpdated, ReportArrived, ReviewArrived, RouteDecided,
-                      SnapshotTaken, StatsUpdated, Tainted, TaskFinished)
+from ..events import (Approval, ApprovalRequest, ChatMessage, CommandFinished, CommandStarted, Event, ExecutorProgress,
+                      InputRequest, Notice, OutboundBlocked, OutboundSent, PlanUpdated, ReportArrived, ReviewArrived,
+                      RouteDecided, SnapshotTaken, StatsUpdated, Tainted, TaskFinished)
 from ..policy import Force, Route
 
 
@@ -95,6 +95,17 @@ class CoreEvent(Message):
     def __init__(self, event: Event):
         super().__init__()
         self.event = event
+
+
+# How each report status is shown when a task finishes: (icon, word, status-line style)
+_FINISH = {"done": ("✔", "Done", "done"), "partial": ("◐", "Partially done", "partial"),
+           "failed": ("✖", "Failed", "failed"), "needs_clarification": ("❓", "Needs your clarification", "partial")}
+# What the app is doing while a request from this agent role is in flight
+_ROLE_DOING = {"executor": "🔒 Local executor is thinking", "reviewer": "🔍 Local reviewer is checking the work",
+               "compressor": "🗜 Local model is compressing history", "planner": "☁ Cloud planner is thinking",
+               "cloud": "☁ Cloud model is answering", "diagnosis": "🩺 Local model is diagnosing a failed step",
+               "abstraction": "🔒 Local model is abstracting the task before it goes to the cloud",
+               "lesson": "📚 Local model is writing a lesson", "skill": "📚 Local model is distilling a skill"}
 
 
 class PromptInput(TextArea):
@@ -350,6 +361,16 @@ class HermieApp(App):
         self._last_snapshot: Optional[str] = None
         self._busy = False
         self._pending_attachments: list[str] = []
+        self._voice_warned: set[str] = set()   # "voice unavailable" messages already shown in the chat
+        # What the app is doing right now, for the status line (see _state): one source of truth for "is it still
+        # running, waiting for me, or finished?"
+        self._routed = False                                        # the current task got past routing
+        self._running_cmd: Optional[tuple[str, str, float]] = None  # (tool, summary, monotonic start)
+        self._waiting_user: Optional[tuple[str, float]] = None      # (what is asked, monotonic start)
+        self._step: Optional[ExecutorProgress] = None               # latest heartbeat of a running executor step
+        self._last_result: Optional[tuple[str, str]] = None         # (status line, style) of the last finished task
+        self._replies_seen = 0
+        self._was_learning = False
 
     # ------------------------------------------------------------ layout
     def compose(self) -> ComposeResult:
@@ -369,6 +390,7 @@ class HermieApp(App):
                 with TabPane("Perf", id="tab-perf"):
                     yield PerfPanel(id="perf")
         yield OptionList(id="cmd-popup")
+        yield Static("", id="status")
         yield Static("", id="attachments")
         yield PromptInput(id="input", placeholder="› Type a task, drop files here (/help for commands)", soft_wrap=True)
         yield Static(self._hints_text(), id="hints")
@@ -392,6 +414,8 @@ class HermieApp(App):
             self._bind_record_key(self.settings.voice_key, "f5")
         self._refresh_topbar()
         self._perf_timer = self.set_interval(1.0, self._tick_perf)
+        self._status_timer = self.set_interval(1.0, self._tick_status)
+        self._refresh_status()
         self.query_one("#input").focus()
         if self.settings.mode is RunMode.NO_SANDBOX:
             self._notice("error", "No-sandbox mode: the executor can access the network and read/write the whole disk. The privacy gate is still on.")
@@ -422,16 +446,9 @@ class HermieApp(App):
         bar.add_class(f"mode-{s.mode.value}")
         st = self.agent.session.stats.snapshot()
         n = self.agent.session.outbound_total
-        now = st["current"] or ("⏳ waiting for tool/sandbox" if self._busy else "idle")
-        if st["current"] and st["current_elapsed_s"] is not None:
-            now += f" (waited {_mmss(st['current_elapsed_s'])})"
-        if self.recorder.recording:
-            now = f"🎙 Recording... {_mmss(self.recorder.elapsed_s)} (F5 to stop, Esc to cancel)"
-        elif self._transcribing:
-            now = "🎙 Transcribing..."
         task_t = f" │ task {_mmss(st['task_elapsed_s'])}" if st["task_elapsed_s"] is not None else ""
         voice = "🔊" if self.speaker.enabled else "🔇"
-        line1 = (f" {s.mode.label} │ {voice} │ outbound {n}, all passed the gate │ current: {now}{task_t} │ "
+        line1 = (f" {s.mode.label} │ {voice} │ outbound {n}, all passed the gate{task_t} │ "
                  f"session {_mmss(st['session_elapsed_s'])} │ {s.workspace}")
         c, l = st["cloud"], st["local"]
         runs = ", ".join(f"{k}×{v}" for k, v in st["runs"].items()) or "0"
@@ -442,6 +459,7 @@ class HermieApp(App):
                  f" (incl. judge {st['judge_requests']}) │ 🌐 search {st['web']['search']} fetch {st['web']['fetch']} │ "
                  f"agents {sum(st['runs'].values())} run: {runs}{active}")
         bar.update(line1 + "\n" + line2)
+        self._refresh_status()
 
     # ------------------------------------------------------------ command completion popup
     @property
@@ -629,6 +647,8 @@ class HermieApp(App):
             return
         self._update_attachments()
         self._busy = True
+        self._routed, self._running_cmd, self._waiting_user, self._step = False, None, None, None
+        self._log("[b]▶ Task started[/b]")
         self._refresh_topbar()
         self._timer = self.set_interval(1.0, self._refresh_topbar)
         self.query_one("#plan", Static).update("")
@@ -644,15 +664,19 @@ class HermieApp(App):
         except asyncio.CancelledError:
             self.agent.cancel_running()
             self._notice("warn", "Interrupted. Add instructions to continue.", announce=True)
+            self._finish(f"⏹ Interrupted at {time.strftime('%H:%M')} · send instructions to continue", "stopped")
             raise
         except Exception as e:
             self._notice("error", f"Task failed: {type(e).__name__}: {e}", announce=True)
+            self._finish(f"✖ Task failed at {time.strftime('%H:%M')}: {type(e).__name__}", "failed")
         finally:
             self._busy = False
             if getattr(self, "_timer", None):
                 self._timer.stop()
                 self._timer = None
             self._end_stream()
+            self._running_cmd = self._waiting_user = self._step = None
+            self._refresh_status()
             self._refresh_topbar()
 
     def action_interrupt(self) -> None:
@@ -685,7 +709,14 @@ class HermieApp(App):
         try:
             self.recorder.start()
         except VoiceUnavailable as e:
-            self._notice("warn", f"Voice input unavailable: {e}")
+            # Once in the chat; repeated presses (F5 is also the Mac dictation key) only get a passing toast
+            msg = f"{self.settings.voice_key.upper()} is the voice record key, but voice input is unavailable: {e}. " \
+                  "Change the key with /voice key KEY"
+            if msg in self._voice_warned:
+                self.notify(msg, severity="warning", timeout=3)
+            else:
+                self._voice_warned.add(msg)
+                self._notice("warn", msg)
             return
         except Exception as e:
             self._notice("error", f"Could not start recording: {e}")
@@ -950,14 +981,30 @@ class HermieApp(App):
             self.speaker.speak(phrase)
         fut: asyncio.Future = asyncio.get_running_loop().create_future()
         self.push_screen(ApprovalScreen(req), callback=lambda r: fut.done() or fut.set_result(r))
-        return await fut
+        answer = await self._wait_user(f"approve {req.tool}: {req.summary[:80]}", fut)
+        self._log(f"  ↳ you answered: {answer.value}")
+        if answer is Approval.DENY:
+            self._running_cmd = None   # a denied command never runs, so it never reports back
+        return answer
 
     async def _provide_input(self, req: InputRequest) -> Optional[str]:
         if phrase := phrase_for(req):
             self.speaker.speak(phrase)
         fut: asyncio.Future = asyncio.get_running_loop().create_future()
         self.push_screen(InputScreen(req), callback=lambda r: fut.done() or fut.set_result(r))
-        return await fut
+        answer = await self._wait_user(f"type input for {req.command[:80]}", fut)
+        self._log("  ↳ you stopped the command" if answer is None else "  ↳ you typed a reply")
+        return answer
+
+    async def _wait_user(self, what: str, fut: asyncio.Future):
+        self._waiting_user = (what, time.monotonic())
+        self._log(f"[b red]⏸ Waiting for you:[/] {escape(what)}")
+        self._refresh_status()
+        try:
+            return await fut
+        finally:
+            self._waiting_user = None
+            self._refresh_status()
 
     # ------------------------------------------------------------ event rendering
     async def on_core_event(self, msg: CoreEvent) -> None:
@@ -969,6 +1016,8 @@ class HermieApp(App):
             await self._on_chat(ev)
         elif isinstance(ev, RouteDecided):
             self._end_stream()
+            self._routed = True
+            self._log(f"⇢ Routed: [b]{Route(ev.route).label}[/b]")
             label = Route(ev.route).label
             sig = ev.signals
             priv = sig.get("privacy", {})
@@ -998,13 +1047,19 @@ class HermieApp(App):
                 head += " (returned to the executor for fixes)"
             body = [head] + [f"- ✗ {x}" for x in ev.problems] + [f"- → {x}" for x in ev.suggestions]
             self._chat_md("report", "\n".join(body))
+            self._log(f"🔍 Review round {ev.round}: {'[green]passed[/]' if ev.passed else '[red]failed[/]'}")
         elif isinstance(ev, CommandStarted):
             risk = f" [{'red' if ev.risk == 'high' else 'dim'}]risk:{ev.risk}[/]" if ev.risk else ""
-            log.write(Text.from_markup(f"[b cyan]$ {escape(ev.tool)}[/] {escape(ev.summary[:300])}{risk}"))
+            self._running_cmd = (ev.tool, ev.summary, time.monotonic())
+            self._log(f"[b cyan]$ {escape(ev.tool)}[/] {escape(ev.summary[:300])}{risk} [dim](running)[/]")
+            self._refresh_status()
         elif isinstance(ev, CommandFinished):
             color = "green" if ev.exit_code == 0 else "red"
             out = "\n".join(ev.output.splitlines()[:40])
-            log.write(Text.from_markup(f"  [{color}]exit={ev.exit_code}[/] {ev.duration_s}s"))
+            self._running_cmd = None
+            self._log(f"  [{color}]{'✓' if ev.exit_code == 0 else '✗'} {escape(ev.tool)} finished · exit={ev.exit_code}[/] "
+                      f"{ev.duration_s}s")
+            self._refresh_status()
             if out.strip():
                 log.write(Text(out, style="dim"))
         elif isinstance(ev, OutboundSent):
@@ -1030,22 +1085,114 @@ class HermieApp(App):
                 body.append(f"- ❓ {r['question']}")
             self._chat_md("report", "\n".join(body))
         elif isinstance(ev, Tainted):
-            log.write(Text.from_markup(f"[b red]⚑ Session tainted: {escape(ev.reason)}[/]"))
+            self._log(f"[b red]⚑ Session tainted: {escape(ev.reason)}[/]")
         elif isinstance(ev, SnapshotTaken):
             if ev.label == "task":   # the "Changes" tab and default rollback use the pre-task snapshot; step snapshots are for the reviewer only
                 self._last_snapshot = ev.snapshot_id
-            log.write(Text.from_markup(f"[dim]📸 Snapshot {ev.snapshot_id} ({ev.kind}, {'pre-task' if ev.label == 'task' else 'pre-step'})[/]"))
+            self._log(f"[dim]📸 Snapshot {ev.snapshot_id} ({ev.kind}, {'pre-task' if ev.label == 'task' else 'pre-step'})[/]")
         elif isinstance(ev, StatsUpdated):
+            self._log_replies(ev.stats)
             self._refresh_topbar()
+            self._refresh_status()
+        elif isinstance(ev, ExecutorProgress):
+            if ev.started:
+                self._log(f"▶ Executor step started (limit {_mmss(ev.limit_s)})")
+            elif ev.done:
+                self._log(f"■ Executor step ended · {ev.tool_calls} tool calls")
+            self._step = None if ev.done else ev
+            self._refresh_status()
         elif isinstance(ev, Notice):
             self._notice(ev.level, ev.text)
+            if ev.level in ("warn", "error"):
+                self._log(f"[{'yellow' if ev.level == 'warn' else 'red'}]{'⚠' if ev.level == 'warn' else '✖'} "
+                          f"{escape(ev.text)}[/]")
             self._refresh_topbar()
         elif isinstance(ev, TaskFinished):
             self._end_stream()
-            self._notice("info", f"Done · {Route(ev.route).label if ev.route in Route._value2member_map_ else ev.route}"
-                                 f" · {ev.backend} · outbound {ev.outbound_count}")
+            route = Route(ev.route).label if ev.route in Route._value2member_map_ else ev.route
+            icon, word, style = _FINISH.get(ev.status, ("✔", "Finished", "done"))
+            self._notice("info", f"{icon} {word} · {route} · {ev.backend} · outbound {ev.outbound_count} · "
+                                 f"took {_mmss(ev.elapsed_s)}")
+            self._finish(f"{icon} {word} at {time.strftime('%H:%M')} ({route}, took {_mmss(ev.elapsed_s)}) · "
+                         f"ready for the next task", style)
             if self._last_snapshot:
                 self._show_diff(self._last_snapshot)
+
+    # ------------------------------------------------------------ status: what is happening right now
+    def _state(self, st: Optional[dict] = None) -> tuple[str, str]:
+        """(text, style) of the one thing the app is doing now. Order matters: waiting for the user beats everything,
+        then a running command, then a model reply being awaited; when nothing is running, say whether the last task
+        finished and how, or that the app is ready."""
+        st = st or self.agent.session.stats.snapshot()
+        now = time.monotonic()
+        if self.recorder.recording:
+            return f"🎙 Recording {_mmss(self.recorder.elapsed_s)} · F5 to stop, Esc to cancel", "busy"
+        if self._transcribing:
+            return "🎙 Transcribing the recording...", "busy"
+        if self._waiting_user:
+            what, since = self._waiting_user
+            return f"⏸ Waiting for YOU ({_mmss(now - since)}): {what} · the task is paused", "waiting"
+        if self._busy:
+            step = ""
+            if self._step:
+                s = self._step
+                step = f" · step {_mmss(s.elapsed_s)} of {_mmss(s.limit_s)}, {s.tool_calls} tool calls"
+            if self._running_cmd:
+                tool, summary, since = self._running_cmd
+                return f"▶ Running {tool} ({_mmss(now - since)}): {summary[:70]}{step}", "busy"
+            if st.get("current"):
+                waited = _mmss(st["current_elapsed_s"] or 0)
+                who = _ROLE_DOING.get(st.get("current_role") or "", "Waiting for a model reply")
+                if st["current"].startswith("🌐"):
+                    return f"{st['current']} ({waited}){step}", "busy"
+                return f"{who} · {st['current']} · {waited} so far{step}", "busy"
+            if not self._routed:
+                return "⏳ Routing: privacy check and task classification (local judge model)", "busy"
+            return f"⏳ Working: checks and bookkeeping between steps{step}", "busy"
+        if self.agent.learning:
+            return "📚 Task finished · learning from it in the background (you can send the next task)", "done"
+        if self._last_result:
+            return self._last_result
+        return "● Ready for a task", "ready"
+
+    def _refresh_status(self) -> None:
+        try:
+            line = self.query_one("#status", Static)
+        except NoMatches:   # timer firing during teardown
+            return
+        text, style = self._state()
+        for cls in ("ready", "busy", "waiting", "done", "partial", "failed", "stopped"):
+            line.set_class(cls == style, cls)
+        line.update(Text(text))
+
+    def _tick_status(self) -> None:
+        learning = self.agent.learning
+        if self._was_learning and not learning:
+            self._log("📚 Background learning finished")
+        self._was_learning = learning
+        self._refresh_status()
+
+    def _finish(self, text: str, style: str) -> None:
+        self._last_result = (text, style)
+        self._log(f"[b]■ {escape(text.split(' · ready')[0])}[/b]")
+        self._refresh_status()
+
+    def _log(self, markup: str) -> None:
+        """One line in the Log tab, always with the time, so it reads as a timeline."""
+        try:
+            self.query_one("#log", RichLog).write(Text.from_markup(f"[dim]{time.strftime('%H:%M:%S')}[/] {markup}"))
+        except NoMatches:
+            pass
+
+    def _log_replies(self, stats: dict) -> None:
+        """Log each finished model reply once: who, how long, how many tokens. This is where the time goes."""
+        for r in stats.get("replies", []):
+            if r["seq"] <= self._replies_seen:
+                continue
+            self._replies_seen = r["seq"]
+            who = r["role"] or "model"
+            self._log(f"[magenta]{escape(r['model'])}[/] {who} reply · {_mmss(r['secs'])} · "
+                      f"in {_k(r['in'])} / out {_k(r['out'])} tokens")
 
     async def _on_chat(self, ev: ChatMessage) -> None:
         if ev.role == "planner" and ev.streaming:

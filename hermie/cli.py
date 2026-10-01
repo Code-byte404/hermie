@@ -141,7 +141,7 @@ async def _headless(s: Settings, task: str, material: str, force: Force, read_ro
 
     def emit(ev):
         d = ev.to_dict()
-        if d["event"] == "StatsUpdated" or (d["event"] == "ChatMessage" and d.get("streaming")):
+        if d["event"] in ("StatsUpdated", "ExecutorProgress") or (d["event"] == "ChatMessage" and d.get("streaming")):
             return  # headless mode prints no streaming fragments or stats heartbeats; stats are in the final Result
         print(json.dumps(d, ensure_ascii=False, default=str), flush=True)
 

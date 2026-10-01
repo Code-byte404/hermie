@@ -1,5 +1,6 @@
 """End to end (fake models): routing, plan-mode data flow, outbound guard, report validation, command approval,
 taint tracking, audit, rollback."""
+import asyncio
 import json
 from pathlib import Path
 
@@ -8,7 +9,7 @@ import pytest
 from hermie.agents import build_cloud_agent
 from hermie.capabilities import OutboundBlockedError
 from hermie.config import RunMode
-from hermie.events import Approval, OutboundSent, RouteDecided, Tainted
+from hermie.events import Approval, ExecutorProgress, Notice, OutboundSent, RouteDecided, Tainted
 from hermie.policy import Force
 from hermie.session import TaskState
 
@@ -275,10 +276,39 @@ async def test_route_event_emitted(make_agent):
 
 
 async def test_executor_run_timeout_yields_partial(make_agent, settings):
-    ex = Script([tool("run_command", command="sleep 20")])
+    ex = Script([tool("write_file", path="notes.md", content="x"), tool("run_command", command="sleep 20")])
     agent = make_agent(FakeJudge(task="repetitive"), executor=ex, executor_run_timeout_s=1.0, command_timeout_s=30)
     r = await agent.run("Wait a moment")
     assert r.report["status"] == "partial" and "Execution timed out" in r.report["issues"][0]
+    # the user is told why it stopped, what was kept and how to go on
+    msg = next(e.text for e in agent.events if isinstance(e, Notice) and "Stopped the executor" in e.text)
+    assert "0:01 limit" in msg and "notes.md" in msg and "continue" in msg and "/rollback" in msg
+
+
+async def test_executor_reports_progress_while_it_runs(make_agent, settings):
+    ex = Script([tool("run_command", command="sleep 0.5")], final=final())
+    agent = make_agent(FakeJudge(task="repetitive"), executor=ex, progress_every_s=0.1)
+    await agent.run("Wait a moment")
+    beats = [e for e in agent.events if isinstance(e, ExecutorProgress)]
+    assert any(not b.done and b.limit_s == settings.executor_run_timeout_s for b in beats) and beats[-1].done
+
+
+async def test_time_waiting_for_approval_is_not_charged_to_the_executor(make_agent, settings):
+    ex = Script([tool("run_command", command="rm -f scratch.txt")], final=final())
+    agent = make_agent(FakeJudge(task="repetitive"), executor=ex, mode=RunMode.DEFAULT,
+                       executor_run_timeout_s=1.0, progress_every_s=0.1)
+
+    asked = []
+
+    async def slow_user(req):
+        asked.append(req)
+        await asyncio.sleep(1.5)   # longer than the whole limit
+        return Approval.ALLOW
+    agent.bus.approver = slow_user
+    r = await agent.run("Clean up")
+    assert asked
+    assert r.report["status"] != "partial" or "Execution timed out" not in " ".join(r.report["issues"])
+    assert not any(isinstance(e, Notice) and "Stopped the executor" in e.text for e in agent.events)
 
 
 def test_trim_history_stubs_large_payloads():

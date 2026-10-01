@@ -1,10 +1,13 @@
 """UI tests (Textual Pilot, no real terminal needed)."""
 import asyncio
+import re
+import time
 
 from textual import events
 from textual.widgets import Markdown, RichLog, Static
 
 from hermie.config import RunMode
+from hermie.events import CommandFinished, CommandStarted, TaskFinished
 from hermie.perf import PerfSample
 from hermie.tui.app import ApprovalScreen, HermieApp, InputScreen, ModelScreen, PerfPanel, VoiceScreen
 
@@ -178,7 +181,9 @@ async def test_topbar_shows_tokens_agents_and_time(make_agent):
         await _wait_idle(pilot, app)
         await pilot.pause(0.2)
         bar = str(app.query_one("#topbar", Static).render())
-        assert "agents 1 run: executor×1" in bar and "🔒" in bar and "session" in bar and "current: idle" in bar
+        assert "agents 1 run: executor×1" in bar and "🔒" in bar and "session" in bar
+        status = str(app.query_one("#status", Static).render())
+        assert status.startswith("✔ Done at") and "ready for the next task" in status
         await _submit(pilot, "/usage")
         await pilot.pause(0.1)
         texts = [m.source for m in app.query(Markdown) if hasattr(m, "source")]
@@ -257,11 +262,71 @@ async def _wait_transcribed(pilot, app, timeout=5):
             return
 
 
+async def test_status_line_says_what_is_running_waiting_or_finished(make_agent):
+    from hermie.events import ExecutorProgress
+    from hermie.tui.app import CoreEvent
+    app = HermieApp(agent=make_agent(FakeJudge()))
+    async with app.run_test(size=(160, 45)) as pilot:
+        status = app.query_one("#status", Static)
+        shown = lambda: str(status.render())
+        assert shown() == "● Ready for a task"
+        app._busy = True
+        app._refresh_status()
+        assert shown().startswith("⏳ Routing")
+        app._routed = True
+        app.post_message(CoreEvent(ExecutorProgress(372, 9, "write_file", 185, 3600)))
+        await pilot.pause(0.1)
+        assert "step 6:12 of 1:00:00, 9 tool calls" in shown()
+        stats = app.agent.session.stats
+        stats.request_started("local", "qwen", "executor")
+        await pilot.pause(0.1)
+        assert shown().startswith("🔒 Local executor is thinking")
+        assert status.has_class("busy")
+        app.post_message(CoreEvent(CommandStarted("run_command", "npm run build")))
+        await pilot.pause(0.1)
+        assert shown().startswith("▶ Running run_command") and "npm run build" in shown()
+        app._waiting_user = ("approve run_command: rm -rf dist", time.monotonic())
+        app._refresh_status()
+        assert shown().startswith("⏸ Waiting for YOU") and status.has_class("waiting")
+        app._waiting_user = None
+        app.post_message(CoreEvent(CommandFinished("run_command", "npm run build", 0, "ok", 1.2)))
+        stats.request_finished("local", 100, 50)
+        app._busy = False
+        app.post_message(CoreEvent(TaskFinished("local", "ollama", "", 0, status="partial", elapsed_s=1228)))
+        await pilot.pause(0.2)
+        assert shown().startswith("◐ Partially done at") and "took 20:28" in shown() and status.has_class("partial")
+        log = app.query_one("#log", RichLog)
+        app.query_one("#right").active = "tab-log"
+        await pilot.pause(0.1)
+        lines = [str(l.text) for l in log.lines]
+        assert any("(running)" in l for l in lines) and any("✓ run_command finished" in l for l in lines)
+        assert any("executor reply" in l and "in 100 / out 50 tokens" in l for l in lines)
+        assert any("■ ◐ Partially done" in l for l in lines)
+        # every event line is time-stamped; only the command's own output ("ok") is printed as-is under it
+        assert all(re.match(r"\d\d:\d\d:\d\d ", l) for l in lines if l.strip() and l.strip() != "ok")
+
+
+async def test_missing_microphone_is_reported_once_in_the_chat(make_agent):
+    from hermie.voice import VoiceUnavailable
+    app, rec, tr, sp = voice_app(make_agent(FakeJudge(task="repetitive")))
+
+    def no_mic():
+        raise VoiceUnavailable("No microphone detected")
+    rec.start = no_mic
+    async with app.run_test(size=(160, 45)) as pilot:
+        for _ in range(4):
+            await pilot.press("f5")
+        await pilot.pause(0.2)
+        notices = [str(w.render()) for w in app.query(".notice")]
+        assert sum("No microphone detected" in n for n in notices) == 1
+        assert any("F5 is the voice record key" in n for n in notices)
+
+
 async def test_f5_records_and_fills_input(make_agent):
     app, rec, tr, sp = voice_app(make_agent(FakeJudge(task="repetitive")))
     async with app.run_test(size=(160, 45)) as pilot:
         await pilot.press("f5")
-        assert rec.recording and "Recording" in str(app.query_one("#topbar", Static).render())
+        assert rec.recording and "Recording" in str(app.query_one("#status", Static).render())
         await pilot.press("f5")
         await _wait_transcribed(pilot, app)
         assert tr.calls == 1 and app.query_one("#input").text == "Convert these three files to PDF"

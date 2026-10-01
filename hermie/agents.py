@@ -460,6 +460,15 @@ class ModelFactory:
         self._reviewer = reviewer
         self.stats = None  # injected by Hermie (Session.stats)
 
+    def local_settings(self, temperature: float = 0.2) -> ModelSettings:
+        """Model settings for every local (Ollama) agent. Qwen3-class models think by default, which costs minutes
+        per reply on a laptop; unless WORKER_THINKING is on, thinking is switched off. Ollama's OpenAI-compatible
+        endpoint only honours reasoning_effort for that (measured: 54 -> 3 output tokens on a one-line question)."""
+        settings = ModelSettings(temperature=temperature, thinking=self.s.worker_thinking)
+        if not self.s.worker_thinking:
+            settings["extra_body"] = {"reasoning_effort": "none"}
+        return settings
+
     def tracker(self, role: str, where: str) -> list:
         return [ActivityTracker(self.stats, role, where)] if self.stats is not None else []
 
@@ -532,9 +541,6 @@ class ModelFactory:
 
 def build_executor(models: ModelFactory) -> Agent[TaskState, ExecutorOutput]:
     s = models.s
-    settings = ModelSettings(temperature=0.2, thinking=s.worker_thinking)
-    if not s.worker_thinking:  # Ollama's OpenAI-compatible endpoint turns thinking off via reasoning_effort
-        settings["extra_body"] = {"reasoning_effort": "none"}
     tools = [run_command, read_file, write_file, edit_file, list_files]
     instructions = EXECUTOR_INSTRUCTIONS
     if s.mac_tools:
@@ -550,7 +556,7 @@ def build_executor(models: ModelFactory) -> Agent[TaskState, ExecutorOutput]:
         else:
             instructions += WEB_FETCH_ONLY_INSTRUCTIONS
     agent = Agent(models.executor(), deps_type=TaskState, output_type=ExecutorOutput,
-                  instructions=instructions, model_settings=settings,
+                  instructions=instructions, model_settings=models.local_settings(0.2),
                   tools=tools,
                   retries=s.report_retries + 1, name="executor",
                   capabilities=[CommandGuard(), TaintTracker(), ExecutorToolBudget(), *models.tracker("executor", "local")])
@@ -559,11 +565,8 @@ def build_executor(models: ModelFactory) -> Agent[TaskState, ExecutorOutput]:
 
 
 def build_reviewer(models: ModelFactory) -> Agent[None, Review]:
-    s = models.s
-    settings = ModelSettings(temperature=0.1, thinking=s.worker_thinking)
-    if not s.worker_thinking:
-        settings["extra_body"] = {"reasoning_effort": "none"}
-    return Agent(models.reviewer(), output_type=Review, instructions=REVIEWER_INSTRUCTIONS, model_settings=settings,
+    return Agent(models.reviewer(), output_type=Review, instructions=REVIEWER_INSTRUCTIONS,
+                 model_settings=models.local_settings(0.1),
                  name="reviewer", retries=2, capabilities=models.tracker("reviewer", "local"))
 
 
@@ -741,7 +744,8 @@ async def compress_history(models: ModelFactory, history: list, limit: int, time
     dump = render_history(history)
     if len(dump) <= limit:
         return history
-    agent = Agent(models.compressor(), output_type=str, name="compressor", capabilities=models.tracker("compressor", "local"))
+    agent = Agent(models.compressor(), output_type=str, name="compressor", model_settings=models.local_settings(),
+                  capabilities=models.tracker("compressor", "local"))
     try:
         summary = (await asyncio.wait_for(agent.run(COMPRESS_PROMPT + dump[-limit:]), timeout)).output
         note = f"[Summary of earlier work]\n{summary}"

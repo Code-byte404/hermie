@@ -110,6 +110,19 @@ class Notice(Event):
 
 
 @dataclass
+class ExecutorProgress(Event):
+    """Heartbeat of a running executor step (every few seconds), so the UI can show that the local model is still
+    working, what it did last and when the step will be stopped. done=True: the step ended."""
+    elapsed_s: float
+    tool_calls: int
+    last_tool: str          # tool name only
+    since_tool_s: float     # seconds since the last tool call finished (or since the step started)
+    limit_s: float          # the step is stopped when elapsed_s reaches this (time spent waiting for the user excluded)
+    done: bool = False
+    started: bool = False   # first beat of a step
+
+
+@dataclass
 class StatsUpdated(Event):
     stats: dict   # Stats.snapshot()
 
@@ -120,6 +133,8 @@ class TaskFinished(Event):
     backend: str
     output: str
     outbound_count: int
+    status: str = ""        # the executor report's status (done / partial / failed / needs_input), "" if none
+    elapsed_s: float = 0.0
 
 
 class Approval(str, Enum):
@@ -153,6 +168,8 @@ class EventBus:
         self._subs: list[Subscriber] = []
         self.approver: Optional[Approver] = None
         self.input_provider: Optional[InputProvider] = None   # set by an interactive UI; headless runs leave it unset
+        self._user_wait_s = 0.0   # time spent waiting for approvals / input (not charged to the executor's time limit)
+        self._waiting_since: Optional[float] = None
 
     def subscribe(self, fn: Subscriber) -> None:
         self._subs.append(fn)
@@ -164,12 +181,27 @@ class EventBus:
             except Exception:
                 log.exception("Event subscriber raised an error")
 
+    def user_wait_s(self) -> float:
+        """Total time spent waiting for the user so far, including a wait in progress."""
+        now = time.monotonic()
+        return self._user_wait_s + (now - self._waiting_since if self._waiting_since is not None else 0.0)
+
+    async def _wait_for_user(self, coro):
+        if self._waiting_since is not None:   # nested / concurrent waits: the outer one already counts
+            return await coro
+        self._waiting_since = time.monotonic()
+        try:
+            return await coro
+        finally:
+            self._user_wait_s += time.monotonic() - self._waiting_since
+            self._waiting_since = None
+
     async def request_approval(self, req: ApprovalRequest) -> Approval:
         if self.approver is None:
             return Approval.DENY  # with no UI to ask, high-risk operations in default mode are always denied
-        return await self.approver(req)
+        return await self._wait_for_user(self.approver(req))
 
     async def request_input(self, req: InputRequest) -> Optional[str]:
         if self.input_provider is None:
             return None
-        return await self.input_provider(req)
+        return await self._wait_for_user(self.input_provider(req))

@@ -99,6 +99,18 @@ Screen {
     text-style: bold;
 }
 
+/* What the app is doing right now; always visible above the input */
+#status {
+    height: 1;
+    padding: 0 1;
+    color: $text-muted;
+}
+#status.busy { color: $warning; }
+#status.waiting { color: $error; text-style: bold; }
+#status.done { color: $success; }
+#status.partial { color: $warning; text-style: bold; }
+#status.failed, #status.stopped { color: $error; }
+
 #attachments {
     display: none;
     height: 1;

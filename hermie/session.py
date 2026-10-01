@@ -34,6 +34,9 @@ class Stats:
     active: dict = field(default_factory=dict)    # run key -> role (agents currently running)
     current: Optional[str] = None                 # model currently being awaited, e.g. "☁ deepseek-v4-pro"
     current_since: Optional[float] = None
+    current_role: str = ""                        # agent role of the request being awaited (executor, planner, ...)
+    replies: list = field(default_factory=list)   # recent finished agent requests, for the UI log (seq, role, model, secs, tokens)
+    replies_seq: int = 0
     task_started_at: Optional[float] = None
     on_change: Optional[Callable[[], None]] = None
     _lock: threading.Lock = field(default_factory=threading.Lock, init=False, repr=False)
@@ -53,10 +56,11 @@ class Stats:
             self.active.pop(key, None)
         self._changed()
 
-    def request_started(self, where: str, model: str) -> None:
+    def request_started(self, where: str, model: str, role: str = "") -> None:
         with self._lock:
             self.current = f"{'☁' if where == 'cloud' else '🔒'} {model}"
             self.current_since = time.time()
+            self.current_role = role
         self._changed()
 
     def request_finished(self, where: str, input_tokens: int, output_tokens: int, *, judge: bool = False) -> None:
@@ -68,7 +72,14 @@ class Stats:
             if judge:
                 self.judge_requests += 1
             else:
+                if self.current and self.current_since:
+                    self.replies_seq += 1
+                    self.replies.append({"seq": self.replies_seq, "role": self.current_role, "model": self.current,
+                                         "secs": round(time.time() - self.current_since, 1),
+                                         "in": input_tokens or 0, "out": output_tokens or 0})
+                    del self.replies[:-20]
                 self.current = self.current_since = None
+                self.current_role = ""
         self._changed()
 
     def web_started(self, kind: str, label: str) -> None:
@@ -86,6 +97,7 @@ class Stats:
     def request_aborted(self) -> None:
         with self._lock:
             self.current = self.current_since = None
+            self.current_role = ""
         self._changed()
 
     def judge_usage(self, input_tokens: int, output_tokens: int) -> None:
@@ -97,6 +109,7 @@ class Stats:
             return {"cloud": dict(self.cloud), "local": dict(self.local), "judge_requests": self.judge_requests,
                     "web": dict(self.web),
                     "runs": dict(self.runs), "active": list(self.active.values()), "current": self.current,
+                    "current_role": self.current_role, "replies": [dict(r) for r in self.replies],
                     "current_elapsed_s": round(now - self.current_since, 1) if self.current_since else None,
                     "session_elapsed_s": round(now - self.started_at, 1),
                     "task_elapsed_s": round(now - self.task_started_at, 1) if self.task_started_at else None}
@@ -167,6 +180,8 @@ class TaskState:
     tool_calls: int = 0
     recent_calls: list[str] = field(default_factory=list)
     tool_seq: list[str] = field(default_factory=list)   # tool call order within this executor run (for the verification check)
+    last_tool_at: float = 0.0                           # time.monotonic() of the last finished tool call (progress display)
+    changed_paths: list[str] = field(default_factory=list)  # files written / edited in this executor run (local UI only)
     stuck: bool = False
     snapshot_id: Optional[str] = None                   # the reviewer diffs the workspace against this (pre-task snapshot; in plan mode the pre-step snapshot)
     route: str = ""

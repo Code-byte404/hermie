@@ -227,6 +227,10 @@ class TaintTracker(AbstractCapability[TaskState]):
         text = result_text if isinstance(result_text, str) else str(result_text)
         st.tool_calls += 1
         st.tool_seq.append(call.tool_name)
+        st.last_tool_at = time.monotonic()
+        if call.tool_name in ("write_file", "edit_file") and isinstance(args, dict) and args.get("path"):
+            if args["path"] not in st.changed_paths:
+                st.changed_paths.append(str(args["path"]))
         st.recent_calls.append(f"{call.tool_name}({str(args)[:200]}) -> {text[:200]}")
         if not st.tainted and call.tool_name not in _PUBLIC_TOOLS:
             verdict = await asyncio.to_thread(st.gate.check, text, False)
@@ -267,7 +271,7 @@ class ActivityTracker(AbstractCapability[Any]):
         raise error
 
     async def before_model_request(self, ctx, request_context):
-        self.stats.request_started(self.where, request_context.model.model_name)
+        self.stats.request_started(self.where, request_context.model.model_name, self.role)
         return request_context
 
     async def after_model_request(self, ctx, *, request_context, response):

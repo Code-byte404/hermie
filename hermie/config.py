@@ -74,8 +74,12 @@ class Settings:
     # Per-request model timeout (seconds). A timeout triggers the local/cloud fallback instead of waiting forever; the client does not retry
     worker_timeout_s: float = field(default_factory=lambda: _env_float("WORKER_TIMEOUT", 600))
     cloud_timeout_s: float = field(default_factory=lambda: _env_float("CLOUD_TIMEOUT", 300))
-    # Wall-clock limit for one executor run (one delegation or one local-only task): on timeout it reports "partially done" so the session never hangs
-    executor_run_timeout_s: float = field(default_factory=lambda: _env_float("EXECUTOR_RUN_TIMEOUT", 1200))
+    # Time limit for one executor run (one delegation or one local-only task), not counting time spent waiting for the
+    # user's approval or input: on timeout it reports "partially done" so the session never hangs. A 27B model on a
+    # laptop needs minutes per reply, so this is generous; the UI shows the step's progress and warns at 80%
+    executor_run_timeout_s: float = field(default_factory=lambda: _env_float("EXECUTOR_RUN_TIMEOUT", 3600))
+    # How often a running executor step reports its progress to the UI (seconds)
+    progress_every_s: float = field(default_factory=lambda: _env_float("PROGRESS_EVERY", 5))
     # Time limit for history compression (local model); on timeout fall back to deterministic truncation
     compress_timeout_s: float = field(default_factory=lambda: _env_float("COMPRESS_TIMEOUT", 300))
     # Whether the executor runs in thinking mode (more accurate but slower)
