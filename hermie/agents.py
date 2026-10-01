@@ -2,7 +2,8 @@
 
 - Executor: local Ollama model; every tool goes through the sandbox subprocess; outputs a fixed-structure report
   plus an answer that stays local.
-- Planner: the cloud model (CLOUD_PROVIDER); its only tool is "delegate to the executor"; sees only the de-identified description and clean reports.
+- Planner: the cloud model (CLOUD_PROVIDER); built in planning.py (design phase + execution phase); sees only the
+  de-identified description, certified answers and clean reports.
 - Cloud direct: the cloud model; no tools; sees only the certified task text.
 """
 from __future__ import annotations

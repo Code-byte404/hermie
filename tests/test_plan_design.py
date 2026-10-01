@@ -1,5 +1,6 @@
 """Plan mode design phase: questions, a structured plan, approval, PLAN.md, and the privacy of answers."""
 import asyncio
+import json
 
 import pytest
 
@@ -104,9 +105,13 @@ async def test_withheld_answer_sends_template_and_marks_task_sensitive(make_agen
     async def clarifier(req):
         return [ClarifyAnswer(text="the secret merger with Acme")]
     agent.bus.clarifier = clarifier
-    r = await agent.run("Write a project tracker")
+    await agent.run("Write a project tracker")
     sent = planner.sent_text()
     assert "merger" not in sent and "Q1: answer withheld (private)" in sent
+    notices = [e.text for e in agent.events if isinstance(e, Notice)]
+    assert any("Your answer to Q1 was withheld" in n for n in notices)
+    record = json.loads(agent.s.trajectory_log_path.read_text().splitlines()[-1])
+    assert record["sensitive"] is True
 
 
 async def test_short_or_failed_clarifier_answers_are_skipped(make_agent):
@@ -152,3 +157,50 @@ async def test_delegation_budget_scales_with_plan_and_cap(make_agent):
     agent = make_agent(FakeJudge(task="planning"), planner=planner, plan_delegation_cap=30)
     await agent.run("Build a big app")
     assert "Remaining delegations: 29" in planner.sent_text()      # min(30, max(8, 40)) - 1
+
+
+def revise(**over):
+    args = {"goal": "A news reader", "architecture": "SwiftUI + RSS", "steps": STEPS, **over}
+    return tool("revise_plan", **args)
+
+
+async def test_plan_proposed_revision_numbers_count_up(make_agent):
+    planner = Script([submit(), revise(goal="v2"), revise(goal="v3"), text("Done")], name="planner")
+    agent = make_agent(FakeJudge(task="planning"), planner=planner)
+    await agent.run("Build a news app")
+    assert [e.revision for e in agent.events if isinstance(e, PlanProposed)] == [1, 2, 3]
+
+
+async def test_change_request_notifies_what_was_sent(make_agent):
+    planner = Script([submit(), revise(goal="v2"), revise(goal="v3"), text("Done")], name="planner")
+    agent = make_agent(FakeJudge(task="planning"), planner=planner, mode=RunMode.DEFAULT)
+    decisions = [PlanDecision("revise", f"Text alerts to {PHONE} too"), PlanDecision("approve")]
+    revisions = []
+
+    async def reviewer(req):
+        revisions.append(req.revision)
+        return decisions.pop(0)
+    agent.bus.plan_reviewer = reviewer
+    await agent.run("Build a news app")
+    sent = planner.sent_text()
+    assert PHONE not in sent and "The user asked for changes:" in sent
+    notices = [e.text for e in agent.events if isinstance(e, Notice)]
+    assert any(n.startswith("Your change request was sent as:") and PHONE not in n for n in notices)
+    assert revisions == [2, 3]
+    assert [e.revision for e in agent.events if isinstance(e, PlanProposed)] == [1, 3]
+
+
+async def test_withheld_change_request_notifies(make_agent):
+    planner = Script([submit(), revise(goal="v2"), text("Done")], name="planner")
+    comp = Script([text("still about the merger with Acme")], name="comp")
+    agent = make_agent(FakeJudge(task="planning", secrets=("merger",)), planner=planner, compressor=comp,
+                       mode=RunMode.DEFAULT)
+
+    async def reviewer(req):
+        return PlanDecision("revise", "mention the secret merger with Acme")
+    agent.bus.plan_reviewer = reviewer
+    await agent.run("Build a news app")
+    sent = planner.sent_text()
+    assert "merger" not in sent and "could not be sent (private)" in sent
+    notices = [e.text for e in agent.events if isinstance(e, Notice)]
+    assert any("Your change request was withheld" in n for n in notices)

@@ -217,17 +217,20 @@ async def ask(st: TaskState, host: "Hermie", questions: list[Question]) -> str:
     return (await answers_text(st, host, questions, answers)).text
 
 
-async def review_plan(st: TaskState, host: "Hermie", plan: Plan) -> tuple[str, Optional[str]]:
+async def review_plan(st: TaskState, host: "Hermie", plan: Plan, revising: bool = False) -> tuple[str, Optional[str]]:
     """Validate, show, and get a decision on a submitted plan. Returns ("approve", None), ("revise", certified
-    feedback) or ("reject", None). On approve the plan becomes the task's plan (state, PLAN.md, events)."""
+    feedback) or ("reject", None). On approve the plan becomes the task's plan (state, PLAN.md, events).
+    revising: called from revise_plan, whose approval is counted in plan_revisions only after this returns."""
     if problems := plan_problems(plan, st.s.plan_max_steps):
         raise ModelRetry("; ".join(problems))
     local = localize_plan(st, plan)
+    # The proposal's number: every change request answered and every approved revise_plan counts one
+    revision = st.plan_revisions + (2 if revising and st.plan_local is not None else 1)
     ask_user = st.s.mode is RunMode.DEFAULT and st.bus.plan_reviewer is not None
     action, feedback = "approve", ""
     if ask_user:
         final = st.plan_revisions >= st.s.plan_max_revisions
-        req = PlanReviewRequest(local.model_dump(), plan_doc.render(local, []), st.plan_revisions + 1,
+        req = PlanReviewRequest(local.model_dump(), plan_doc.render(local, []), revision,
                                 plan_doc.diff_steps(st.plan_local, local), final)
         try:
             decision = await st.bus.request_plan_review(req)
@@ -244,23 +247,29 @@ async def review_plan(st: TaskState, host: "Hermie", plan: Plan) -> tuple[str, O
     if action == "revise":
         st.plan_revisions += 1
         clean, how = await host._certify_outbound(st, feedback.strip() or "Please improve the plan.", [])
-        if clean is None:
+        out = None
+        if clean is not None:
+            try:
+                # remember the exact string that goes out (as a ModelRetry / tool result), so OutboundGuard sees a known hash
+                out = st.remember(await asyncio.to_thread(st.gate.certify, f"The user asked for changes:\n{clean.text}"))
+            except PermissionError:
+                out = None
+        if out is None:
             st.answers_withheld += 1
             st.sensitive_input = True
+            st.bus.emit(Notice("warn", "Your change request was withheld: it could not be sent without private data"))
             return "revise", st.remember(PrivacyGate.trusted_template(
                 "The user asked for changes that could not be sent (private). Ask a multiple-choice question instead.")).text
         if how != "original":
             st.answers_redacted += 1
             st.sensitive_input = True
-        out = f"The user asked for changes:\n{clean.text}"
-        # remember the exact string that goes out (as a ModelRetry / tool result), so OutboundGuard sees a known hash
-        st.remember(await asyncio.to_thread(st.gate.certify, out))
-        return "revise", out
-    _accept(st, plan, local, "user" if ask_user else "auto")
+            st.bus.emit(Notice("info", f"Your change request was sent as: {restore_preview(clean.text)}"))
+        return "revise", out.text
+    _accept(st, plan, local, "user" if ask_user else "auto", revision)
     return "approve", None
 
 
-def _accept(st: TaskState, plan: Plan, local: Plan, approved_by: str) -> None:
+def _accept(st: TaskState, plan: Plan, local: Plan, approved_by: str, revision: int) -> None:
     old = st.plan_local
     st.plan, st.plan_local, st.plan_approved_by = plan, local, approved_by
     if old is None:
@@ -271,7 +280,7 @@ def _accept(st: TaskState, plan: Plan, local: Plan, approved_by: str) -> None:
     st.delegation_budget = delegation_limit_for(st.s, len(plan.steps))
     st.plan_outline = [s.title for s in local.steps]
     st.bus.emit(PlanUpdated(list(st.plan_steps), list(st.plan_done), list(st.plan_outline)))
-    st.bus.emit(PlanProposed(local.model_dump(), st.plan_revisions + 1, approved_by))
+    st.bus.emit(PlanProposed(local.model_dump(), revision, approved_by))
     write_plan_file(st)
 
 
@@ -328,14 +337,14 @@ def build_planner(models: ModelFactory, host: "Hermie", can_ask: bool) -> Agent[
         st = ctx.deps
         if problems := plan_problems(plan, st.s.plan_max_steps):
             raise ModelRetry("; ".join(problems))
-        _accept(st, plan, localize_plan(st, plan), "auto")
+        _accept(st, plan, localize_plan(st, plan), "auto", st.plan_revisions + 1)
         return st.remember(PrivacyGate.trusted_template(
             f"Plan recorded, {len(plan.steps)} steps. {budget_line(st)}")).text
 
     async def revise_plan(ctx: RunContext[TaskState], plan: Plan) -> str:
         """Replace the approved plan (steps added, removed or substantially changed); the user approves it."""
         st = ctx.deps
-        action, feedback = await review_plan(st, host, plan)
+        action, feedback = await review_plan(st, host, plan, revising=True)
         if action == "approve":
             st.plan_revisions += 1
             return st.remember(PrivacyGate.trusted_template(f"Revision approved. {budget_line(st)}")).text
