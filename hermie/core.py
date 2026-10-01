@@ -17,7 +17,7 @@ from .agents import (ExecutorOutput, ExecutorReport, ModelFactory, Review, Statu
 from .audit import AuditLog, JsonlLog
 from .complexity import RouteLLMScorer
 from .config import RunMode, Settings
-from . import project_doc
+from . import plan_doc, project_doc
 from .events import (ChatMessage, EventBus, ExecutorProgress, Notice, ReportArrived, SnapshotTaken,
                      StatsUpdated, TaskFinished)
 from .judge import Judge, OllamaJudge
@@ -430,6 +430,8 @@ class Hermie:
         done. On error, skip (a failure in the quality loop does not affect the task)."""
         try:
             diff = await asyncio.to_thread(self.diff_since, st.snapshot_id) if st.snapshot_id else ""
+            if st.plan_path is not None:
+                diff = plan_doc.strip_from_diff(diff, st.plan_path.name)
             outputs = [c for c in st.recent_calls if c.startswith(("run_command", "read_file"))][-6:]
             prompt = review_prompt(task_text, acceptance, out, diff, outputs, self.s.review_diff_chars)
             res = await asyncio.wait_for(build_reviewer(self.models).run(prompt), self.s.review_timeout_s)
@@ -451,8 +453,11 @@ class Hermie:
     async def _delegated_step(self, st: TaskState, local_step: str, acceptance: list[str],
                               plan_step: Optional[int] = None) -> tuple[ExecutorOutput, Optional[Review], str]:
         """One step delegated by the planner: execute -> local review against the acceptance criteria -> fix; on
-        failure, produce a data-free diagnosis for the planner."""
-        prompt = f"[Overall task]\n{st.text}\n\n[Current step delegated by the planner]\n{local_step}"
+        failure, produce a data-free diagnosis for the planner. With an approved plan the executor sees it (local)."""
+        prompt = f"[Overall task]\n{st.text}\n\n"
+        if st.plan_local is not None:
+            prompt += plan_doc.executor_block(st.plan_local, st.plan_step_done, plan_step) + "\n\n"
+        prompt += f"[Current step delegated by the planner]\n{local_step}"
         if acceptance:
             prompt += "\n\n[Acceptance criteria]\n" + "\n".join(f"- {a}" for a in acceptance)
         # Take another snapshot before each delegation: the reviewer sees only this step's changes, so the diff does
@@ -634,7 +639,9 @@ class Hermie:
         The workspace AGENT.md and the recon overview are attached and take the same gate path as the task."""
         source = st.text
         doc = project_doc.strip_lessons(st.project_doc).strip() if st.project_doc else ""  # lessons never go to the planner
-        extras = ([f"[Project doc AGENT.md]\n{doc}"] if doc else []) + ([recon] if recon else [])
+        existing_plan = plan_doc.existing(self.s.workspace, self.s.plan_file)
+        extras = ([f"[Project doc AGENT.md]\n{doc}"] if doc else []) \
+            + ([f"[Existing plan]\n{existing_plan}"] if existing_plan else []) + ([recon] if recon else [])
         if extras:
             source = "\n\n".join([st.text, *extras])
             verdict = None  # the routing-stage verdict covered only the task text

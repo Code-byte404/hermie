@@ -323,3 +323,48 @@ async def test_answer_phone_never_reaches_trajectory(make_agent, settings):
     await agent.run("Build a news app")
     traj = (settings.data_dir / "trajectories.jsonl").read_text()
     assert PHONE not in traj and '"node": "design"' in traj and PHONE not in planner.sent_text()
+
+
+async def test_plan_md_is_written_and_ticked_and_executor_sees_plan(make_agent, settings):
+    planner = Script([submit(), tool("delegate", step="Build the skeleton", plan_step=1), text("Done")], name="planner")
+    ex = Script([tool("write_file", path="App.swift", content="// app")], final=final())
+    rev = Script([review(True)], name="reviewer")
+    agent = make_agent(FakeJudge(task="planning"), planner=planner, executor=ex, reviewer=rev, verify_rounds=1)
+    await agent.run("Build a news app")
+    md = (settings.workspace / "PLAN.md").read_text()
+    assert md.startswith("<!-- hermie-plan -->") and "- [x] 1. Skeleton app" in md and "- [ ] 2. Feed list" in md
+    assert "[Approved plan]" in ex.sent_text() and "-> [ ] 1. Skeleton app" in ex.sent_text()
+    assert "PLAN.md" not in rev.sent_text()
+
+
+async def test_plan_step_out_of_range_ticks_nothing(make_agent, settings):
+    planner = Script([submit(), tool("delegate", step="x", plan_step=9), tool("delegate", step="y", plan_step=0),
+                      text("Done")], name="planner")
+    agent = make_agent(FakeJudge(task="planning"), planner=planner)
+    await agent.run("Build a news app")
+    assert "- [x]" not in (settings.workspace / "PLAN.md").read_text()
+
+
+async def test_existing_plan_goes_to_planner_through_the_gate(make_agent, settings):
+    from hermie import plan_doc
+    from hermie.planning import Plan, PlanStep
+    settings.workspace.mkdir(parents=True, exist_ok=True)
+    old = Plan(goal=f"Alerts for {PHONE}", architecture="a",
+               steps=[PlanStep(title="Old step", details="d", acceptance=["ok"])])
+    plan_doc.write(settings.workspace / "PLAN.md", old, [True])
+    planner = Script([text("Done")], name="planner")
+    agent = make_agent(FakeJudge(task="planning"), planner=planner)
+    await agent.run("Continue the plan")
+    sent = planner.sent_text()
+    assert "[Existing plan]" in sent and "[x] 1. Old step" in sent and PHONE not in sent
+
+
+async def test_user_plan_md_not_overwritten_or_sent(make_agent, settings):
+    settings.workspace.mkdir(parents=True, exist_ok=True)
+    (settings.workspace / "PLAN.md").write_text("my private roadmap\n")
+    planner = Script([submit(), text("Done")], name="planner")
+    agent = make_agent(FakeJudge(task="planning"), planner=planner)
+    await agent.run("Build a news app")
+    assert (settings.workspace / "PLAN.md").read_text() == "my private roadmap\n"
+    assert (settings.workspace / "HERMIE_PLAN.md").exists()
+    assert "my private roadmap" not in planner.sent_text()
