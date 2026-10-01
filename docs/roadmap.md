@@ -14,6 +14,7 @@ What is planned next and why, in the order it will be built. Each item lands as 
 - **Lesson memory.** Lessons from review-then-fix episodes and from problems the reviewer kept raising go into a local store with local embeddings; the most relevant ones are given to the executor before each step. The planner no longer receives lessons.
 - **Skill library.** Multi-step jobs that passed review become Markdown playbooks under `~/.hermie/skills/`, active once a second similar success (or the user) confirms them, given to the executor for similar steps, and retired when they stop helping.
 - **Routing calibration.** `hermie --calibrate` labels your recorded tasks from what happened after routing, sweeps the routing thresholds and proposes new values; `--apply` writes them to `.env` once there are enough labelled tasks. Privacy thresholds are never tuned from usage.
+- **Planner design phase.** In plan mode the planner first asks the questions that change the architecture or scope (multiple choice, recommended answer first), writes a detailed plan (goal, decisions, assumptions, architecture, steps with files and acceptance criteria, risks) to `PLAN.md`, and waits for your approval, change requests or rejection before anything runs. It can ask again or revise the plan during execution. Your answers leave the machine only through the same privacy gate as the task.
 
 ## Also on the list
 
