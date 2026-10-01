@@ -587,33 +587,29 @@ class Hermie:
         except Exception:
             log.exception("Skill bookkeeping failed")
 
-    async def _outbound_task(self, st: TaskState, verdict: PrivacyVerdict, notes: list[str],
-                             recon: str = "") -> Optional[CleanText]:
-        """The task description the planner sees: no private data -> original text (re-certified); rule entities only
-        -> placeholders; contextually sensitive -> abstracted rewrite by a local model.
-        The workspace AGENT.md and the recon overview are attached and take the same gate path as the task."""
+    async def _certify_outbound(self, st: TaskState, source: str, notes: list[str],
+                                verdict: Optional[PrivacyVerdict] = None) -> tuple[Optional[CleanText], str]:
+        """The gate ladder for any local text bound for the planner: the original if it certifies; else Presidio
+        placeholders (mapping merged into st.mapping, numbering continued); else a local abstracted rewrite; else
+        nothing ("withheld"). Returns (remembered CleanText or None, how)."""
         gate = st.gate
-        source = st.text
-        doc = project_doc.strip_lessons(st.project_doc).strip() if st.project_doc else ""  # lessons never go to the planner
-        extras = ([f"[Project doc AGENT.md]\n{doc}"] if doc else []) + ([recon] if recon else [])
-        if extras:
-            source = "\n\n".join([st.text, *extras])
-            verdict = await asyncio.to_thread(gate.check, source)  # the routing-stage verdict covered only the task text
+        if verdict is None:
+            verdict = await asyncio.to_thread(gate.check, source)
         if not verdict.sensitive:
             try:
                 clean = await asyncio.to_thread(gate.certify, source)
-                notes.append("Task text passed the outbound check")
-                return st.remember(clean)
+                notes.append("Passed the outbound check")
+                return st.remember(clean), "original"
             except PermissionError as e:
                 notes.append(f"Original text failed the outbound check: {e}")
                 verdict = await asyncio.to_thread(gate.check, source)
         if verdict.findings:  # try placeholders first; certify re-checks and decides whether contextual sensitivity remains
-            redacted, mapping = gate.redact(source, verdict.findings)
+            redacted, mapping = gate.redact(source, verdict.findings, existing=st.mapping)
             try:
                 clean = await asyncio.to_thread(gate.certify, redacted)
                 st.mapping.update(mapping)
                 notes.append("Passed the outbound check after placeholder redaction")
-                return st.remember(clean)
+                return st.remember(clean), "redacted"
             except PermissionError as e:
                 notes.append(f"Still failed after placeholder redaction: {e}")
         try:
@@ -622,10 +618,26 @@ class Hermie:
             abstract = (await rewriter.run(ABSTRACT_PROMPT + source)).output.strip()
             clean = await asyncio.to_thread(gate.certify, abstract)
             notes.append("Local abstracted description passed the outbound check")
-            return st.remember(clean)
+            return st.remember(clean), "abstracted"
         except PermissionError as e:
             notes.append(f"Abstracted description still failed: {e}")
         except Exception as e:
             log.exception("Abstraction rewrite failed")
             notes.append(f"Abstraction rewrite failed: {e}")
-        return None
+        return None, "withheld"
+
+    async def _outbound_task(self, st: TaskState, verdict: PrivacyVerdict, notes: list[str],
+                             recon: str = "") -> Optional[CleanText]:
+        """The task description the planner sees: no private data -> original text (re-certified); rule entities only
+        -> placeholders; contextually sensitive -> abstracted rewrite by a local model.
+        The workspace AGENT.md and the recon overview are attached and take the same gate path as the task."""
+        source = st.text
+        doc = project_doc.strip_lessons(st.project_doc).strip() if st.project_doc else ""  # lessons never go to the planner
+        extras = ([f"[Project doc AGENT.md]\n{doc}"] if doc else []) + ([recon] if recon else [])
+        if extras:
+            source = "\n\n".join([st.text, *extras])
+            verdict = None  # the routing-stage verdict covered only the task text
+        clean, how = await self._certify_outbound(st, source, notes, verdict)
+        if how == "original":
+            notes[-1] = "Task text passed the outbound check"
+        return clean

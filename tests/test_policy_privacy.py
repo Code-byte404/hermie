@@ -144,3 +144,16 @@ def test_inline_code_goes_to_judge(cmd):
 @pytest.mark.parametrize("cmd", ["python script.py", "python3 -m pytest -q"])
 def test_plain_scripts_stay_low(cmd):
     assert rule_risk(cmd) == "low"
+
+
+def test_redact_continues_existing_numbering(analyzer):
+    from hermie.privacy import PrivacyGate
+    gate = PrivacyGate(Settings(), judge=None, analyzer=analyzer)
+    first = gate.check("call 13812345678", use_judge=False)
+    t1, m1 = PrivacyGate.redact("call 13812345678", first.findings)
+    assert m1 == {"<CN_MOBILE_1>": "13812345678"}
+    text = "use 13987654321 or 13812345678"
+    v = gate.check(text, use_judge=False)
+    t2, m2 = PrivacyGate.redact(text, v.findings, existing=m1)
+    assert t2 == "use <CN_MOBILE_2> or <CN_MOBILE_1>"
+    assert m2 == {"<CN_MOBILE_2>": "13987654321"}      # only the new placeholder

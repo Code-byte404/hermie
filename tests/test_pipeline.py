@@ -333,3 +333,20 @@ async def test_material_pii_never_reaches_planner(make_agent, settings):
     assert PHONE not in planner.sent_text()
     assert PHONE in ex.sent_text()
     assert PHONE not in settings.outbound_log_path.read_text()
+
+
+async def test_certify_outbound_ladder(make_agent):
+    from hermie.session import TaskState
+    comp = Script([text("an internal staffing change")], name="comp")
+    agent = make_agent(FakeJudge(secrets=("lay off",)), compressor=comp)
+    st = TaskState(agent.session, "t")
+    notes: list[str] = []
+    clean, how = await agent._certify_outbound(st, "Target: iOS", notes)
+    assert how == "original" and clean.text == "Target: iOS"
+    clean, how = await agent._certify_outbound(st, f"Call {PHONE} first", notes)
+    assert how == "redacted" and PHONE not in clean.text and st.mapping["<CN_MOBILE_1>"] == PHONE
+    clean, how = await agent._certify_outbound(st, "We lay off 30 people", notes)
+    assert how == "abstracted" and clean.text == "an internal staffing change"
+    comp.steps.append(text("still about how we lay off people"))   # the rewrite keeps the secret -> nothing goes out
+    clean, how = await agent._certify_outbound(st, "We lay off 30 people", notes)
+    assert how == "withheld" and clean is None

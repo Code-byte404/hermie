@@ -241,12 +241,20 @@ class PrivacyGate:
         return CleanText(text, _GATE_TOKEN)
 
     @staticmethod
-    def redact(text: str, findings: list[Finding]) -> tuple[str, dict[str, str]]:
-        """Replace sensitive spans with placeholders; returns (redacted text, placeholder -> original).
+    def redact(text: str, findings: list[Finding],
+               existing: Optional[dict[str, str]] = None) -> tuple[str, dict[str, str]]:
+        """Replace sensitive spans with placeholders; returns (redacted text, new placeholder -> original).
+        With `existing` (a mapping already in use for this task), an original that already has a placeholder reuses it
+        and new placeholders continue the numbering, so a second redaction never mints a colliding name.
         The mapping never leaves this machine."""
         mapping: dict[str, str] = {}
         counters: dict[str, int] = {}
         seen: dict[str, str] = {}
+        for ph, original in (existing or {}).items():
+            seen.setdefault(original, ph)
+            m = re.fullmatch(r"<([A-Z_]+)_(\d+)>", ph)
+            if m:
+                counters[m.group(1)] = max(counters.get(m.group(1), 0), int(m.group(2)))
         out, last = [], 0
         for f in sorted(_merge_overlaps(findings), key=lambda f: f.start):
             original = text[f.start:f.end]

@@ -149,6 +149,16 @@ class Settings:
     max_tool_calls: int = field(default_factory=lambda: _env_int("MAX_TOOL_CALLS", 30))
     max_requests: int = field(default_factory=lambda: _env_int("MAX_REQUESTS", 40))
     max_delegations: int = field(default_factory=lambda: _env_int("MAX_DELEGATIONS", 8))
+    # ---- Plan mode design phase: questions, a detailed plan, approval before execution ----
+    plan_design: bool = field(default_factory=lambda: _env_bool("PLAN_DESIGN", True))
+    plan_max_steps: int = field(default_factory=lambda: _env_int("PLAN_MAX_STEPS", 20))
+    plan_max_question_rounds: int = field(default_factory=lambda: _env_int("PLAN_MAX_QUESTION_ROUNDS", 3))
+    plan_max_revisions: int = field(default_factory=lambda: _env_int("PLAN_MAX_REVISIONS", 3))
+    # AUTO mode: seconds before the planner's questions are answered with the recommended options
+    plan_auto_answer_s: float = field(default_factory=lambda: _env_float("PLAN_AUTO_ANSWER_S", 120))
+    plan_file: str = field(default_factory=lambda: _env("PLAN_FILE", "PLAN.md"))
+    # Upper bound on delegations for a large plan (the budget is max(MAX_DELEGATIONS, 2 x steps), capped here)
+    plan_delegation_cap: int = field(default_factory=lambda: _env_int("PLAN_DELEGATION_CAP", 40))
     report_retries: int = field(default_factory=lambda: _env_int("REPORT_RETRIES", 3))
     stuck_check_every: int = field(default_factory=lambda: _env_int("STUCK_CHECK_EVERY", 6))
     tool_output_max_chars: int = field(default_factory=lambda: _env_int("TOOL_OUTPUT_MAX_CHARS", 8000))
