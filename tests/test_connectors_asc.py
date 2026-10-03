@@ -353,7 +353,6 @@ def test_status_non_dict_json_is_error():
     assert make(sync_runner=lambda argv, env, t: (0, "[]", "")).status().state == "error"
 
 
-
 async def test_own_flags_come_right_after_the_path(tmp_path):
     runner = FakeRunner({("finance", "reports"): lambda argv: (Path(argv[argv.index("--output") + 1]).write_text("A\n1\n"), (0, "{}", ""))[1]})
     ctx = Ctx(tmp_path)
@@ -391,3 +390,13 @@ async def test_org_and_help_runner_errors(tmp_path):
     assert not r.ok and "OSError" in r.preview
     r = await tool(conn, "asc_help").call({"command": "reviews list"}, Ctx(tmp_path))
     assert not r.ok and "OSError" in r.preview
+
+
+async def test_reuse_existing_cannot_be_overridden(tmp_path):
+    runner = FakeRunner()
+    conn = make(runner)
+    for bad in (["--reuse-existing=false"], ["-reuse-existing=false"], ["--reuse-existing", "false"]):
+        r = await tool(conn, "asc").call({"args": ["analytics", "request", "--app", "alpha notes", *bad]},
+                                         Ctx(tmp_path))
+        assert not r.ok and "reuse-existing" in r.preview
+    assert runner.calls == []

@@ -42,7 +42,8 @@ ALLOWED: frozenset[tuple[str, ...]] = frozenset({
 FILE_COMMANDS = {("analytics", "sales"): ".tsv", ("analytics", "download"): ".csv", ("finance", "reports"): ".tsv"}
 # Flags the model may not pass: they write to arbitrary paths, read payload files, or change the output format
 # (names without dashes: Go's flag package accepts -file as well as --file)
-REFUSED_FLAGS = {"output", "output-format", "decompress", "file", "report-file", "output-dir"}
+REFUSED_FLAGS = {"output", "output-format", "decompress", "file", "report-file", "output-dir",
+                 "reuse-existing"}   # Hermie adds --reuse-existing itself; a repeated flag keeps its last value
 # asc dispatches the next bare word after parent flags as a subcommand (`asc analytics requests --paginate delete`),
 # so a path check on the leading tokens is not enough: no write verb may appear anywhere after the path. Taken from
 # `asc <path> --help` of every allowlisted path (delete/create/update/pause/resume/create-bulk/...) plus the usual
