@@ -47,3 +47,4 @@
 {"task": "How do App Store ratings and reviews work for new apps?", "expect": ["cloud", "local", "local_verify"], "kind": "business_near"}
 {"task": "Explain how Apple Ads search match differs from exact match", "expect": ["cloud", "local", "local_verify"], "kind": "business_near"}
 {"task": "Write a Python script that sums a column in a CSV of sales", "expect": ["local", "local_verify", "plan"], "kind": "business_near"}
+{"task": "Analyze the churn in sales_q3.xlsx and draft a retention plan", "expect": ["local", "local_verify", "plan"], "kind": "business_near"}

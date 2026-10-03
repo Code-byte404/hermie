@@ -54,9 +54,11 @@ NEEDS_WORKSPACE_QUESTION = (
 
 # Asked only when a data connector is ready. Concrete examples on purpose, like NEEDS_WORKSPACE_QUESTION.
 BUSINESS_DATA_QUESTION = (
-    "Does answering this need the user's own business data from one of their online accounts -- for example "
-    "App Store Connect sales, downloads or reviews, Google Play Console, Google Analytics, Apple Ads or other ad "
-    "spend, or revenue reports -- rather than general knowledge?"
+    "Does answering this require FETCHING the user's own business data from one of their online accounts or "
+    "services (for example App Store Connect sales, downloads or reviews; Google Play Console; Google Analytics; "
+    "Apple Ads or other ad spend; revenue reports) that the user has not already supplied? Files, spreadsheets, "
+    "documents or data given in the task itself (for example a CSV or spreadsheet named in the task, customer lists, "
+    "pasted text) do NOT count, and neither does general knowledge."
 )
 
 
