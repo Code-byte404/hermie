@@ -344,17 +344,66 @@ def test_grant_read_refuses_broad_or_secret_paths(sb, attached_dir):
     assert sb.grantable(attached_dir) and sb.grantable(attached_dir / "src" / "main.py")
 
 
+_CONNECT = "python3 -c \"import socket; socket.create_connection(('1.1.1.1', 53), 3)\""
+_RESOLVE = "python3 -c \"import socket, uuid; socket.getaddrinfo(uuid.uuid4().hex[:12] + '.example.com', 80)\""
+
+
 async def test_offline_profile_blocks_network_and_dns(settings):
     from hermie.sandbox import Sandbox
     sb = Sandbox(settings)
+    # Positive control: online, the same commands must work, or this machine has no network to block
+    if (await sb.run_shell(_CONNECT)).exit_code != 0 or \
+            (await sb.run_shell("python3 -c \"import socket; socket.getaddrinfo('example.com', 80)\"")).exit_code != 0:
+        pytest.skip("no network on this machine: cannot show that offline blocks it")
     sb.set_offline(True)
     text = sb.profile_path.read_text()
     assert '(deny network-outbound (remote ip "*:*"))' in text and "com.apple.dnssd.service" in text
-    r = await sb.run_shell("python3 -c \"import socket; socket.create_connection(('1.1.1.1', 53), 3)\"")
+    assert "mDNSResponder" in text
+    r = await sb.run_shell(_CONNECT)
     assert r.exit_code != 0
     r = await sb.run_shell("python3 -c \"import socket; socket.getaddrinfo('example.com', 80)\"")
+    assert r.exit_code != 0
+    r = await sb.run_shell(_RESOLVE)   # a name never resolved before: no cache can answer it
     assert r.exit_code != 0
     r = await sb.run_shell("echo still-works")
     assert r.exit_code == 0 and "still-works" in r.stdout
     sb.set_offline(False)
     assert "(deny network-outbound" not in sb.profile_path.read_text()
+
+
+def test_each_sandbox_has_its_own_profile(settings):
+    a, b = Sandbox(settings), Sandbox(settings)
+    assert a.profile_path != b.profile_path and a.profile_path.parent == b.profile_path.parent
+    a.set_offline(True)
+    b.set_offline(True)
+    b.set_offline(False)    # another Hermie finishing its task must not put this one back online
+    assert "(deny network-outbound" in a.profile_path.read_text()
+    assert "(deny network-outbound" not in b.profile_path.read_text()
+    a.close()
+    assert not a.profile_path.exists() and b.profile_path.exists()
+
+
+def test_stale_profiles_are_pruned(settings):
+    settings.ensure_dirs()
+    dead = subprocess.Popen(["/usr/bin/true"])
+    dead.wait()
+    stale = settings.data_dir / f"sandbox-{dead.pid}-deadbeef.sb"
+    live = settings.data_dir / f"sandbox-{os.getpid()}-cafe0000.sb"
+    stale.write_text("(version 1)")
+    live.write_text("(version 1)")
+    Sandbox(settings)
+    assert not stale.exists() and live.exists()
+
+
+async def test_going_offline_stops_running_commands(settings):
+    import asyncio
+    sb = Sandbox(settings)
+    run = asyncio.ensure_future(sb.run_shell("sleep 30; echo finished", timeout=60))
+    for _ in range(100):
+        if sb._procs:
+            break
+        await asyncio.sleep(0.05)
+    assert sb._procs
+    sb.set_offline(True)
+    r = await asyncio.wait_for(run, 10)
+    assert "finished" not in r.stdout and r.exit_code != 0

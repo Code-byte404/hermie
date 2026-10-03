@@ -252,8 +252,6 @@ class Hermie:
                        project_doc=project_doc.load(self.s.workspace, include_lessons=not self.s.lessons_enabled),
                        flow=FlowState(task=task, force=force))
         st.host = self
-        if business or self.session.business:
-            st.mark_business("prefix" if business else "session")
         await self._sync_lessons()
         t0 = time.time()
         self.session.stats.task_started_at = t0
@@ -263,6 +261,8 @@ class Hermie:
             if self.connectors:
                 st.data_room = self.s.connector_rooms_dir / f"{time.strftime('%Y%m%d-%H%M%S')}-{uuid.uuid4().hex[:6]}"
                 st.data_room.mkdir(parents=True, exist_ok=True)
+            if business or self.session.business:   # inside the try: the finally takes the sandbox back online
+                st.mark_business("prefix" if business else "session")
             with self.session.sandbox.grant_read([*read_roots, *([st.data_room] if st.data_room else [])]):
                 result = await self.task_graph.run(state=st, deps=self)
             routing = st.flow.routing

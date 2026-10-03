@@ -126,3 +126,15 @@ async def test_prefixed_task_is_offline_from_the_start(make_agent):
     agent.session.sandbox.run_shell = spy
     await agent.run("revenue?", business=True)
     assert seen == [True]
+
+
+async def test_failure_before_the_graph_still_takes_sandbox_back_online(make_agent):
+    import pytest
+    agent = make_agent(FakeJudge(task="repetitive"), connectors=[FakeConnector()])
+
+    async def broken():
+        raise RuntimeError("lesson store down")
+    agent._sync_lessons = broken
+    with pytest.raises(RuntimeError):
+        await agent.run("revenue?", business=True)
+    assert agent.session.sandbox.offline is False

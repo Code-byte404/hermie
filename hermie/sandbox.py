@@ -21,6 +21,7 @@ swapped for a VM-based implementation later.
 from __future__ import annotations
 
 import asyncio
+import atexit
 import fnmatch
 import json
 import os
@@ -29,6 +30,7 @@ import signal
 import subprocess
 import sys
 import time
+import uuid
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -194,6 +196,35 @@ class Executor(Protocol):
     async def fs(self, op: str, **args) -> dict: ...
 
 
+def _unlink_quietly(path: Path) -> None:
+    try:
+        path.unlink(missing_ok=True)
+    except OSError:
+        pass
+
+
+def _pid_alive(pid: int) -> bool:
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:   # exists, owned by someone else
+        return True
+    return True
+
+
+def _prune_stale_profiles(data_dir: Path) -> None:
+    """Delete sandbox-<pid>-<id>.sb files left behind by processes that are gone (crash, kill -9)."""
+    try:
+        files = list(data_dir.glob("sandbox-*.sb"))
+    except OSError:
+        return
+    for f in files:
+        m = re.fullmatch(r"sandbox-(\d+)-[0-9a-f]+\.sb", f.name)
+        if m and not _pid_alive(int(m.group(1))):
+            _unlink_quietly(f)
+
+
 class Sandbox:
     """Every executor tool goes through here and runs in a subprocess."""
 
@@ -205,11 +236,15 @@ class Sandbox:
         self.workspace.mkdir(parents=True, exist_ok=True)
         self.python = Path(sys.executable)
         self.env_prefix = Path(sys.prefix).resolve()
-        self.profile_path = (settings.data_dir / "sandbox.sb").resolve()
+        # One profile file per instance: sandbox-exec reads it at every launch, so a shared file would let another
+        # Hermie on the same data_dir rewrite it (and e.g. undo this instance's offline lock)
+        _prune_stale_profiles(settings.data_dir)
+        self.profile_path = (settings.data_dir / f"sandbox-{os.getpid()}-{uuid.uuid4().hex[:8]}.sb").resolve()
+        atexit.register(_unlink_quietly, self.profile_path)
         self.read_roots: tuple[Path, ...] = ()   # paths attached to the running task: read-only
         self.offline = False                     # business-data task: no network (set_offline)
-        self._write_profile()
         self._procs: set[asyncio.subprocess.Process] = set()
+        self._write_profile()
 
     def _write_profile(self) -> None:
         self.profile_path.write_text(build_profile(
@@ -217,10 +252,17 @@ class Sandbox:
             attached=self.read_roots, network=not self.offline), encoding="utf-8")
 
     def set_offline(self, flag: bool) -> None:
-        """Business-data tasks: the sandbox gets no network (commands started from now on)."""
+        """Business-data tasks: the sandbox gets no network. Commands still running were started with the online
+        profile, so going offline stops them."""
         if flag != self.offline:
             self.offline = flag
             self._write_profile()
+            if flag:
+                self.kill_all()
+
+    def close(self) -> None:
+        """Remove this instance's profile file (best-effort; also registered with atexit)."""
+        _unlink_quietly(self.profile_path)
 
     def grantable(self, path: Path) -> bool:
         """Whether an attached path may be opened read-only: not the root, not the home directory or anything
