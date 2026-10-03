@@ -202,11 +202,19 @@ class PlanDecision:
     feedback: str = ""   # the change request (local text; goes out only through the gate)
 
 
+@dataclass
+class ChoiceRequest:
+    """A connector needs the user to pick one option (an app, an Apple Ads organization). Local text only."""
+    prompt: str
+    options: list[str]
+
+
 Subscriber = Callable[[Event], None]
 Approver = Callable[[ApprovalRequest], Awaitable[Approval]]
 InputProvider = Callable[[InputRequest], Awaitable[Optional[str]]]   # None = stop the command
 Clarifier = Callable[[ClarifyRequest], Awaitable[Optional[list[ClarifyAnswer]]]]   # None = stop the task
 PlanReviewer = Callable[[PlanReviewRequest], Awaitable[PlanDecision]]
+Chooser = Callable[[ChoiceRequest], Awaitable[Optional[str]]]   # None = cancelled
 
 
 class EventBus:
@@ -216,6 +224,7 @@ class EventBus:
         self.input_provider: Optional[InputProvider] = None   # set by an interactive UI; headless runs leave it unset
         self.clarifier: Optional[Clarifier] = None         # planner questions; headless runs leave it unset
         self.plan_reviewer: Optional[PlanReviewer] = None  # plan approval; unset = approve automatically
+        self.chooser: Optional[Chooser] = None   # connector pickers; headless runs leave it unset
         self._user_wait_s = 0.0   # time spent waiting for approvals / input (not charged to the executor's time limit)
         self._waiting_since: Optional[float] = None
 
@@ -263,3 +272,8 @@ class EventBus:
         if self.plan_reviewer is None:
             return PlanDecision("approve")
         return await self._wait_for_user(self.plan_reviewer(req))
+
+    async def request_choice(self, req: ChoiceRequest) -> Optional[str]:
+        if self.chooser is None:
+            return None
+        return await self._wait_for_user(self.chooser(req))

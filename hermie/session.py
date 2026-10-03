@@ -10,7 +10,7 @@ from typing import TYPE_CHECKING, Any, Callable, Optional
 
 from .audit import AuditLog, JsonlLog, sha256
 from .config import RunMode, Settings
-from .events import EventBus
+from .events import EventBus, Notice
 from .policy import Force
 
 if TYPE_CHECKING:
@@ -140,6 +140,10 @@ class Session:
     lessons: Optional[Any] = None                 # memory.LessonStore (local lesson memory; data_dir only)
     lessons_notice_sent: bool = False             # "embeddings unavailable" is said once per session
     skills: Optional[Any] = None                  # skills.SkillStore (local skill library; data_dir only)
+    business: bool = False                        # a task in this session touched business data: later tasks stay local until /new
+    connector_states: Optional[Any] = None        # connectors.guard.StateStore (data_dir/connectors/*.json)
+    connector_log: Optional[JsonlLog] = None      # connectors.jsonl: command paths, exit status, file names (no data)
+    connector_session: dict = field(default_factory=dict)   # per-connector session state (chosen app); cleared by /new
 
     @property
     def mode(self) -> RunMode:
@@ -226,6 +230,9 @@ class TaskState:
     skill_episodes: list = field(default_factory=list)   # reviewed successes captured in memory for skill distillation
     skills: list = field(default_factory=list)           # skills.Skill recalled for the current step
     skills_used: set[str] = field(default_factory=set)   # ids of every skill injected during this task
+    business: bool = False                        # business data involved: local route, no cloud, offline sandbox
+    data_room: Optional[Path] = None              # data_dir/connectors/rooms/<task>: full connector outputs (read-only to the sandbox)
+    connector_calls: int = 0                      # numbering of data-room files
 
     @property
     def s(self) -> Settings:
@@ -241,9 +248,9 @@ class TaskState:
 
     @property
     def exposed(self) -> bool:
-        """Whether the executor has touched sensitive content (task text contained private data, or a tool read some).
-        The web outbound policy tightens based on this."""
-        return self.tainted or self.sensitive_input
+        """Whether the executor has touched sensitive content (task text contained private data, a tool read some, or
+        business data is involved). The web outbound policy tightens based on this; skills are not distilled."""
+        return self.tainted or self.sensitive_input or self.business
 
     @property
     def delegation_limit(self) -> int:
@@ -261,6 +268,17 @@ class TaskState:
     def trace_add(self, node: str, **fields) -> None:
         self.trace.append({"node": node, **self._trace_pending, **fields})
         self._trace_pending = {}
+
+    def mark_business(self, source: str) -> None:
+        """Business data (App Store, ads, analytics...) is involved: from here on this task and the session stay on
+        this machine. source is one of prefix / session / judge / connector (an enum string, safe for the trace)."""
+        first = not self.business
+        self.business = True
+        self.session.business = True
+        if first:
+            self.trace_note(business=source)
+            self.bus.emit(Notice("info", f"Business data ({source}): this task stays on this machine; cloud models are "
+                                         "off and the sandbox is offline"))
 
     def schedule_check(self, coro) -> None:
         """Attach a background check (coroutine) to the task; the coroutine writes its result back into the state itself."""

@@ -125,6 +125,9 @@ class Hermie:
             audit=AuditLog(s.audit_log_path), outbound_log=JsonlLog(s.outbound_log_path),
             command_log=JsonlLog(s.command_log_path), review_log=JsonlLog(s.review_log_path),
             trajectory_log=JsonlLog(s.trajectory_log_path))
+        from .connectors.guard import StateStore
+        self.session.connector_states = StateStore(s.connector_dir)
+        self.session.connector_log = JsonlLog(s.connector_log_path)
         if web is None:
             web = WebClient(s) if s.web_enabled else None
         from .memory import Embedder, LessonStore
