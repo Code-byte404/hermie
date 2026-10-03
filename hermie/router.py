@@ -9,8 +9,8 @@ from typing import Optional
 from .complexity import RouteLLMScorer
 from .config import Settings
 from .judge import YES_NO, FormAnswers, Judge, as_score, form_via_primitives, score_options
-from .policy import (BUSINESS_DATA_QUESTION, COMPLEXITY_LEVELS, NEEDS_WORKSPACE_QUESTION, TASK_TYPES, Decision, Force, Route, Signals,
-                     decide)
+from .policy import (BUSINESS_DATA_QUESTION, COMPLEXITY_LEVELS, NEEDS_WORKSPACE_QUESTION, TASK_TYPES, Decision,
+                     Force, Route, Signals, decide)
 from .privacy import PrivacyGate, PrivacyVerdict
 
 log = logging.getLogger(__name__)

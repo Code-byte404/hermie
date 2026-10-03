@@ -47,6 +47,13 @@ def test_labels_exclude_sensitive_interrupted_fallback():
     assert calibrate.label(bad, []) is None
 
 
+def test_labels_skip_business_tasks():
+    failed = rec("local", nodes=[ex(), rv(False)])   # would be labelled "should have escalated" if judged
+    assert calibrate.label({**failed, "business": True}, []) is None
+    assert calibrate.label({**failed, "business": False}, []) == ["local_verify", "plan"]
+    assert calibrate.label(failed, []) == ["local_verify", "plan"]   # old records without the key still count
+
+
 def _write(settings, records):
     settings.data_dir.mkdir(parents=True, exist_ok=True)
     settings.trajectory_log_path.write_text("".join(json.dumps(r) + "\n" for r in records))

@@ -2,6 +2,7 @@
 import json
 
 from hermie.events import Notice, RouteDecided
+from hermie.policy import BUSINESS_DATA_QUESTION
 
 from .conftest import FakeConnector, FakeJudge, Script, final, text, tool
 
@@ -32,7 +33,6 @@ async def test_business_question_not_asked_without_connectors(make_agent):
     agent = make_agent(judge)
     r = await agent.run("Rename files")
     assert not agent.session.business
-    from hermie.policy import BUSINESS_DATA_QUESTION
     assert all(stmt != BUSINESS_DATA_QUESTION for stmt, _ in judge.calls)
 
 
@@ -57,7 +57,6 @@ async def test_trajectory_has_business_flag_and_no_figure(make_agent, settings):
 async def test_per_question_path_asks_business_and_failure_counts_as_yes(make_agent):
     class Failing(FakeJudge):
         def noul(self, state, statement):
-            from hermie.policy import BUSINESS_DATA_QUESTION
             if statement == BUSINESS_DATA_QUESTION:
                 raise RuntimeError("judge down")
             return super().noul(state, statement)
