@@ -84,7 +84,8 @@ async def test_write_commands_refused(tmp_path):
 async def test_output_and_file_flags_refused(tmp_path):
     runner = FakeRunner()
     conn = make(runner)
-    for bad in (["--output", "x.tsv"], ["--output=x"], ["--file", "p.json"], ["--decompress"], ["--report-file", "r"]):
+    for bad in (["--output", "x.tsv"], ["--output=x"], ["--file", "p.json"], ["--decompress"], ["--report-file", "r"],
+                ["-file", "x"], ["-output=x"], ["-decompress"], ["-output-dir", "d"]):
         r = await tool(conn, "asc").call({"args": ["finance", "regions", *bad]}, Ctx(tmp_path))
         assert not r.ok and "not allowed" in r.preview
     assert runner.calls == []
@@ -295,3 +296,47 @@ async def test_ads_org_discovered_single_and_chosen_multi(tmp_path):
     ctx2 = Ctx(tmp_path, choices=["B"])
     await tool(make(two), "asc").call({"args": ["ads", "campaigns", "list"]}, ctx2)
     assert ctx2.state()["ads_org"] == "2"
+
+
+
+async def test_interleaved_write_verbs_and_bare_dashdash_refused(tmp_path):
+    runner = FakeRunner()
+    conn = make(runner)
+    for args in (["analytics", "requests", "--paginate", "delete", "--request-id", "R", "--confirm"],
+                 ["ads", "campaigns", "--limit", "5", "delete"],
+                 ["ads", "campaigns", "list", "Pause"],
+                 ["reviews", "list", "--", "--output", "x"],
+                 ["ads", "campaigns", "find", "--file", "x"]):
+        r = await tool(conn, "asc").call({"args": args}, Ctx(tmp_path))
+        assert not r.ok, args
+    assert runner.calls == []
+
+
+async def test_report_flag_allowed_and_find_not_in_allowlist(tmp_path):
+    assert not any(p[-1] == "find" for p in ALLOWED)
+    runner = FakeRunner()
+    ctx = Ctx(tmp_path)
+    ctx.state()["ads_org"] = "1"
+    r = await tool(make(runner), "asc").call({"args": ["ads", "impression-share-reports", "view", "--report", "7"]}, ctx)
+    assert r.ok
+
+
+async def test_single_dash_app_flag_is_resolved(tmp_path):
+    runner = FakeRunner()
+    await tool(make(runner), "asc").call({"args": ["reviews", "list", "-app", "alpha notes"]}, Ctx(tmp_path))
+    argv = runner.calls[-1][0]
+    assert argv.count("--app") == 1 and "-app" not in argv and argv[argv.index("--app") + 1] == "111"
+
+
+async def test_runner_oserror_and_ads_hint_not_for_downloads(tmp_path):
+    async def boom(argv, env, timeout):
+        raise OSError("no such file")
+    r = await tool(make(boom), "asc").call({"args": ["finance", "regions"]}, Ctx(tmp_path))
+    assert not r.ok and "OSError" in r.preview
+    runner = FakeRunner({("finance", "regions"): (1, "", "downloads: credentials expired")})
+    r = await tool(make(runner), "asc").call({"args": ["finance", "regions"]}, Ctx(tmp_path))
+    assert not r.ok and "asc ads auth login" not in r.preview
+
+
+def test_status_non_dict_json_is_error():
+    assert make(sync_runner=lambda argv, env, t: (0, "[]", "")).status().state == "error"

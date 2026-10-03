@@ -10,6 +10,7 @@ import asyncio
 import gzip
 import json
 import os
+import re
 import subprocess
 import time
 from pathlib import Path
@@ -26,19 +27,31 @@ SyncRunner = Callable[[list[str], dict, float], tuple[int, str, str]]
 ALLOWED: frozenset[tuple[str, ...]] = frozenset({
     ("apps", "list"), ("apps", "view"),
     ("reviews", "list"), ("reviews", "view"), ("reviews", "ratings"), ("reviews", "summarizations"),
+    # ("analytics", "request") creates a report request on App Store Connect (idempotent with --reuse-existing, which
+    # Hermie always adds): the one entry that is not a pure read
     ("analytics", "sales"), ("analytics", "compare"), ("analytics", "request"), ("analytics", "requests"),
     ("analytics", "view"), ("analytics", "reports", "view"), ("analytics", "instances", "view"),
     ("analytics", "segments", "view"), ("analytics", "download"),
     ("insights", "weekly"), ("insights", "daily"),
     ("finance", "reports"), ("finance", "regions"),
-    *(("ads", r, v) for r in ("campaigns", "ad-groups", "ads", "targeting-keywords") for v in ("list", "view", "find")),
+    *(("ads", r, v) for r in ("campaigns", "ad-groups", "ads", "targeting-keywords") for v in ("list", "view")),
     ("ads", "impression-share-reports", "list"), ("ads", "impression-share-reports", "view"),
     ("ads", "reports", "preset"), ("ads", "acls", "list"), ("ads", "me", "view"),
 })
 # Commands that write a report file: --output is a file path there; Hermie supplies it in the data room
 FILE_COMMANDS = {("analytics", "sales"): ".tsv", ("analytics", "download"): ".csv", ("finance", "reports"): ".tsv"}
 # Flags the model may not pass: they write to arbitrary paths, read payload files, or change the output format
-REFUSED_FLAGS = {"--output", "--output-format", "--decompress", "--file", "--report", "--report-file", "--output-dir"}
+# (names without dashes: Go's flag package accepts -file as well as --file)
+REFUSED_FLAGS = {"output", "output-format", "decompress", "file", "report-file", "output-dir"}
+# asc dispatches the next bare word after parent flags as a subcommand (`asc analytics requests --paginate delete`),
+# so a path check on the leading tokens is not enough: no write verb may appear anywhere after the path. Taken from
+# `asc <path> --help` of every allowlisted path (delete/create/update/pause/resume/create-bulk/...) plus the usual
+# write verbs; find/find-org are refused because their only input is --file.
+WRITE_VERBS = frozenset({
+    "delete", "create", "update", "respond", "respond-batch", "submit", "publish", "release", "pause", "resume",
+    "cancel", "remove", "add", "set", "edit", "upload", "invite", "enable", "disable", "rename", "attach", "detach",
+    "expire", "revoke", "create-bulk", "delete-bulk", "update-bulk", "apply", "sync", "import", "find", "find-org",
+    "remove-beta-testers"})
 APP_FLAG = {("apps", "view"): "--id"}   # everywhere else the app flag is --app
 APP_REQUIRED = {("apps", "view"), ("reviews", "list"), ("insights", "weekly"), ("insights", "daily"),
                 ("analytics", "request"), ("analytics", "requests")}
@@ -72,12 +85,22 @@ def command_path(argv: list[str]) -> tuple[str, ...]:
     return tuple(out)
 
 
+def _flag_name(token: str) -> Optional[str]:
+    """`--file=x`, `-file` -> "file"; None for a token that is not a flag."""
+    if not token.startswith("-") or token.lstrip("-") == "":
+        return None
+    return token.lstrip("-").split("=", 1)[0]
+
+
 def _flag_value(argv: list[str], flag: str) -> Optional[str]:
+    name = flag.lstrip("-")
     for i, a in enumerate(argv):
-        if a == flag and i + 1 < len(argv):
-            return argv[i + 1]
-        if a.startswith(flag + "="):
+        if _flag_name(a) != name:
+            continue
+        if "=" in a:
             return a.split("=", 1)[1]
+        if i + 1 < len(argv):
+            return argv[i + 1]
     return None
 
 
@@ -87,10 +110,8 @@ def _set_flag(argv: list[str], flag: str, value: str) -> list[str]:
         if skip:
             skip = False
             continue
-        if a == flag:
-            skip = True
-            continue
-        if a.startswith(flag + "="):
+        if _flag_name(a) == flag.lstrip("-"):
+            skip = "=" not in a
             continue
         out.append(a)
     return out + [flag, value]
@@ -131,10 +152,10 @@ async def _run(argv: list[str], env: dict, timeout: float) -> tuple[int, str, st
                                                 stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE, env=env)
     try:
         out, err = await asyncio.wait_for(proc.communicate(), timeout)
-    except asyncio.TimeoutError:
-        proc.kill()
-        await proc.wait()
-        raise
+    finally:
+        if proc.returncode is None:   # timeout or cancellation: never leave asc running
+            proc.kill()
+            await proc.wait()
     return proc.returncode, out.decode(errors="replace"), err.decode(errors="replace")
 
 
@@ -168,6 +189,8 @@ class AscConnector:
             data = json.loads(out)
         except Exception as e:
             return Status("error", f"`asc auth status` failed: {type(e).__name__}")
+        if not isinstance(data, dict):
+            return Status("error", "`asc auth status` returned unexpected output")
         if data.get("credentials") or data.get("environmentCredentialsComplete"):
             return Status("ready")
         return Status("not_authenticated", "run `asc auth login` in a terminal")
@@ -206,7 +229,13 @@ class AscConnector:
         if path not in ALLOWED:
             return ConnectorResult(f"Refused: `asc {label}` is not an allowed read-only command. Allowed: "
                                    + "; ".join(" ".join(p) for p in sorted(ALLOWED)), label=label, ok=False)
-        bad = sorted({a.split("=", 1)[0] for a in argv if a.split("=", 1)[0] in REFUSED_FLAGS})
+        if "--" in argv:
+            return ConnectorResult("A bare `--` is not allowed in asc arguments.", label=label, ok=False)
+        verbs = sorted({a for a in argv[len(path):] if a.lower() in WRITE_VERBS})
+        if verbs:
+            return ConnectorResult(f"Refused: `{', '.join(verbs)}` is a write verb; this connector is read-only.",
+                                   label=label, ok=False)
+        bad = sorted({"--" + n for n in map(_flag_name, argv) if n in REFUSED_FLAGS})
         if bad:
             return ConnectorResult(f"{', '.join(bad)} not allowed: Hermie saves the full result to the data room "
                                    "itself and returns its path.", label=label, ok=False)
@@ -229,8 +258,11 @@ class AscConnector:
         except asyncio.TimeoutError:
             return ConnectorResult(f"asc {label} timed out after {self.timeout:.0f}s; try a narrower date range or "
                                    "fewer pages.", label=label, ok=False)
+        except (OSError, ValueError) as e:
+            return ConnectorResult(f"asc {label} could not run: {type(e).__name__}: {e}", label=label, ok=False)
         if code != 0:
-            hint = f"\n{ADS_HINT}" if "ads" in (err + out) and "credentials" in (err + out) else ""
+            text = err + out
+            hint = f"\n{ADS_HINT}" if "credentials" in text and (re.search(r"\bads:", text) or path[0] == "ads") else ""
             return ConnectorResult(f"asc {label} failed (exit {code}):\n{_tail(err or out)}{hint}", label=label, ok=False)
         if out_file is not None:
             found = self._find_output(out_file)
