@@ -191,8 +191,8 @@ class ChoiceScreen(ModalScreen[Optional[str]]):
 
     def compose(self) -> ComposeResult:
         with Vertical(id="choice"):
-            yield Label(f"? {self.req.prompt}", id="choice-title")
-            yield OptionList(*[Option(o, id=str(i)) for i, o in enumerate(self.req.options)], id="choice-list")
+            yield Label(Text(f"? {self.req.prompt}"), id="choice-title")
+            yield OptionList(*[Option(Text(o), id=str(i)) for i, o in enumerate(self.req.options)], id="choice-list")
             yield Label("Enter: choose · Esc: cancel", id="choice-hint")
 
     def on_mount(self) -> None:
@@ -1123,6 +1123,9 @@ class HermieApp(App):
         elif cmd == "/apps":
             self.run_worker(self._apps_cmd(arg), group="apps", exclusive=True, exit_on_error=False)
         elif cmd == "/new":
+            if self._busy:
+                self._notice("warn", "The task is still running; /new after it finishes or press Esc")
+                return
             self.agent.new_session()
             self._refresh_status()
         elif cmd == "/outbound":

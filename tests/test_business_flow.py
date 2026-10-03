@@ -205,3 +205,12 @@ async def test_list_and_set_default_app(make_agent, tmp_path):
     import pytest
     with pytest.raises(LookupError):
         await agent.set_default_app("zzz")
+
+
+async def test_new_session_refused_while_task_running(make_agent):
+    agent = make_agent()
+    agent.session.business = True
+    agent.task_running = True
+    assert agent.new_session() is False and agent.session.business
+    agent.task_running = False
+    assert agent.new_session() is True and not agent.session.business

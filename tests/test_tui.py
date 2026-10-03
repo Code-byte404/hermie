@@ -915,3 +915,28 @@ async def test_apps_command_lists_and_sets_default(make_agent, monkeypatch):
         await pilot.pause(0.3)
         texts = " ".join(m.source for m in app.query(Markdown) if hasattr(m, "source"))
         assert "Default app: Beta Fit" in texts
+
+
+async def test_new_while_busy_keeps_the_lock(make_agent):
+    agent = make_agent(connectors=[FakeConnector()])
+    agent.session.business = True
+    app = HermieApp(agent=agent, perf=FakeSampler())
+    async with app.run_test(size=(160, 45)) as pilot:
+        app._busy = True
+        await _submit(pilot, "/new")
+        await pilot.pause(0.2)
+        assert agent.session.business
+        app._busy = False
+
+
+async def test_choice_screen_shows_markup_names_literally(make_agent):
+    agent = make_agent()
+    app = HermieApp(agent=agent, perf=FakeSampler())
+    async with app.run_test(size=(160, 45)) as pilot:
+        task = asyncio.ensure_future(agent.bus.request_choice(ChoiceRequest("Pick [b]one", ["My [bold]App", "B"])))
+        await pilot.pause(0.3)
+        assert isinstance(app.screen, ChoiceScreen)
+        from textual.widgets import OptionList
+        assert app.screen.query_one("#choice-list", OptionList).get_option_at_index(0).prompt.plain == "My [bold]App"
+        await pilot.press("enter")
+        assert await task == "My [bold]App"

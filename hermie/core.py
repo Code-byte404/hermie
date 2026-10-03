@@ -143,6 +143,7 @@ class Hermie:
         # Post-task learning (lessons, skills) runs after the task is recorded and reported, as a background task, so
         # the result is not held up by local-model distillation and an interruption cannot lose the task record.
         self.learn_in_background = True
+        self.task_running = False   # True while run() is in flight; /new refuses then
         self._learning: set[asyncio.Task] = set()
         from .connectors.guard import StateStore
         from .connectors.registry import build_connectors, prune_rooms, ready_connectors
@@ -241,14 +242,19 @@ class Hermie:
     def cancel_running(self) -> None:
         self.session.sandbox.kill_all()
 
-    def new_session(self) -> None:
-        """/new: forget the executor history, the business lock and connector session choices (chosen app)."""
+    def new_session(self) -> bool:
+        """/new: forget the executor history, the business lock and connector session choices (chosen app).
+        Refused (False) while a task is running: it would clear the lock mid-task."""
+        if self.task_running:
+            self.bus.emit(Notice("warn", "The task is still running; /new after it finishes or press Esc"))
+            return False
         locked = self.session.business
         self.session.exec_history = []
         self.session.business = False
         self.session.connector_session.clear()
         self.bus.emit(Notice("info", "New session: executor history cleared"
                                      + ("; business lock lifted" if locked else "")))
+        return True
 
     def _asc(self):
         conn = self.connectors.get("asc")
@@ -290,6 +296,7 @@ class Hermie:
         self.session.stats.task_started_at = t0
         self.bus.emit(ChatMessage("user", task))
         result: Optional[TaskResult] = None
+        self.task_running = True
         try:
             if self.connectors:
                 st.data_room = self.s.connector_rooms_dir / f"{time.strftime('%Y%m%d-%H%M%S')}-{uuid.uuid4().hex[:6]}"
@@ -303,6 +310,7 @@ class Hermie:
             result.signals = routing.signals_dict()
             return result
         finally:
+            self.task_running = False
             self.session.sandbox.set_offline(False)   # a session-locked next task turns it back on (mark_business)
             routing = st.flow.routing
             self.session.stats.task_started_at = None
