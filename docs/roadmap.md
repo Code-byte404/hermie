@@ -15,6 +15,11 @@ What is planned next and why, in the order it will be built. Each item lands as 
 - **Skill library.** Multi-step jobs that passed review become Markdown playbooks under `~/.hermie/skills/`, active once a second similar success (or the user) confirms them, given to the executor for similar steps, and retired when they stop helping.
 - **Routing calibration.** `hermie --calibrate` labels your recorded tasks from what happened after routing, sweeps the routing thresholds and proposes new values; `--apply` writes them to `.env` once there are enough labelled tasks. Privacy thresholds are never tuned from usage.
 - **Planner design phase.** In plan mode the planner first asks the questions that change the architecture or scope (multiple choice, recommended answer first), writes a detailed plan (goal, decisions, assumptions, architecture, steps with files and acceptance criteria, risks) to `PLAN.md`, and waits for your approval, change requests or rejection before anything runs. It can ask again or revise the plan during execution. Your answers leave the machine only through the same privacy gate as the task.
+- **Data connectors, phase 1.** `asc` (App Store Connect and Apple Ads, read-only) lets Hermie answer business questions ("why did downloads drop last week?") by fetching the data itself. The data is processed by local models only: a business task is routed local, every cloud request is blocked, the sandbox goes offline, and the session stays locked until `/new`. Apps are found by name, never by ID.
+
+## Next: data connectors, phase 2
+
+- GA4 through an MCP adapter, Google Play (vitals, reviews, GCS exports) and Gmail, each as a plugin on the same connector framework and the same business lock.
 
 ## Also on the list
 

@@ -120,6 +120,7 @@ async def run_routing_async(args) -> None:
     gate = PrivacyGate(s, judge=judge)
     scorer = RouteLLMScorer(s.routellm_checkpoint) if (s.routellm_enabled and not args.no_routellm) else None
     router = EntryRouter(s, judge, gate, scorer)
+    router.ask_business = not args.no_business
     cases = load_cases(Path(args.cases))
     out = Path(args.out)
     records = []
@@ -134,13 +135,23 @@ async def run_routing_async(args) -> None:
             ok = route in c["expect"]
             hits += ok
             rec = {"task": c["task"], "expect": c["expect"], "kind": c.get("kind"), "route": route,
-                   "reasons": r.decision.reasons, "signals": r.signals_dict(), "latency_s": round(dt, 1)}
+                   "reasons": r.decision.reasons, "signals": r.signals_dict(), "latency_s": round(dt, 1),
+                   "business": r.signals.business if r.signals else None,
+                   "business_prob": r.signals.business_prob if r.signals else None}
             records.append(rec)
             f.write(json.dumps(rec, ensure_ascii=False) + "\n")
             print(f"  {'✓' if ok else '✗'} {i:>2} {route:<12} {dt:5.1f}s  {c['task'][:44]}"
                   + ("" if ok else f"   expected {c['expect']}"))
     print(f"Hits {hits}/{len(cases)} = {hits / len(cases):.2f}; signals recorded to {out}, "
           f"use the sweep subcommand to tune thresholds offline")
+    orig = [x for x in records if x["kind"] not in ("business", "business_near")]
+    print(f"original cases: {sum(1 for x in orig if x['route'] in x['expect'])}/{len(orig)}")
+    biz = [x for x in records if x["kind"] in ("business", "business_near")]
+    if biz:
+        hit = sum(1 for x in biz if x["business"] == (x["kind"] == "business"))
+        print(f"business_data: {hit}/{len(biz)} correct "
+              f"(recall {sum(1 for x in biz if x['kind'] == 'business' and x['business'])}/"
+              f"{sum(1 for x in biz if x['kind'] == 'business')})")
     print_confusion(records)
 
 
@@ -255,6 +266,7 @@ def main(argv=None) -> None:
     b.add_argument("--cases", default=str(HERE / "routing_cases.jsonl"))
     b.add_argument("--out", default=str(HERE / "signals.jsonl"))
     b.add_argument("--no-routellm", action="store_true")
+    b.add_argument("--no-business", action="store_true", help="do not ask the business-data question (baseline run)")
     b.set_defaults(fn=run_routing)
     c = sub.add_parser("sweep")
     c.add_argument("signals")

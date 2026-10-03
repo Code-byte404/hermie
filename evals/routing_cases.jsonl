@@ -38,3 +38,12 @@
 {"task": "Write a script that archives the downloads directory by extension every morning", "expect": ["local", "local_verify", "plan"], "kind": "workspace-simple"}
 {"task": "What AI news is there today", "expect": ["local", "local_verify"], "kind": "web-simple"}
 {"task": "Look up the latest Python version and update requires-python in pyproject accordingly", "expect": ["local", "local_verify", "plan"], "kind": "web+workspace"}
+{"task": "Why did our iOS downloads drop last week?", "expect": ["local"], "kind": "business"}
+{"task": "Summarize this week's 1-star App Store reviews for Alpha Notes", "expect": ["local"], "kind": "business"}
+{"task": "How much did we spend on Apple Ads in September and what did it bring?", "expect": ["local"], "kind": "business"}
+{"task": "Compare US revenue this month with last month", "expect": ["local"], "kind": "business"}
+{"task": "Which ad campaign has the worst cost per install right now?", "expect": ["local"], "kind": "business"}
+{"task": "Did the new version change our crash-free rate or ratings?", "expect": ["local"], "kind": "business"}
+{"task": "How do App Store ratings and reviews work for new apps?", "expect": ["cloud", "local", "local_verify"], "kind": "business_near"}
+{"task": "Explain how Apple Ads search match differs from exact match", "expect": ["cloud", "local", "local_verify"], "kind": "business_near"}
+{"task": "Write a Python script that sums a column in a CSV of sales", "expect": ["local", "local_verify", "plan"], "kind": "business_near"}
