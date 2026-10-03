@@ -180,3 +180,28 @@ async def test_business_task_distills_no_skill(make_agent):
     # control (same data_dir, run after): the same setup without business data does produce a candidate,
     # so the empty result above is not just a disabled pipeline
     assert len(await _skill_run(make_agent, tool("list_files"))) == 1
+
+
+async def test_new_session_clears_lock_history_and_app(make_agent):
+    agent = make_agent(FakeJudge(task="repetitive"), connectors=[FakeConnector()])
+    await agent.run("revenue?", business=True)
+    agent.session.connector_session["asc"] = {"app": "1"}
+    agent.new_session()
+    assert not agent.session.business and agent.session.exec_history == [] and agent.session.connector_session == {}
+
+
+async def test_list_and_set_default_app(make_agent, tmp_path):
+    from pathlib import Path
+    from hermie.connectors.asc import AscConnector
+    from .test_connectors_asc import FakeRunner
+    conn = AscConnector(Path("/opt/homebrew/bin/asc"), runner=FakeRunner(),
+                        sync_runner=lambda a, e, t: (0, '{"credentials": [{"name": "x"}]}', ""))
+    conn.binary = Path(__file__)   # exists, so status() is ready
+    conn._status = None
+    agent = make_agent(connectors=[conn])
+    assert await agent.list_apps() == ["Alpha Notes", "Beta Fit"]
+    assert await agent.set_default_app("beta") == "Beta Fit"
+    assert agent.session.connector_session["asc"]["app"] == "222"
+    import pytest
+    with pytest.raises(LookupError):
+        await agent.set_default_app("zzz")

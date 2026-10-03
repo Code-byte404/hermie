@@ -24,7 +24,7 @@ from urllib.parse import urlparse
 import numpy as np
 
 from .config import Settings
-from .events import ApprovalRequest, ClarifyRequest, Event, InputRequest, Notice, PlanReviewRequest, TaskFinished
+from .events import ApprovalRequest, ChoiceRequest, ClarifyRequest, Event, InputRequest, Notice, PlanReviewRequest, TaskFinished
 from .policy import Route
 
 log = logging.getLogger(__name__)
@@ -64,9 +64,9 @@ def _artifact_count(output: str) -> int:
     return sum(1 for line in tail.splitlines() if line.strip().startswith("- "))
 
 
-def phrase_for(ev: Event | ApprovalRequest | InputRequest) -> Optional[str]:
-    """Whether to speak and what to say. Only six kinds are spoken: task finished (plus a one-sentence
-    summary), approval needed, a command waiting for input, planner questions, a plan to review, error/fallback/interruption.
+def phrase_for(ev: Event | ApprovalRequest | InputRequest | ChoiceRequest) -> Optional[str]:
+    """Whether to speak and what to say. Only seven kinds are spoken: task finished (plus a one-sentence
+    summary), approval needed, a command waiting for input, a connector pick, planner questions, a plan to review, error/fallback/interruption.
     Everything else returns None."""
     if isinstance(ev, TaskFinished):
         label = Route(ev.route).label if ev.route in Route._value2member_map_ else ev.route
@@ -86,6 +86,8 @@ def phrase_for(ev: Event | ApprovalRequest | InputRequest) -> Optional[str]:
         return "The planner has questions"
     if isinstance(ev, PlanReviewRequest):
         return "Plan ready for review"
+    if isinstance(ev, ChoiceRequest):
+        return "Hermie needs you to pick an option"
     if isinstance(ev, Notice):
         if ev.level == "error" or (ev.level == "warn" and ("falling back" in ev.text or "Interrupted" in ev.text)):
             return ev.text if len(ev.text) <= 60 else ev.text[:60] + "..."

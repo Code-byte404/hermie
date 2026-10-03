@@ -241,6 +241,39 @@ class Hermie:
     def cancel_running(self) -> None:
         self.session.sandbox.kill_all()
 
+    def new_session(self) -> None:
+        """/new: forget the executor history, the business lock and connector session choices (chosen app)."""
+        locked = self.session.business
+        self.session.exec_history = []
+        self.session.business = False
+        self.session.connector_session.clear()
+        self.bus.emit(Notice("info", "New session: executor history cleared"
+                                     + ("; business lock lifted" if locked else "")))
+
+    def _asc(self):
+        conn = self.connectors.get("asc")
+        if conn is None:
+            raise LookupError("The asc connector is not available (see the startup notes)")
+        return conn
+
+    async def list_apps(self, refresh: bool = True) -> list[str]:
+        conn, store = self._asc(), self.session.connector_states
+        state = store.load("asc")
+        apps = await conn.apps(state, refresh=refresh)
+        store.save("asc", state)
+        return [a["name"] for a in apps]
+
+    async def set_default_app(self, name: str) -> str:
+        from .connectors.asc import resolve_app
+        conn, store = self._asc(), self.session.connector_states
+        state = store.load("asc")
+        hits = resolve_app(name, await conn.apps(state))
+        store.save("asc", state)
+        if len(hits) != 1:
+            raise LookupError(f"{'No app' if not hits else 'Several apps'} match {name!r}")
+        self.session.connector_session.setdefault("asc", {})["app"] = hits[0]["id"]
+        return hits[0]["name"]
+
     async def run(self, task: str, material: str = "", force: Force = Force.NONE,
                   read_roots: Sequence[Path] = (), business: bool = False) -> TaskResult:
         """read_roots: the files/directories the user attached, readable (never writable) by the executor for this

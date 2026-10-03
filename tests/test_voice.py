@@ -271,3 +271,9 @@ def test_planner_requests_are_spoken():
     from hermie.events import ClarifyRequest, PlanReviewRequest, QuestionView
     assert phrase_for(ClarifyRequest(1, [QuestionView("q", ["a", "b"])])) == "The planner has questions"
     assert phrase_for(PlanReviewRequest({}, "", 1, {})) == "Plan ready for review"
+
+
+def test_choice_request_is_spoken():
+    from hermie.events import ChoiceRequest
+    from hermie.voice import phrase_for
+    assert phrase_for(ChoiceRequest("Which app?", ["A"])) == "Hermie needs you to pick an option"

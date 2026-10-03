@@ -194,8 +194,28 @@ ApprovalScreen {
     margin-right: 2;
 }
 
-InputScreen {
+InputScreen, ChoiceScreen {
     align: center middle;
+}
+#choice {
+    width: 80%;
+    height: auto;
+    border: thick $warning;
+    background: $surface;
+    padding: 1 2;
+}
+#choice-title {
+    text-style: bold;
+    color: $warning;
+    margin-bottom: 1;
+}
+#choice-list {
+    height: auto;
+    max-height: 16;
+}
+#choice-hint {
+    margin-top: 1;
+    color: $text-muted;
 }
 #input-request {
     width: 80%;

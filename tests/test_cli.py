@@ -57,3 +57,9 @@ def test_calibrate_flag_prints_report_and_applies(tmp_path, monkeypatch, capsys)
     cli.main(["--calibrate", "--apply"])
     out = capsys.readouterr().out
     assert "MIN_CONFIDENCE" in out and "Wrote" in out and "MIN_CONFIDENCE=0.9" in env.read_text()
+
+
+def test_data_flag_parsed():
+    from hermie.cli import _parser
+    args = _parser().parse_args(["--json", "--data", "downloads last week?"])
+    assert args.data is True

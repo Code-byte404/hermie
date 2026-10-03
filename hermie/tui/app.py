@@ -35,7 +35,7 @@ from ..config import RunMode, Settings, update_env
 from ..perf import PerfSample, PerfSampler, render_graph
 from .commands import filter_commands, find_command, help_markdown, is_command
 from ..voice import Recorder, Speaker, Transcriber, VoiceUnavailable, is_blank_transcript, phrase_for
-from ..events import (Approval, ApprovalRequest, ChatMessage, ClarifyAnswer, ClarifyRequest, CommandFinished,
+from ..events import (Approval, ApprovalRequest, ChatMessage, ChoiceRequest, ClarifyAnswer, ClarifyRequest, CommandFinished,
                       CommandStarted, Event, ExecutorProgress, InputRequest, Notice, OutboundBlocked, OutboundSent,
                       PlanDecision, PlanProposed, PlanReviewRequest, PlanUpdated, ReportArrived, ReviewArrived,
                       RouteDecided, SnapshotTaken, StatsUpdated, Tainted, TaskFinished)
@@ -178,6 +178,32 @@ class ApprovalScreen(ModalScreen[Approval]):
 
     def action_choose(self, value: str) -> None:
         self.dismiss(Approval(value))
+
+
+class ChoiceScreen(ModalScreen[Optional[str]]):
+    """A connector needs a pick (an app, an Apple Ads organization): Enter takes the highlighted option, Esc cancels."""
+
+    BINDINGS = [Binding("escape", "cancel", "Cancel")]
+
+    def __init__(self, req: ChoiceRequest):
+        super().__init__()
+        self.req = req
+
+    def compose(self) -> ComposeResult:
+        with Vertical(id="choice"):
+            yield Label(f"? {self.req.prompt}", id="choice-title")
+            yield OptionList(*[Option(o, id=str(i)) for i, o in enumerate(self.req.options)], id="choice-list")
+            yield Label("Enter: choose · Esc: cancel", id="choice-hint")
+
+    def on_mount(self) -> None:
+        self.query_one("#choice-list", OptionList).focus()
+
+    @on(OptionList.OptionSelected, "#choice-list")
+    def selected(self, ev: OptionList.OptionSelected) -> None:
+        self.dismiss(self.req.options[int(ev.option.id)])
+
+    def action_cancel(self) -> None:
+        self.dismiss(None)
 
 
 class InputScreen(ModalScreen[Optional[str]]):
@@ -587,6 +613,7 @@ class HermieApp(App):
         self.agent.bus.subscribe(lambda ev: self.post_message(CoreEvent(ev)))
         self.agent.bus.approver = self._approve
         self.agent.bus.input_provider = self._provide_input
+        self.agent.bus.chooser = self._choose
         self.agent.bus.clarifier = self._clarify
         self.agent.bus.plan_reviewer = self._review_plan
         if self.settings.voice_key != "f5":
@@ -820,7 +847,7 @@ class HermieApp(App):
             return
         self._start_task(value, Force.NONE)
 
-    def _start_task(self, task: str, force: Force) -> None:
+    def _start_task(self, task: str, force: Force, business: bool = False) -> None:
         if self._busy:
             self._notice("warn", "The previous task is still running; press Esc to interrupt it before sending.")
             return
@@ -831,15 +858,15 @@ class HermieApp(App):
         self._refresh_topbar()
         self._timer = self.set_interval(1.0, self._refresh_topbar)
         self.query_one("#plan", Static).update("")
-        self.run_worker(self._run_task(task, force), group="task", exclusive=True, exit_on_error=False)
+        self.run_worker(self._run_task(task, force, business), group="task", exclusive=True, exit_on_error=False)
 
-    async def _run_task(self, task: str, force: Force) -> None:
+    async def _run_task(self, task: str, force: Force, business: bool = False) -> None:
         try:
             m = await asyncio.to_thread(self._load_attachments, task)
             for n in m.notes:
                 self._notice("warn", f"Attachment: {n}")
             self._pending_attachments = m.summary
-            await self.agent.run(task, m.text, force=force, read_roots=m.roots)
+            await self.agent.run(task, m.text, force=force, read_roots=m.roots, business=business)
         except asyncio.CancelledError:
             self.agent.cancel_running()
             self._notice("warn", "Interrupted. Add instructions to continue.", announce=True)
@@ -1088,6 +1115,16 @@ class HermieApp(App):
                 self._notice("warn", f"Usage: {cmd} TASK")
                 return
             self._start_task(arg, Force.LOCAL if cmd == "/local" else Force.CLOUD)
+        elif cmd == "/data":
+            if not arg:
+                self._notice("warn", "Usage: /data QUESTION")
+                return
+            self._start_task(arg, Force.NONE, business=True)
+        elif cmd == "/apps":
+            self.run_worker(self._apps_cmd(arg), group="apps", exclusive=True, exit_on_error=False)
+        elif cmd == "/new":
+            self.agent.new_session()
+            self._refresh_status()
         elif cmd == "/outbound":
             self.query_one("#right", TabbedContent).active = "tab-outbound"
             self.query_one("#right").display = True
@@ -1173,6 +1210,15 @@ class HermieApp(App):
         self.push_screen(InputScreen(req), callback=lambda r: fut.done() or fut.set_result(r))
         answer = await self._wait_user(f"type input for {req.command[:80]}", fut)
         self._log("  ↳ you stopped the command" if answer is None else "  ↳ you typed a reply")
+        return answer
+
+    async def _choose(self, req: ChoiceRequest) -> Optional[str]:
+        if phrase := phrase_for(req):
+            self.speaker.speak(phrase)
+        fut: asyncio.Future = asyncio.get_running_loop().create_future()
+        self.push_screen(ChoiceScreen(req), callback=lambda r: fut.done() or fut.set_result(r))
+        answer = await self._wait_user(f"pick: {req.prompt}", fut)
+        self._log("  ↳ you cancelled the choice" if answer is None else f"  ↳ you chose {escape(answer)}")
         return answer
 
     async def _clarify(self, req: ClarifyRequest) -> Optional[list[ClarifyAnswer]]:
@@ -1364,12 +1410,27 @@ class HermieApp(App):
             return self._last_result
         return "● Ready for a task", "ready"
 
+    async def _apps_cmd(self, arg: str) -> None:
+        try:
+            if arg:
+                name = await self.agent.set_default_app(arg)
+                self._chat_md("system", f"Default app: {name}")
+            else:
+                names = await self.agent.list_apps()
+                self._chat_md("system", "Your apps:\n" + "\n".join(f"- {n}" for n in names))
+        except LookupError as e:
+            self._notice("warn", str(e))
+        except Exception as e:
+            self._notice("error", f"/apps failed: {type(e).__name__}: {e}")
+
     def _refresh_status(self) -> None:
         try:
             line = self.query_one("#status", Static)
         except NoMatches:   # timer firing during teardown
             return
         text, style = self._state()
+        if self.agent.session.business:
+            text += " · business-locked (/new to lift)"
         for cls in ("ready", "busy", "waiting", "done", "partial", "failed", "stopped"):
             line.set_class(cls == style, cls)
         line.update(Text(text))

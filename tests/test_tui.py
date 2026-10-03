@@ -7,13 +7,13 @@ from textual import events
 from textual.widgets import Markdown, RichLog, Static
 
 from hermie.config import RunMode
-from hermie.events import (ClarifyAnswer, ClarifyRequest, CommandFinished, CommandStarted, PlanDecision,
+from hermie.events import (ChoiceRequest, ClarifyAnswer, ClarifyRequest, CommandFinished, CommandStarted, PlanDecision,
                            PlanReviewRequest, QuestionView, TaskFinished)
 from hermie.perf import PerfSample
-from hermie.tui.app import (ApprovalScreen, ClarifyScreen, HermieApp, InputScreen, ModelScreen, PerfPanel, PlanScreen,
+from hermie.tui.app import (ApprovalScreen, ChoiceScreen, ClarifyScreen, HermieApp, InputScreen, ModelScreen, PerfPanel, PlanScreen,
                             VoiceScreen)
 
-from .conftest import FakeJudge, Script, final, review, text, tool
+from .conftest import FakeConnector, FakeJudge, Script, final, review, text, tool
 
 
 async def _submit(pilot, value: str):
@@ -864,3 +864,54 @@ async def test_clarify_escape_in_other_box_returns_to_options(make_agent):
         await pilot.press("escape")                          # Esc on the options still skips
         await pilot.pause(0.1)
         assert fut.result()[0].option is None and fut.result()[0].text is None
+
+
+async def test_data_command_runs_business_task(make_agent):
+    agent = make_agent(FakeJudge(task="repetitive"), connectors=[FakeConnector()])
+    app = HermieApp(agent=agent, perf=FakeSampler())
+    async with app.run_test(size=(160, 45)) as pilot:
+        await _submit(pilot, "/data downloads last week?")
+        await _wait_idle(pilot, app)
+        assert agent.session.business
+        assert "business-locked" in str(app.query_one("#status", Static).render())
+        await _submit(pilot, "/new")
+        await pilot.pause(0.2)
+        assert not agent.session.business and agent.session.exec_history == []
+        assert "business-locked" not in str(app.query_one("#status", Static).render())
+
+
+async def test_choice_screen_pick_and_cancel(make_agent):
+    agent = make_agent()
+    app = HermieApp(agent=agent, perf=FakeSampler())
+    async with app.run_test(size=(160, 45)) as pilot:
+        task = asyncio.ensure_future(agent.bus.request_choice(ChoiceRequest("Which app?", ["Alpha", "Beta"])))
+        await pilot.pause(0.3)
+        assert isinstance(app.screen, ChoiceScreen)
+        await pilot.press("down", "enter")
+        assert await task == "Beta"
+        task = asyncio.ensure_future(agent.bus.request_choice(ChoiceRequest("Which app?", ["Alpha"])))
+        await pilot.pause(0.3)
+        await pilot.press("escape")
+        assert await task is None
+
+
+async def test_apps_command_lists_and_sets_default(make_agent, monkeypatch):
+    agent = make_agent()
+
+    async def fake_list(refresh=True):
+        return ["Alpha Notes", "Beta Fit"]
+
+    async def fake_set(name):
+        return "Beta Fit"
+    monkeypatch.setattr(agent, "list_apps", fake_list)
+    monkeypatch.setattr(agent, "set_default_app", fake_set)
+    app = HermieApp(agent=agent, perf=FakeSampler())
+    async with app.run_test(size=(160, 45)) as pilot:
+        await _submit(pilot, "/apps")
+        await pilot.pause(0.3)
+        texts = " ".join(m.source for m in app.query(Markdown) if hasattr(m, "source"))
+        assert "Alpha Notes" in texts and "Beta Fit" in texts
+        await _submit(pilot, "/apps beta")
+        await pilot.pause(0.3)
+        texts = " ".join(m.source for m in app.query(Markdown) if hasattr(m, "source"))
+        assert "Default app: Beta Fit" in texts

@@ -33,6 +33,8 @@ def _parser() -> argparse.ArgumentParser:
     p.add_argument("--workspace", type=Path, help="workspace directory (default: current directory)")
     p.add_argument("--force", choices=["local", "cloud"], help="force local or cloud")
     p.add_argument("-v", "--verbose", action="store_true")
+    p.add_argument("--data", action="store_true",
+                   help="business-data question: run locally with the data connectors (asc); nothing goes to the cloud")
     p.add_argument("--graph", action="store_true", help="print the task graph and step graph as Mermaid and exit")
     p.add_argument("--calibrate", action="store_true",
                    help="propose routing thresholds from your recorded tasks (trajectories.jsonl) and exit")
@@ -118,7 +120,7 @@ def main(argv: list[str] | None = None) -> None:
         path = Path(args.material).expanduser() if args.material else None
         material = read_material(path, s) if path else ""
         asyncio.run(_headless(s, args.task, material, Force(args.force) if args.force else Force.NONE,
-                              [path] if material else []))
+                              [path] if material else [], business=args.data))
         return
 
     from .core import Hermie
@@ -134,7 +136,8 @@ def main(argv: list[str] | None = None) -> None:
     HermieApp(s, agent=agent).run()
 
 
-async def _headless(s: Settings, task: str, material: str, force: Force, read_roots: Sequence[Path] = ()) -> None:
+async def _headless(s: Settings, task: str, material: str, force: Force, read_roots: Sequence[Path] = (),
+                    business: bool = False) -> None:
     from .core import Hermie
 
     agent = Hermie(s)
