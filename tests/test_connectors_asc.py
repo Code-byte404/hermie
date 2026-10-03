@@ -197,3 +197,101 @@ def test_allowlist_exists_in_installed_asc():
                                   "DO_NOT_TRACK": "1"})
         text = out.stdout + out.stderr
         assert f"asc {' '.join(path)}" in text, f"asc {' '.join(path)} does not exist in the installed asc"
+
+
+async def test_app_name_resolved_to_id(tmp_path):
+    runner = FakeRunner()
+    r = await tool(make(runner), "asc").call({"args": ["reviews", "list", "--app", "alpha notes"]}, Ctx(tmp_path))
+    argv = runner.calls[-1][0]
+    assert r.ok and argv[argv.index("--app") + 1] == "111"
+
+
+async def test_bundle_id_and_apps_view_flag(tmp_path):
+    runner = FakeRunner()
+    await tool(make(runner), "asc").call({"args": ["apps", "view", "--id", "com.x.beta"]}, Ctx(tmp_path))
+    argv = runner.calls[-1][0]
+    assert argv[argv.index("--id") + 1] == "222"
+
+
+async def test_catalog_cached_for_a_day(tmp_path):
+    runner = FakeRunner()
+    conn, ctx = make(runner), Ctx(tmp_path)
+    for _ in range(3):
+        await tool(conn, "asc").call({"args": ["reviews", "list", "--app", "Alpha"]}, ctx)
+    assert sum(command_path(a[1:]) == ("apps", "list") for a, _ in runner.calls) == 1
+    ctx.state()["catalog"]["ts"] -= 2 * 24 * 3600
+    await tool(conn, "asc").call({"args": ["reviews", "list", "--app", "Alpha"]}, ctx)
+    assert sum(command_path(a[1:]) == ("apps", "list") for a, _ in runner.calls) == 2
+
+
+async def test_unknown_name_refreshes_then_asks(tmp_path):
+    runner = FakeRunner()
+    ctx = Ctx(tmp_path, choices=["Beta Fit"])
+    r = await tool(make(runner), "asc").call({"args": ["reviews", "list", "--app", "Gamma"]}, ctx)
+    assert ctx.asked == [("Which app?", ["Alpha Notes", "Beta Fit"])]
+    assert r.ok and runner.calls[-1][0][runner.calls[-1][0].index("--app") + 1] == "222"
+    assert ctx.session_state()["app"] == "222"
+    assert sum(command_path(a[1:]) == ("apps", "list") for a, _ in runner.calls) == 2   # refreshed once
+
+
+async def test_ambiguous_name_offers_only_matches(tmp_path):
+    apps = {"data": [{"id": "1", "attributes": {"name": "Notes Pro", "bundleId": "a"}},
+                     {"id": "2", "attributes": {"name": "Notes Lite", "bundleId": "b"}},
+                     {"id": "3", "attributes": {"name": "Fit", "bundleId": "c"}}]}
+    runner = FakeRunner({("apps", "list"): (0, json.dumps(apps), "")})
+    ctx = Ctx(tmp_path, choices=["Notes Lite"])
+    await tool(make(runner), "asc").call({"args": ["reviews", "list", "--app", "notes"]}, ctx)
+    assert ctx.asked[0][1] == ["Notes Pro", "Notes Lite"]
+
+
+async def test_missing_app_uses_session_default_then_single_app(tmp_path):
+    runner = FakeRunner()
+    ctx = Ctx(tmp_path)
+    ctx.session_state()["app"] = "222"
+    await tool(make(runner), "asc").call({"args": ["reviews", "list"]}, ctx)
+    argv = runner.calls[-1][0]
+    assert argv[argv.index("--app") + 1] == "222"
+    single = {"data": [{"id": "9", "attributes": {"name": "Only", "bundleId": "o"}}]}
+    runner2 = FakeRunner({("apps", "list"): (0, json.dumps(single), "")})
+    ctx2 = Ctx(tmp_path)
+    await tool(make(runner2), "asc").call({"args": ["reviews", "list"]}, ctx2)
+    assert "9" in runner2.calls[-1][0] and ctx2.asked == []
+
+
+async def test_headless_ambiguity_lists_apps(tmp_path):
+    runner = FakeRunner()
+    r = await tool(make(runner), "asc").call({"args": ["reviews", "list"]}, Ctx(tmp_path))   # choose -> None
+    assert not r.ok and "Alpha Notes" in r.preview and "Beta Fit" in r.preview
+    assert all(command_path(a[1:]) != ("reviews", "list") for a, _ in runner.calls)
+
+
+async def test_vendor_asked_once_and_sent_by_env(tmp_path):
+    runner = FakeRunner()
+    conn, ctx = make(runner), Ctx(tmp_path, answers=["87654321"])
+    await tool(conn, "asc").call({"args": ["analytics", "compare", "--source", "sales", "--from", "2026-09-01",
+                                           "--to", "2026-09-08"]}, ctx)
+    await tool(conn, "asc").call({"args": ["analytics", "compare", "--source", "sales", "--from", "2026-09-01",
+                                           "--to", "2026-09-08"]}, ctx)
+    assert len([a for a in ctx.asked if not a[1]]) == 1
+    assert ctx.state()["vendor"] == "87654321"
+    assert runner.calls[-1][1]["ASC_VENDOR_NUMBER"] == "87654321"
+
+
+async def test_vendor_refused_when_not_a_number(tmp_path):
+    runner = FakeRunner()
+    ctx = Ctx(tmp_path, answers=["no idea"])
+    r = await tool(make(runner), "asc").call({"args": ["finance", "reports", "--date", "2026-09"]}, ctx)
+    assert not r.ok and "vendor number" in r.preview and "vendor" not in ctx.state()
+    assert all(command_path(a[1:]) != ("finance", "reports") for a, _ in runner.calls)
+
+
+async def test_ads_org_discovered_single_and_chosen_multi(tmp_path):
+    one = FakeRunner({("ads", "acls", "list"): (0, json.dumps({"data": [{"orgId": 42, "orgName": "Main"}]}), "")})
+    ctx = Ctx(tmp_path)
+    await tool(make(one), "asc").call({"args": ["ads", "campaigns", "list"]}, ctx)
+    assert ctx.state()["ads_org"] == "42" and one.calls[-1][1]["ASC_ADS_ORG_ID"] == "42"
+    two = FakeRunner({("ads", "acls", "list"): (0, json.dumps([{"orgId": 1, "orgName": "A"},
+                                                               {"orgId": 2, "orgName": "B"}]), "")})
+    ctx2 = Ctx(tmp_path, choices=["B"])
+    await tool(make(two), "asc").call({"args": ["ads", "campaigns", "list"]}, ctx2)
+    assert ctx2.state()["ads_org"] == "2"
