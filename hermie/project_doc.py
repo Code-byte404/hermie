@@ -105,6 +105,12 @@ def _one_line(s: str, limit: int) -> str:
     return s if len(s) <= limit else s[:limit] + "..."
 
 
+def business_entry(route_label: str, status_label: str) -> str:
+    """Progress entry of a business-data task: no task text, steps or result (AGENT.md can reach the planner)."""
+    return (f"### {time.strftime('%Y-%m-%d %H:%M')} · {status_label} · {route_label}\n"
+            "- Task: business-data question (details kept out of this file)")
+
+
 def format_entry(task: str, route_label: str, status_label: str, steps: list[str], artifacts: list[str],
                  issues: list[str], summary: str = "") -> str:
     lines = [f"### {time.strftime('%Y-%m-%d %H:%M')} · {status_label} · {route_label}",

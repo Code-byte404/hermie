@@ -157,3 +157,25 @@ async def test_recall_failure_does_not_abort_the_task(make_agent, settings):
     agent2.session.lessons = agent.session.lessons
     r = await agent2.run("Convert the spreadsheet to csv")
     assert r.output == "still done"
+
+
+def test_business_lessons_recalled_only_into_business_tasks(tmp_path):
+    from hermie.memory import LessonStore
+    from .conftest import FakeEmbedder
+    store = LessonStore(tmp_path / "lessons.jsonl", FakeEmbedder())
+    store.add("asc analytics needs --reuse-existing for csv reports", workspace="w", task_type="", tools=[],
+              source="review_fixed", business=True)
+    store.add("run pytest before reporting csv work done", workspace="w", task_type="", tools=[], source="review_fixed")
+    plain = store.recall("csv report", workspace="w", task_type="", k=5, min_sim=0.0)
+    biz = store.recall("csv report", workspace="w", task_type="", k=5, min_sim=0.0, business=True)
+    assert [l.text for l in plain] == ["run pytest before reporting csv work done"]
+    assert len(biz) == 2
+
+
+def test_sync_doc_never_disables_business_lessons(tmp_path):
+    from hermie.memory import LessonStore
+    from .conftest import FakeEmbedder
+    store = LessonStore(tmp_path / "lessons.jsonl", FakeEmbedder())
+    store.add("biz lesson", workspace="w", task_type="", tools=[], source="review_fixed", business=True)
+    store.sync_doc("w", ["hand-written lesson"], cap=20)       # the business lesson is not in AGENT.md, by design
+    assert not next(l for l in store.all() if l.text == "biz lesson").disabled

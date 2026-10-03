@@ -48,6 +48,7 @@ class Lesson:
     uses: int = 0
     helped: int = 0
     disabled: bool = False
+    business: bool = False                        # learned in a business-data task: recalled only into business tasks
 
 
 class EmbedderLike(Protocol):
@@ -141,7 +142,7 @@ class LessonStore:
             os.replace(tmp, self.path)
 
     def add(self, text: str, *, workspace: str, task_type: str, tools: list[str], source: str,
-            key_text: str = "") -> Lesson:
+            key_text: str = "", business: bool = False) -> Lesson:
         text = text.strip()
         with self._lock:
             for l in self._lessons:
@@ -153,7 +154,8 @@ class LessonStore:
         lesson = Lesson(id=uuid.uuid4().hex[:12], text=text, workspace=workspace, task_type=task_type,
                         tools=sorted(set(tools)), source=source, ts=time.strftime("%Y-%m-%dT%H:%M:%S"),
                         embedding=self.embedder.embed(text),
-                        key_embedding=self.embedder.embed(key_text) if key_text else None)
+                        key_embedding=self.embedder.embed(key_text) if key_text else None,
+                        business=business)
         with self._lock:
             self._lessons.append(lesson)
             self._save()
@@ -164,8 +166,9 @@ class LessonStore:
             return max(_cos(q_vec, l.embedding), _cos(q_vec, l.key_embedding or []))
         return _overlap(query, l.text)
 
-    def recall(self, query: str, *, workspace: str, task_type: str, k: int, min_sim: float) -> list[Lesson]:
-        live = [l for l in self._lessons if not l.disabled]
+    def recall(self, query: str, *, workspace: str, task_type: str, k: int, min_sim: float,
+               business: bool = False) -> list[Lesson]:
+        live = [l for l in self._lessons if not l.disabled and (business or not l.business)]
         if not live or k <= 0:
             return []
         q_vec = self.embedder.embed(query)
@@ -207,7 +210,7 @@ class LessonStore:
             with self._lock:
                 changed = False
                 for l in self._lessons:
-                    if l.workspace == workspace and not l.disabled and l.text not in doc:
+                    if l.workspace == workspace and not l.disabled and not l.business and l.text not in doc:
                         l.disabled, changed = True, True
                 if changed:
                     self._save()

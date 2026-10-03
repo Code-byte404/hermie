@@ -4,7 +4,7 @@ import json
 from hermie.events import Notice, RouteDecided
 from hermie.policy import BUSINESS_DATA_QUESTION
 
-from .conftest import FakeConnector, FakeJudge, Script, final, text, tool
+from .conftest import FakeConnector, FakeJudge, Script, final, review, text, tool
 
 FIG = FakeConnector.FIGURE
 
@@ -138,3 +138,45 @@ async def test_failure_before_the_graph_still_takes_sandbox_back_online(make_age
     with pytest.raises(RuntimeError):
         await agent.run("revenue?", business=True)
     assert agent.session.sandbox.offline is False
+
+
+async def test_business_lesson_not_in_agent_md_and_tagged(make_agent, settings):
+    ex = Script([tool("fake_lookup", query="q")], final=final(answer=f"It is {FIG}"))
+    rv = Script([review(False, problems=["Totals were estimated instead of computed"]), review(True)], name="reviewer")
+    comp = Script([text("Compute totals from the saved file with python, never estimate.")], name="compressor")
+    agent = make_agent(FakeJudge(task="repetitive"), executor=ex, reviewer=rv, compressor=comp,
+                       connectors=[FakeConnector()], lessons_enabled=True, verify_rounds=2)
+    await agent.run("revenue?")
+    doc = (settings.workspace / "AGENT.md").read_text()
+    assert "Compute totals" not in doc and FIG not in doc
+    assert "business-data question" in doc and "revenue?" not in doc
+    lesson = next(l for l in agent.session.lessons.all() if "Compute totals" in l.text)
+    assert lesson.business
+
+
+PLAYBOOK = """# Look up and tabulate figures
+
+## When to use
+Answering a question from a figures lookup and listing files.
+
+## Steps
+1. Look up the figure, list the files, report.
+
+## Verify
+- The answer names the figure."""
+
+
+async def _skill_run(make_agent, first_tool, **kw):
+    ex = Script([first_tool] + [tool("list_files")] * 3, final=final(steps=["done"], verification=["listed"]))
+    agent = make_agent(FakeJudge(task="repetitive"), executor=ex, reviewer=Script([review(True)], name="reviewer"),
+                       compressor=Script([text(PLAYBOOK)], name="compressor"), skills_enabled=True,
+                       skill_min_tool_calls=1, verify_rounds=1, **kw)
+    await agent.run("revenue?")
+    return agent.session.skills.all()
+
+
+async def test_business_task_distills_no_skill(make_agent):
+    assert await _skill_run(make_agent, tool("fake_lookup", query="q"), connectors=[FakeConnector()]) == []
+    # control (same data_dir, run after): the same setup without business data does produce a candidate,
+    # so the empty result above is not just a disabled pipeline
+    assert len(await _skill_run(make_agent, tool("list_files"))) == 1

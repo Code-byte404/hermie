@@ -337,6 +337,14 @@ class Hermie:
         were produced, so that the next "continue" has something to go on."""
         try:
             rep = r.report or {}
+            if st.business:   # AGENT.md can reach the planner: a data-free entry only
+                route = Route(r.route).label if r.route in Route._value2member_map_ else r.route
+                if interrupted:
+                    status = "Interrupted"
+                else:
+                    status = Status(rep["status"]).label if rep.get("status") else "Done"
+                project_doc.record_progress(self.s.workspace, project_doc.business_entry(route, status))
+                return
             if interrupted:
                 status = "Interrupted"
                 route = Route(r.route).label if r.route in Route._value2member_map_ else "-"
@@ -521,9 +529,11 @@ class Hermie:
             lesson = (await asyncio.wait_for(agent.run(LESSON_PROMPT + material), self.s.compress_timeout_s)).output
             lesson = lesson.strip().splitlines()[0].strip() if lesson.strip() else ""
             if lesson:
-                project_doc.record_lesson(self.s.workspace, lesson)
+                if not st.business:   # AGENT.md can reach the planner; business lessons live in the local store only
+                    project_doc.record_lesson(self.s.workspace, lesson)
                 await self._store_lesson(st, lesson, "review_fixed")
-                self.bus.emit(Notice("info", f"Lesson recorded to AGENT.md: {lesson}"))
+                where = " (local store only: business data)" if st.business else " to AGENT.md"
+                self.bus.emit(Notice("info", f"Lesson recorded{where}: {lesson}"))
         except Exception as e:
             log.warning("Lesson recording failed (%s)", type(e).__name__)
 
@@ -535,7 +545,8 @@ class Hermie:
         routing = st.flow.routing
         await asyncio.to_thread(store.add, text, workspace=workspace_id(self.s.workspace),
                                 task_type=routing.signals.task.choice if routing and routing.signals else "",
-                                tools=sorted(st.tools_used), source=source, key_text=st.flow.task)
+                                tools=sorted(st.tools_used), source=source, key_text=st.flow.task,
+                                business=st.business)
         self._embedding_notice()
 
     def _embedding_notice(self) -> None:
@@ -568,7 +579,8 @@ class Hermie:
             for count, wording in st.problem_counts.values():
                 if count >= 2:
                     lesson = f"Raised {count} times by the reviewer and not resolved: {wording}"
-                    project_doc.record_lesson(self.s.workspace, lesson)
+                    if not st.business:
+                        project_doc.record_lesson(self.s.workspace, lesson)
                     await self._store_lesson(st, lesson, "repeated_failure")
             self._embedding_notice()
         except Exception:
