@@ -436,3 +436,11 @@ async def test_asc_binary_exec_denied_in_profile(settings, tmp_path):
 def test_p8_keys_denied_by_default():
     from hermie.config import Settings
     assert "*.p8" in Settings().sandbox_deny_names
+
+
+def test_absurd_pid_in_stale_profile_name_does_not_crash_startup(settings):
+    settings.ensure_dirs()
+    bogus = settings.data_dir / f"sandbox-{'9' * 40}-abcdef12.sb"
+    bogus.write_text("(version 1)")
+    sb = Sandbox(settings)
+    assert sb.profile_path.exists() and not bogus.exists()

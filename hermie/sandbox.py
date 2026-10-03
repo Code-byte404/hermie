@@ -231,6 +231,8 @@ def _pid_alive(pid: int) -> bool:
         return False
     except PermissionError:   # exists, owned by someone else
         return True
+    except (OverflowError, ValueError):   # not a real pid (absurd number in a stale file name): nothing to keep
+        return False
     return True
 
 
@@ -263,6 +265,7 @@ class Sandbox:
         self.profile_path = (settings.data_dir / f"sandbox-{os.getpid()}-{uuid.uuid4().hex[:8]}.sb").resolve()
         atexit.register(_unlink_quietly, self.profile_path)
         self.read_roots: tuple[Path, ...] = ()   # paths attached to the running task: read-only
+        self.room: Optional[Path] = None         # the business task's data room: read-only (grant_room)
         self.offline = False                     # business-data task: no network (set_offline)
         self._procs: set[asyncio.subprocess.Process] = set()
         self.deny_exec = asc_binaries(settings)
@@ -271,7 +274,23 @@ class Sandbox:
     def _write_profile(self) -> None:
         self.profile_path.write_text(build_profile(
             self.workspace, self.tmpdir, [self.env_prefix, FSOPS.parent], self.s.sandbox_deny_names,
-            attached=self.read_roots, network=not self.offline, deny_exec=self.deny_exec), encoding="utf-8")
+            attached=self._granted(), network=not self.offline, deny_exec=self.deny_exec), encoding="utf-8")
+
+    def _granted(self) -> tuple[Path, ...]:
+        return (*self.read_roots, *((self.room,) if self.room is not None else ()))
+
+    def grant_room(self, room: Path) -> None:
+        """The data room of a task that has turned business becomes readable (never writable) to the sandbox, by
+        the profile and by _fsops, until revoke_room at task end. Independent of grant_read (user attachments)."""
+        room = room.resolve()
+        if room != self.room:
+            self.room = room
+            self._write_profile()
+
+    def revoke_room(self) -> None:
+        if self.room is not None:
+            self.room = None
+            self._write_profile()
 
     def set_offline(self, flag: bool) -> None:
         """Business-data tasks: the sandbox gets no network. Commands still running were started with the online
@@ -474,7 +493,7 @@ class Sandbox:
                           round(time.monotonic() - t0, 3), timed_out, notes)
 
     async def fs(self, op: str, **args) -> dict:
-        payload = json.dumps({"root": str(self.workspace), "read_roots": [str(p) for p in self.read_roots], **args},
+        payload = json.dumps({"root": str(self.workspace), "read_roots": [str(p) for p in self._granted()], **args},
                              ensure_ascii=False).encode()
         r = await self._exec([str(self.python), "-I", str(FSOPS), op], payload, 60)
         try:

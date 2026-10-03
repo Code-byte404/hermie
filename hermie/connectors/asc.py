@@ -70,6 +70,7 @@ Tools `asc` and `asc_help` read the user's App Store Connect and Apple Ads data 
   the user for an app ID, vendor number or organization ID: Hermie fills them in.
 - Do not pass --output, --decompress or --file: the full result is saved to a read-only file whose path the tool
   returns, with a preview. Compute totals and comparisons from that file with python in run_command.
+- Write intermediate files (scripts, CSVs) under $TMPDIR, not the workspace.
 - Useful commands: apps list | reviews list --app A [--stars N --territory US --sort -createdDate --paginate]
   | insights weekly --app A --source sales --week YYYY-MM-DD | insights daily --app A --date YYYY-MM-DD
   | analytics compare --source sales --app A --from YYYY-MM-DD --to YYYY-MM-DD --frequency DAILY
@@ -247,9 +248,9 @@ class AscConnector:
         argv = [str(a) for a in args.get("args") or []]
         path = command_path(argv)
         label = " ".join(path)
-        if path not in ALLOWED:
+        if path not in ALLOWED:   # label "refused": the model's tokens never reach connectors.jsonl
             return ConnectorResult(f"Refused: `asc {label}` is not an allowed read-only command. Allowed: "
-                                   + "; ".join(" ".join(p) for p in sorted(ALLOWED)), label=label, ok=False)
+                                   + "; ".join(" ".join(p) for p in sorted(ALLOWED)), label="refused", ok=False)
         if "--" in argv:
             return ConnectorResult("A bare `--` is not allowed in asc arguments.", label=label, ok=False)
         verbs = sorted({a for a in argv[len(path):] if a.casefold() in WRITE_VERBS})

@@ -219,3 +219,46 @@ def test_build_connectors_runs_asc_in_the_connector_dir(settings, tmp_path):
     settings.connectors, settings.asc_path = ["asc"], str(fake)
     conns, _ = build_connectors(settings)
     assert conns[0].cwd == settings.connector_dir
+
+
+async def test_data_room_readable_only_once_the_task_turns_business(make_agent, settings):
+    """The room is created at task start but granted to the sandbox only when the task turns business (here: the
+    connector call), and taken away at task end."""
+    from pydantic_ai.messages import ModelResponse, ToolCallPart
+    data_dir = Path.home() / f".hermie-test-room-{uuid.uuid4().hex[:8]}"
+    try:
+        def room():
+            return next(settings.connector_rooms_dir.iterdir())
+
+        def probe(cmd):
+            return lambda m, info: ModelResponse(parts=[ToolCallPart("run_command", {"command": cmd(room())})])
+        ex = Script([probe(lambda r: f"ls {r}"), tool("fake_lookup", query="q"),
+                     probe(lambda r: f"cat {r}/001-fake.json")], final=final())
+        agent = make_agent(FakeJudge(task="repetitive"), executor=ex, connectors=[FakeConnector()],
+                           data_dir=data_dir)
+        await agent.run("how are we doing?")
+        from .test_web import tool_returns
+        before, _, after = tool_returns(ex)
+        assert "exit_code=0" not in before and "not permitted" in before
+        assert "exit_code=0" in after and FakeConnector.FIGURE in after
+        r = await agent.session.sandbox.run_shell(f"cat {room()}/001-fake.json")
+        assert r.exit_code != 0 and FakeConnector.FIGURE not in r.stdout
+    finally:
+        shutil.rmtree(data_dir, ignore_errors=True)
+
+
+async def test_prefixed_business_task_room_granted_from_the_start(make_agent, settings):
+    from pydantic_ai.messages import ModelResponse, ToolCallPart
+    data_dir = Path.home() / f".hermie-test-room-{uuid.uuid4().hex[:8]}"
+    try:
+        probe = lambda m, info: ModelResponse(parts=[ToolCallPart(
+            "run_command", {"command": f"ls {next(settings.connector_rooms_dir.iterdir())}"})])
+        ex = Script([probe], final=final())
+        agent = make_agent(FakeJudge(task="repetitive"), executor=ex, connectors=[FakeConnector()],
+                           data_dir=data_dir)
+        await agent.run("revenue?", business=True)
+        from .test_web import tool_returns
+        assert tool_returns(ex)[0].startswith("exit_code=0")
+        assert agent.session.sandbox.room is None
+    finally:
+        shutil.rmtree(data_dir, ignore_errors=True)

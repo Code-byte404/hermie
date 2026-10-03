@@ -276,6 +276,8 @@ class TaskState:
         self.business = True
         self.session.business = True
         self.session.sandbox.set_offline(True)
+        if self.data_room is not None:   # the room becomes readable only now; Hermie.run revokes it at task end
+            self.session.sandbox.grant_room(self.data_room)
         if first:
             self.trace_note(business=source)
             self.bus.emit(Notice("info", f"Business data ({source}): this task stays on this machine; cloud models are "

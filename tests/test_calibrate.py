@@ -132,3 +132,10 @@ def test_rejected_plan_is_not_labelled():
     rec = {"route": "plan", "backend": "deepseek-plan+ollama", "signals": {"task_type": "planning"},
            "nodes": [{"node": "design", "status": "rejected"}], "input_sha256": "x"}
     assert label(rec, []) is None
+
+
+def test_signals_from_record_keeps_business():
+    sig = json.loads(json.dumps(SIG))
+    sig["business"] = True
+    assert calibrate.signals_from_record(rec(signals=sig), 0.3).business is True
+    assert calibrate.signals_from_record(rec(), 0.3).business is False

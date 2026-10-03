@@ -235,3 +235,26 @@ async def test_web_tools_refused_in_business_tasks(make_agent, settings):
     assert not hits
     log = settings.outbound_log_path
     assert not log.exists() or ("98765" not in log.read_text() and "web:" not in log.read_text())
+
+
+async def test_list_apps_saves_only_the_catalog(make_agent):
+    """Another Hermie instance may save other keys meanwhile: list_apps / set_default_app must not write back
+    the stale copy it loaded."""
+    from pathlib import Path
+    from hermie.connectors.asc import AscConnector, command_path
+    from .test_connectors_asc import APPS, FakeRunner
+    agent = None
+
+    def apps_list(argv):   # the other instance saves a new vendor number while asc is listing apps
+        agent.session.connector_states.save("asc", {"vendor": "222"})
+        return 0, json.dumps(APPS), ""
+    conn = AscConnector(Path(__file__), runner=FakeRunner({("apps", "list"): apps_list}),
+                        sync_runner=lambda a, e, t, cwd: (0, '{"credentials": [{"name": "x"}]}', ""))
+    agent = make_agent(connectors=[conn])
+    store = agent.session.connector_states
+    store.save("asc", {"vendor": "111"})
+    await agent.list_apps()
+    assert store.load("asc")["vendor"] == "222" and store.load("asc")["catalog"]["apps"]
+    store.save("asc", {"vendor": "111", "catalog": {}})
+    await agent.set_default_app("beta")
+    assert store.load("asc")["vendor"] == "222"

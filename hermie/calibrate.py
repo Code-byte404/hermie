@@ -38,7 +38,8 @@ def signals_from_record(rec: dict, needs_ws_threshold: float) -> Signals:
     cx = ScoreAnswer(sg["complexity"]["score"], sg.get("complexity_probs") or [], sg["complexity"]["confidence"])
     p = sg.get("needs_workspace_prob")
     needs_ws = (p > needs_ws_threshold) if p is not None else sg["needs_workspace"]
-    return Signals(sg["privacy"]["sensitive"], task, cx, sg.get("routellm_win_rate"), needs_ws, p)
+    return Signals(sg["privacy"]["sensitive"], task, cx, sg.get("routellm_win_rate"), needs_ws, p,
+                   business=bool(sg.get("business")))
 
 
 def _settings_for(cfg: dict, base: Optional[Settings]) -> Settings:

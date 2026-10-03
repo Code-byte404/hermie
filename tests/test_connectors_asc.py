@@ -427,3 +427,13 @@ async def test_default_runners_honour_cwd(tmp_path):
     assert code == 0 and Path(out.strip()).resolve() == tmp_path.resolve()
     code, out, _ = _run_sync(["/bin/pwd"], {}, 5, tmp_path)
     assert code == 0 and Path(out.strip()).resolve() == tmp_path.resolve()
+
+
+async def test_refused_path_is_logged_as_refused_not_model_text(tmp_path):
+    r = await tool(make(), "asc").call({"args": ["say", "REVENUE 98765.43"]}, Ctx(tmp_path))
+    assert not r.ok and r.label == "refused"
+
+
+def test_cheatsheet_says_where_to_write_intermediate_files():
+    from hermie.connectors.asc import ASC_INSTRUCTIONS
+    assert "$TMPDIR" in ASC_INSTRUCTIONS

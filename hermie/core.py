@@ -266,7 +266,7 @@ class Hermie:
         conn, store = self._asc(), self.session.connector_states
         state = store.load("asc")
         apps = await conn.apps(state, refresh=refresh)
-        store.save("asc", state)
+        store.save("asc", {"catalog": state["catalog"]})   # only what changed: other keys may be newer on disk
         return [a["name"] for a in apps]
 
     async def set_default_app(self, name: str) -> str:
@@ -274,7 +274,8 @@ class Hermie:
         conn, store = self._asc(), self.session.connector_states
         state = store.load("asc")
         hits = resolve_app(name, await conn.apps(state))
-        store.save("asc", state)
+        if "catalog" in state:
+            store.save("asc", {"catalog": state["catalog"]})
         if len(hits) != 1:
             raise LookupError(f"{'No app' if not hits else 'Several apps'} match {name!r}")
         self.session.connector_session.setdefault("asc", {})["app"] = hits[0]["id"]
@@ -303,7 +304,7 @@ class Hermie:
                 st.data_room.mkdir(parents=True, exist_ok=True)
             if business or self.session.business:   # inside the try: the finally takes the sandbox back online
                 st.mark_business("prefix" if business else "session")
-            with self.session.sandbox.grant_read([*read_roots, *([st.data_room] if st.data_room else [])]):
+            with self.session.sandbox.grant_read(read_roots):   # the data room is granted by mark_business
                 result = await self.task_graph.run(state=st, deps=self)
             routing = st.flow.routing
             result.reasons = routing.decision.reasons + result.reasons
@@ -312,6 +313,7 @@ class Hermie:
         finally:
             self.task_running = False
             self.session.sandbox.set_offline(False)   # a session-locked next task turns it back on (mark_business)
+            self.session.sandbox.revoke_room()
             routing = st.flow.routing
             self.session.stats.task_started_at = None
             interrupted: Optional[BaseException] = None
