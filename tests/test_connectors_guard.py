@@ -1,7 +1,6 @@
 """ConnectorGuard: the business flag, data room, state, logs and errors around every connector call."""
 import json
-import os
-import time
+import asyncio
 
 from hermie.connectors.base import ConnectorResult, ConnectorTool
 from hermie.connectors.guard import ConnectorGuard, StateStore, run_connector_tool
@@ -42,7 +41,7 @@ async def test_result_rendered_with_saved_paths_and_logged_without_data(make_age
     log = settings.connector_log_path.read_text()
     rec = json.loads(log.splitlines()[-1])
     assert rec["connector"] == "fake" and rec["tool"] == "fake_lookup" and rec["label"] == "lookup" and rec["ok"]
-    assert FakeConnector.FIGURE not in log and "q" not in json.dumps(rec.get("args", ""))
+    assert FakeConnector.FIGURE not in log and "args" not in rec
 
 
 async def test_room_paths_are_numbered_and_sanitized(make_agent, tmp_path):
@@ -105,3 +104,59 @@ def test_exposed_includes_business(make_agent):
     assert not st.exposed
     st.business = True
     assert st.exposed
+
+
+async def test_flush_saves_only_changed_keys(make_agent, tmp_path, settings):
+    agent = make_agent()
+    st = _st(agent, tmp_path)
+    store = StateStore(settings.connector_dir)
+    store.save("fake", {"vendor": "old", "mine": "old"})
+
+    async def call(args, ctx):
+        ctx.state()["mine"] = "new"
+        StateStore(settings.connector_dir).save("fake", {"vendor": "other-instance", "mine": "theirs"})
+        return ConnectorResult("ok")
+    await run_connector_tool(st, FakeConnector(), ConnectorTool("c", "x", {"type": "object"}, call), {})
+    assert store.load("fake") == {"vendor": "other-instance", "mine": "new"}
+
+
+async def test_unserializable_state_does_not_drop_result_or_log(make_agent, tmp_path, settings):
+    agent = make_agent()
+    st = _st(agent, tmp_path)
+
+    async def call(args, ctx):
+        ctx.state()["p"] = {1, 2}
+        return ConnectorResult("RESULT", label="l")
+    out = await run_connector_tool(st, FakeConnector(), ConnectorTool("c", "x", {"type": "object"}, call), {})
+    assert out == "RESULT"
+    assert json.loads(settings.connector_log_path.read_text().splitlines()[-1])["ok"] is True
+
+
+async def test_cancellation_still_flushes_and_logs(make_agent, tmp_path, settings):
+    agent = make_agent()
+    st = _st(agent, tmp_path)
+
+    async def call(args, ctx):
+        ctx.state()["app"] = "chosen"
+        await asyncio.sleep(10)
+    task = asyncio.ensure_future(
+        run_connector_tool(st, FakeConnector(), ConnectorTool("c", "x", {"type": "object"}, call), {}))
+    await asyncio.sleep(0.05)
+    task.cancel()
+    try:
+        await task
+        raise AssertionError("not cancelled")
+    except asyncio.CancelledError:
+        pass
+    assert StateStore(settings.connector_dir).load("fake") == {"app": "chosen"}
+    assert json.loads(settings.connector_log_path.read_text().splitlines()[-1])["ok"] is False
+
+
+async def test_exception_text_not_in_standard_log(make_agent, tmp_path, caplog):
+    agent = make_agent()
+    st = _st(agent, tmp_path)
+
+    async def call(args, ctx):
+        raise RuntimeError("SECRET-REVENUE-123")
+    await run_connector_tool(st, FakeConnector(), ConnectorTool("c", "x", {"type": "object"}, call), {})
+    assert "SECRET-REVENUE-123" not in caplog.text and "RuntimeError" in caplog.text

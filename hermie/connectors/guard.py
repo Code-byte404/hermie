@@ -3,6 +3,7 @@ context (pickers, data room, state), log the call without data, and turn any fai
 A connector never sees TaskState; this is the only place connector calls meet Hermie's rules."""
 from __future__ import annotations
 
+import copy
 import fcntl
 import json
 import logging
@@ -52,6 +53,7 @@ class ConnectorGuard:
     def __init__(self, st: "TaskState", connector_name: str):
         self.st, self.name = st, connector_name
         self._state: Optional[dict] = None
+        self._loaded: dict = {}
 
     async def choose(self, prompt: str, options: list[str]) -> Optional[str]:
         return await self.st.bus.request_choice(ChoiceRequest(prompt, list(options)))
@@ -71,6 +73,7 @@ class ConnectorGuard:
         if self._state is None:
             store = self.st.session.connector_states
             self._state = store.load(self.name) if store is not None else {}
+            self._loaded = copy.deepcopy(self._state)
         return self._state
 
     def session_state(self) -> dict:
@@ -78,8 +81,12 @@ class ConnectorGuard:
 
     def flush(self) -> None:
         store = self.st.session.connector_states
-        if self._state is not None and store is not None:
-            store.save(self.name, self._state)
+        if self._state is None or store is None:
+            return
+        # Only keys this call changed or added: another instance may have saved other keys meanwhile.
+        changed = {k: v for k, v in self._state.items() if k not in self._loaded or self._loaded[k] != v}
+        if changed:
+            store.save(self.name, changed)
 
 
 def _render(res: ConnectorResult) -> str:
@@ -93,17 +100,24 @@ async def run_connector_tool(st: "TaskState", connector: Connector, tool: Connec
     st.mark_business("connector")      # before the call: the data never exists in an unflagged task
     guard = ConnectorGuard(st, connector.name)
     t0 = time.monotonic()
+    res = ConnectorResult(f"{tool.name} was cancelled", ok=False)
     try:
-        res = await tool.call(args, guard)
-    except Exception as e:
-        log.exception("Connector %s.%s failed", connector.name, tool.name)
-        res = ConnectorResult(f"{tool.name} failed: {type(e).__name__}: {e}", ok=False)
-    try:
-        guard.flush()
-    except OSError:
-        log.exception("Saving connector state failed")
-    if st.session.connector_log is not None:
-        st.session.connector_log.write({"connector": connector.name, "tool": tool.name, "label": res.label,
-                                        "ok": res.ok, "duration_s": round(time.monotonic() - t0, 2),
-                                        "files": [p.name for p in res.files]})
+        try:
+            res = await tool.call(args, guard)
+        except Exception as e:
+            # type only: the message may carry business data (asc stderr)
+            log.error("Connector %s.%s failed: %s", connector.name, tool.name, type(e).__name__)
+            res = ConnectorResult(f"{tool.name} failed: {type(e).__name__}: {e}", ok=False)
+    finally:   # also on cancellation: state chosen before the cancel is kept and the call is logged
+        try:
+            guard.flush()
+        except Exception as e:
+            log.error("Saving connector state failed: %s", type(e).__name__)
+        try:
+            if st.session.connector_log is not None:
+                st.session.connector_log.write({"connector": connector.name, "tool": tool.name, "label": res.label,
+                                                "ok": res.ok, "duration_s": round(time.monotonic() - t0, 2),
+                                                "files": [p.name for p in res.files]})
+        except Exception as e:
+            log.error("Writing connector log failed: %s", type(e).__name__)
     return _render(res)
