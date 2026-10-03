@@ -42,7 +42,7 @@ Routing is a pure function of three parallel signals: the privacy check, one str
 ## Requirements
 
 - macOS on Apple Silicon. The sandbox is Seatbelt, transcription is mlx-whisper, speech is `say`.
-- [Ollama](https://ollama.com) running locally with an executor model and a judge model pulled. Defaults: `qwen3.8:27b-mlx` as executor and reviewer, `gemma4:12b` as judge. A 32 GB machine runs both; a smaller judge model is the biggest speed win.
+- [Ollama](https://ollama.com) running locally with an executor model and a judge model pulled. Recommended on a 32 GB Mac: `qwen3.6:35b-a3b-coding` as executor, reviewer and judge (`WORKER_MODEL` and `JUDGE_MODEL`). It is a mixture-of-experts model with about 3B active parameters, and with one shared model nothing swaps; measured on an M2 Pro it generates 44-53 tokens/s with thinking off (Hermie always turns it off unless `WORKER_THINKING=true`). On M1-M4 chips the GGUF build is faster than the MLX `-nvfp4` build of the same model (measured on M2 Pro: about 10% slower prefill and decode, 2 GB more memory). `.env.example` still ships the pair the evals were calibrated on, `qwen3.8:27b-mlx` and `gemma4:12b`; re-run the evals in [docs/guide.md](docs/guide.md) when you switch the judge.
 - Optional: `ollama pull nomic-embed-text` for lesson memory (without it, lessons are matched by word overlap).
 - A cloud API key (DeepSeek by default; `CLOUD_PROVIDER` switches to OpenAI, Anthropic or an OpenAI-compatible endpoint), only if you want the `cloud` and `plan` routes. Everything else works fully offline.
 
