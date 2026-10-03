@@ -270,6 +270,7 @@ class Hermie:
             result.signals = routing.signals_dict()
             return result
         finally:
+            self.session.sandbox.set_offline(False)   # a session-locked next task turns it back on (mark_business)
             routing = st.flow.routing
             self.session.stats.task_started_at = None
             interrupted: Optional[BaseException] = None

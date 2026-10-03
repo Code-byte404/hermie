@@ -320,6 +320,9 @@ async def _run_reviewed(ctx: TaskCtx) -> Literal["finish", "self_check"]:
 async def _self_check(ctx: TaskCtx) -> Literal["passed", "escalate_plan", "escalate_cloud"]:
     """local_verify: after the local run, the judge decides whether a stronger model needs to redo it."""
     st, agent = ctx.state, ctx.deps
+    if st.business:   # nowhere to escalate: business data stays local
+        st.flow.notes.append("Business data: no self-check escalation; the result stays local")
+        return "passed"
     res: StepResult = st.flow.last_step
     out, review = res.out, res.review
     if review is not None and not review.passed:

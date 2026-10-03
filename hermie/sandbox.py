@@ -5,8 +5,9 @@
 - reads: system directories, toolchains, the workspace; the rest of the home directory (~/.ssh, credentials,
   browser data) is never readable, except files and directories the user attached to the current task
   (`Sandbox.grant_read`), which are readable, never writable, for that task only;
-- network: open (package installs, git clones, API calls from the user's own code). The executor's commands can
-  therefore send data out; curl / wget / ssh / pip install stay high-risk commands that need approval in default
+- network: open (package installs, git clones, API calls from the user's own code), except during business-data
+  tasks (connectors), when remote connections and DNS are denied. The executor's commands can otherwise
+  send data out; curl / wget / ssh / pip install stay high-risk commands that need approval in default
   mode (capabilities.rule_risk), and the executor's own web tools still go through the outbound check;
 - open / osascript / security and launching other applications are forbidden (otherwise apps outside the
   sandbox could be used to bypass it);
@@ -107,7 +108,7 @@ def _deny_read_rule(root: Path, names: tuple) -> Optional[str]:
 
 
 def build_profile(workspace: Path, tmpdir: Path, extra_read: list[Path], deny_names: tuple = (),
-                  attached: Iterable[Path] = ()) -> str:
+                  attached: Iterable[Path] = (), network: bool = True) -> str:
     attached = list(attached)
     reads = [*_READ_SUBPATHS, *_developer_dir(), *map(str, extra_read), *map(str, attached)]
     lines = [
@@ -127,6 +128,11 @@ def build_profile(workspace: Path, tmpdir: Path, extra_read: list[Path], deny_na
         "(deny appleevent-send)",
         "(deny process-exec " + " ".join(f"(literal {_q(p)})" for p in _DENY_EXEC) + ")",
     ]
+    if not network:   # business data: no remote connections and no DNS (a hostname can carry data)
+        lines.append('(deny network-outbound (remote ip "*:*"))')
+        lines.append('(deny mach-lookup (global-name "com.apple.dnssd.service"))')
+        # getaddrinfo talks to mDNSResponder over this unix socket, not over the mach service (measured on macOS 26)
+        lines.append('(deny network-outbound (remote unix-socket (path-literal "/private/var/run/mDNSResponder")))')
     if deny := _deny_read_rule(workspace, deny_names):
         lines.append(deny)
     for root in attached:
@@ -201,13 +207,20 @@ class Sandbox:
         self.env_prefix = Path(sys.prefix).resolve()
         self.profile_path = (settings.data_dir / "sandbox.sb").resolve()
         self.read_roots: tuple[Path, ...] = ()   # paths attached to the running task: read-only
+        self.offline = False                     # business-data task: no network (set_offline)
         self._write_profile()
         self._procs: set[asyncio.subprocess.Process] = set()
 
     def _write_profile(self) -> None:
         self.profile_path.write_text(build_profile(
             self.workspace, self.tmpdir, [self.env_prefix, FSOPS.parent], self.s.sandbox_deny_names,
-            attached=self.read_roots), encoding="utf-8")
+            attached=self.read_roots, network=not self.offline), encoding="utf-8")
+
+    def set_offline(self, flag: bool) -> None:
+        """Business-data tasks: the sandbox gets no network (commands started from now on)."""
+        if flag != self.offline:
+            self.offline = flag
+            self._write_profile()
 
     def grantable(self, path: Path) -> bool:
         """Whether an attached path may be opened read-only: not the root, not the home directory or anything

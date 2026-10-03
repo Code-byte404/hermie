@@ -64,6 +64,9 @@ class OutboundGuard(AbstractCapability[TaskState]):
 
     async def before_model_request(self, ctx: RunContext[TaskState], request_context):
         st = ctx.deps
+        if st.business:   # business data never leaves this machine, certified or not
+            st.bus.emit(OutboundBlocked("business data: cloud requests are off for this task"))
+            raise OutboundBlockedError("business data never leaves this machine")
         for text in _request_texts(request_context.messages):
             h = sha256(text)
             if h not in st.certified:

@@ -275,6 +275,7 @@ class TaskState:
         first = not self.business
         self.business = True
         self.session.business = True
+        self.session.sandbox.set_offline(True)
         if first:
             self.trace_note(business=source)
             self.bus.emit(Notice("info", f"Business data ({source}): this task stays on this machine; cloud models are "

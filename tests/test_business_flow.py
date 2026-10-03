@@ -68,3 +68,61 @@ async def test_per_question_path_asks_business_and_failure_counts_as_yes(make_ag
     assert r.route == "local" and agent.session.business and not cloud.seen
     ev = next(e for e in agent.events if isinstance(e, RouteDecided))
     assert ev.signals["business_prob"] == 1.0
+
+
+from hermie.capabilities import OutboundBlockedError
+from hermie.session import TaskState
+
+
+async def test_outbound_guard_blocks_any_cloud_request_once_business(make_agent):
+    from hermie.agents import build_cloud_agent
+    cloud = Script([text("x")], name="cloud")
+    agent = make_agent(cloud=cloud)
+    st = TaskState(agent.session, "harmless text")
+    st.business = True
+    import pytest
+    with pytest.raises(OutboundBlockedError):
+        await build_cloud_agent(agent.models, planning=False).run("harmless text", deps=st)
+    assert not cloud.seen
+
+
+async def test_fallback_in_local_verify_does_not_escalate(make_agent, settings):
+    cloud, planner = Script(name="cloud"), Script(name="planner")
+    ex = Script([tool("fake_lookup", query="q")], final=final(answer=f"Revenue {FIG}"))
+    agent = make_agent(FakeJudge(task="complex", cx=1, verify=0.1, needs_ws=False), executor=ex, cloud=cloud,
+                       planner=planner, connectors=[FakeConnector()])
+    r = await agent.run("how are we doing")
+    assert r.route == "local_verify" and not cloud.seen and not planner.seen
+    out_log = settings.outbound_log_path
+    assert not out_log.exists() or FIG not in out_log.read_text()
+    assert any("Business data: no self-check escalation" in n for n in r.reasons)
+
+
+async def test_fallback_takes_sandbox_offline_mid_task(make_agent):
+    ex = Script([tool("run_command", command="echo before"), tool("fake_lookup", query="q"),
+                 tool("run_command", command="echo after")], final=final())
+    agent = make_agent(FakeJudge(task="repetitive"), executor=ex, connectors=[FakeConnector()])
+    profiles = []
+    orig = agent.session.sandbox.run_shell
+
+    async def spy(*a, **kw):
+        profiles.append(agent.session.sandbox.offline)
+        return await orig(*a, **kw)
+    agent.session.sandbox.run_shell = spy
+    await agent.run("revenue?")
+    assert profiles == [False, True]
+    assert agent.session.sandbox.offline is False          # reset when the task ends
+
+
+async def test_prefixed_task_is_offline_from_the_start(make_agent):
+    ex = Script([tool("run_command", command="echo hi")], final=final())
+    agent = make_agent(FakeJudge(task="repetitive"), executor=ex, connectors=[FakeConnector()])
+    seen = []
+    orig = agent.session.sandbox.run_shell
+
+    async def spy(*a, **kw):
+        seen.append(agent.session.sandbox.offline)
+        return await orig(*a, **kw)
+    agent.session.sandbox.run_shell = spy
+    await agent.run("revenue?", business=True)
+    assert seen == [True]

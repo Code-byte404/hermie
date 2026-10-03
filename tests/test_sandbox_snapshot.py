@@ -342,3 +342,19 @@ def test_grant_read_refuses_broad_or_secret_paths(sb, attached_dir):
     with sb.grant_read(refused) as granted:
         assert granted == ()
     assert sb.grantable(attached_dir) and sb.grantable(attached_dir / "src" / "main.py")
+
+
+async def test_offline_profile_blocks_network_and_dns(settings):
+    from hermie.sandbox import Sandbox
+    sb = Sandbox(settings)
+    sb.set_offline(True)
+    text = sb.profile_path.read_text()
+    assert '(deny network-outbound (remote ip "*:*"))' in text and "com.apple.dnssd.service" in text
+    r = await sb.run_shell("python3 -c \"import socket; socket.create_connection(('1.1.1.1', 53), 3)\"")
+    assert r.exit_code != 0
+    r = await sb.run_shell("python3 -c \"import socket; socket.getaddrinfo('example.com', 80)\"")
+    assert r.exit_code != 0
+    r = await sb.run_shell("echo still-works")
+    assert r.exit_code == 0 and "still-works" in r.stdout
+    sb.set_offline(False)
+    assert "(deny network-outbound" not in sb.profile_path.read_text()
