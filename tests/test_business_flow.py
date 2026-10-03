@@ -195,7 +195,7 @@ async def test_list_and_set_default_app(make_agent, tmp_path):
     from hermie.connectors.asc import AscConnector
     from .test_connectors_asc import FakeRunner
     conn = AscConnector(Path("/opt/homebrew/bin/asc"), runner=FakeRunner(),
-                        sync_runner=lambda a, e, t: (0, '{"credentials": [{"name": "x"}]}', ""))
+                        sync_runner=lambda a, e, t, cwd: (0, '{"credentials": [{"name": "x"}]}', ""))
     conn.binary = Path(__file__)   # exists, so status() is ready
     conn._status = None
     agent = make_agent(connectors=[conn])
@@ -214,3 +214,24 @@ async def test_new_session_refused_while_task_running(make_agent):
     assert agent.new_session() is False and agent.session.business
     agent.task_running = False
     assert agent.new_session() is True and not agent.session.business
+
+
+async def test_web_tools_refused_in_business_tasks(make_agent, settings):
+    import httpx
+    from hermie.web import WebClient
+    hits = []
+
+    def handler(request):
+        hits.append(str(request.url))
+        return httpx.Response(200, json={"results": []})
+    ex = Script([tool("fake_lookup", query="q"), tool("web_search", query=f"is {FIG} good"),
+                 tool("web_fetch", url=f"https://news.example.com/?q={FIG.replace(' ', '+')}")], final=final())
+    agent = make_agent(FakeJudge(task="repetitive"), executor=ex, connectors=[FakeConnector()],
+                       tavily_api_key="tv-key")
+    agent.session.web = WebClient(agent.s, client=httpx.AsyncClient(transport=httpx.MockTransport(handler)))
+    await agent.run("compare our revenue with the market")
+    from .test_web import tool_returns
+    assert sum("Web access is off while business data is involved" in r for r in tool_returns(ex)) == 2
+    assert not hits
+    log = settings.outbound_log_path
+    assert not log.exists() or ("98765" not in log.read_text() and "web:" not in log.read_text())

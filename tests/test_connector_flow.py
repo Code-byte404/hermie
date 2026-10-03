@@ -191,3 +191,31 @@ def test_prune_rooms(tmp_path):
     os.utime(old, (past, past))
     prune_rooms(tmp_path, 7)
     assert not old.exists() and new.exists()
+
+
+async def test_run_command_asc_is_refused_with_a_hint(make_agent):
+    from hermie.events import CommandFinished
+    ex = Script([tool("run_command", command="asc --version"),
+                 tool("run_command", command="cd sub && /opt/homebrew/bin/asc reviews list")], final=final())
+    agent = make_agent(FakeJudge(task="repetitive"), executor=ex, connectors=[FakeConnector()])
+    await agent.run("list my reviews")
+    from .test_web import tool_returns
+    assert sum("use the `asc` tool instead" in r for r in tool_returns(ex)) == 2
+    assert not [e for e in agent.events if isinstance(e, CommandFinished) and "asc" in e.command]
+
+
+def test_asc_command_detection():
+    from hermie.capabilities import runs_asc
+    for cmd in ("asc --version", "cd x && asc apps list", "/opt/homebrew/bin/asc reviews list", "FOO=1 asc x",
+                "env asc x", "echo a | asc x", "(asc x)", "true; sudo asc x", "$(asc x)", "`asc x`"):
+        assert runs_asc(cmd), cmd
+    for cmd in ("echo asc", "ascii x", "cat asc.txt", "ls ./asc-data", "grep asc file"):
+        assert not runs_asc(cmd), cmd
+
+
+def test_build_connectors_runs_asc_in_the_connector_dir(settings, tmp_path):
+    fake = tmp_path / "asc"
+    fake.write_text("")
+    settings.connectors, settings.asc_path = ["asc"], str(fake)
+    conns, _ = build_connectors(settings)
+    assert conns[0].cwd == settings.connector_dir

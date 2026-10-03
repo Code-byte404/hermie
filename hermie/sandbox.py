@@ -9,6 +9,7 @@
   tasks (connectors), when remote connections and DNS are denied. The executor's commands can otherwise
   send data out; curl / wget / ssh / pip install stay high-risk commands that need approval in default
   mode (capabilities.rule_risk), and the executor's own web tools still go through the outbound check;
+- asc (App Store Connect / Apple Ads) never runs here: only the asc connector tool runs it, in the main process;
 - open / osascript / security and launching other applications are forbidden (otherwise apps outside the
   sandbox could be used to bypass it);
 - the environment is cleared, keeping only PATH/LANG etc.; CLOUD_API_KEY, SSH_AUTH_SOCK and the like never
@@ -59,6 +60,24 @@ _READ_LITERALS = ["/", "/private", "/private/var", "/private/var/select", "/var"
 _DENY_EXEC = ["/usr/bin/open", "/usr/bin/osascript", "/usr/bin/security", "/usr/bin/osacompile",
               "/usr/bin/automator", "/usr/bin/shortcuts", "/usr/sbin/screencapture", "/usr/bin/pbcopy",
               "/usr/bin/pbpaste"]
+# asc reads the user's App Store Connect / Apple Ads account (keychain, or a ./.asc config + .p8 key): it runs only
+# through the connector in the main process, never inside the sandbox
+ASC_COMMON_PATHS = ("/opt/homebrew/bin/asc", "/usr/local/bin/asc")
+
+
+def asc_binaries(settings: Settings) -> list[str]:
+    """Every path the asc binary may be exec'd by: ASC_PATH, the one on PATH, the usual Homebrew locations, and
+    the real file behind each symlink."""
+    import shutil
+    paths = [p for p in (settings.asc_path, shutil.which("asc"), *ASC_COMMON_PATHS) if p]
+    out = []
+    for p in paths:
+        for q in (os.path.abspath(os.path.expanduser(p)), os.path.realpath(os.path.expanduser(p))):
+            if q not in out:
+                out.append(q)
+    return out
+
+
 _DENY_MACH = ["com.apple.coreservices.launchservicesd", "com.apple.CoreServices.coreservicesd",
               "com.apple.SecurityServer", "com.apple.securityd", "com.apple.pasteboard.1",
               "com.apple.coreservices.appleevents", "com.apple.windowserver.active",
@@ -110,7 +129,7 @@ def _deny_read_rule(root: Path, names: tuple) -> Optional[str]:
 
 
 def build_profile(workspace: Path, tmpdir: Path, extra_read: list[Path], deny_names: tuple = (),
-                  attached: Iterable[Path] = (), network: bool = True) -> str:
+                  attached: Iterable[Path] = (), network: bool = True, deny_exec: Iterable[str] = ()) -> str:
     attached = list(attached)
     reads = [*_READ_SUBPATHS, *_developer_dir(), *map(str, extra_read), *map(str, attached)]
     lines = [
@@ -128,13 +147,15 @@ def build_profile(workspace: Path, tmpdir: Path, extra_read: list[Path], deny_na
         '(allow file-ioctl (regex #"^/dev/tty"))',
         "(allow network*)",
         "(deny appleevent-send)",
-        "(deny process-exec " + " ".join(f"(literal {_q(p)})" for p in _DENY_EXEC) + ")",
+        "(deny process-exec " + " ".join(f"(literal {_q(p)})" for p in (*_DENY_EXEC, *deny_exec)) + ")",
     ]
     if not network:   # business data: no remote connections and no DNS (a hostname can carry data)
         lines.append('(deny network-outbound (remote ip "*:*"))')
         lines.append('(deny mach-lookup (global-name "com.apple.dnssd.service"))')
         # getaddrinfo talks to mDNSResponder over this unix socket, not over the mach service (measured on macOS 26)
         lines.append('(deny network-outbound (remote unix-socket (path-literal "/private/var/run/mDNSResponder")))')
+    if deny_exec:   # not readable either, so the binary cannot be copied to a path the exec rule does not cover
+        lines.append("(deny file-read* " + " ".join(f"(literal {_q(p)})" for p in deny_exec) + ")")
     if deny := _deny_read_rule(workspace, deny_names):
         lines.append(deny)
     for root in attached:
@@ -244,12 +265,13 @@ class Sandbox:
         self.read_roots: tuple[Path, ...] = ()   # paths attached to the running task: read-only
         self.offline = False                     # business-data task: no network (set_offline)
         self._procs: set[asyncio.subprocess.Process] = set()
+        self.deny_exec = asc_binaries(settings)
         self._write_profile()
 
     def _write_profile(self) -> None:
         self.profile_path.write_text(build_profile(
             self.workspace, self.tmpdir, [self.env_prefix, FSOPS.parent], self.s.sandbox_deny_names,
-            attached=self.read_roots, network=not self.offline), encoding="utf-8")
+            attached=self.read_roots, network=not self.offline, deny_exec=self.deny_exec), encoding="utf-8")
 
     def set_offline(self, flag: bool) -> None:
         """Business-data tasks: the sandbox gets no network. Commands still running were started with the online

@@ -151,7 +151,7 @@ class Settings:
     # Deliberately excludes .env: the project's own build/run commands need it; secrets in .env are caught at the outbound gate by the SECRET recognizer
     sandbox_deny_names: tuple = field(default_factory=lambda: tuple(
         n.strip() for n in _env("SANDBOX_DENY_NAMES",
-                                "id_rsa,id_ed25519,id_ecdsa,id_dsa,.netrc,*.pem,*.key,*.p12,*.pfx").split(",")
+                                "id_rsa,id_ed25519,id_ecdsa,id_dsa,.netrc,*.pem,*.key,*.p12,*.pfx,*.p8").split(",")
         if n.strip()))
     max_tool_calls: int = field(default_factory=lambda: _env_int("MAX_TOOL_CALLS", 30))
     max_requests: int = field(default_factory=lambda: _env_int("MAX_REQUESTS", 40))

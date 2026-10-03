@@ -407,3 +407,32 @@ async def test_going_offline_stops_running_commands(settings):
     sb.set_offline(True)
     r = await asyncio.wait_for(run, 10)
     assert "finished" not in r.stdout and r.exit_code != 0
+
+
+async def test_asc_binary_exec_denied_in_profile(settings, tmp_path):
+    """asc reads the keychain-backed App Store Connect account: inside the sandbox it must not run at all (the
+    executor uses the asc tool instead). A script named asc stands in for the real binary."""
+    bindir = tmp_path / "bin"
+    bindir.mkdir()
+    fake_asc, other = bindir / "asc", bindir / "notasc"
+    for f in (fake_asc, other):
+        f.write_text('#!/bin/sh\necho "$@"\n')
+        f.chmod(0o755)
+    settings.asc_path = str(fake_asc)
+    settings.ensure_dirs()
+    sb = Sandbox(settings)
+    profile = sb.profile_path.read_text()
+    deny = next(l for l in profile.splitlines() if l.startswith("(deny process-exec"))
+    for p in (str(fake_asc), "/opt/homebrew/bin/asc", "/usr/local/bin/asc"):
+        assert f'(literal "{p}")' in deny, p
+    r = await sb.run_shell(f"{other} hello")
+    assert r.exit_code == 0 and "hello" in r.stdout          # control: the same binary under another name runs
+    r = await sb.run_shell(f"{fake_asc} hello")
+    assert r.exit_code != 0 and "hello" not in r.stdout
+    r = await sb.run_shell(f"cp {fake_asc} ./copied && ./copied hello")   # nor copied under another name
+    assert r.exit_code != 0 and "hello" not in r.stdout
+
+
+def test_p8_keys_denied_by_default():
+    from hermie.config import Settings
+    assert "*.p8" in Settings().sandbox_deny_names

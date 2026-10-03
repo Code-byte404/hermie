@@ -19,8 +19,9 @@ from typing import Awaitable, Callable, Optional
 from .base import ConnectorContext, ConnectorResult, ConnectorTool, Status
 from .preview import cap_text, preview_json, preview_table
 
-Runner = Callable[[list[str], dict, float], Awaitable[tuple[int, str, str]]]
-SyncRunner = Callable[[list[str], dict, float], tuple[int, str, str]]
+# (argv, env, timeout, cwd): cwd is a Hermie-owned directory, never the workspace (asc reads ./.asc/config.json)
+Runner = Callable[[list[str], dict, float, Path], Awaitable[tuple[int, str, str]]]
+SyncRunner = Callable[[list[str], dict, float, Path], tuple[int, str, str]]
 
 # Exact command paths (the leading non-flag tokens). Anything else is refused, including `ads api` (raw requests,
 # can POST) and every create/update/delete/respond/submit path.
@@ -152,8 +153,8 @@ def parse_orgs(text: str) -> list[dict]:
     return out
 
 
-async def _run(argv: list[str], env: dict, timeout: float) -> tuple[int, str, str]:
-    proc = await asyncio.create_subprocess_exec(*argv, stdin=asyncio.subprocess.DEVNULL,
+async def _run(argv: list[str], env: dict, timeout: float, cwd: Path) -> tuple[int, str, str]:
+    proc = await asyncio.create_subprocess_exec(*argv, stdin=asyncio.subprocess.DEVNULL, cwd=str(cwd),
                                                 stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE, env=env)
     try:
         out, err = await asyncio.wait_for(proc.communicate(), timeout)
@@ -164,8 +165,8 @@ async def _run(argv: list[str], env: dict, timeout: float) -> tuple[int, str, st
     return proc.returncode, out.decode(errors="replace"), err.decode(errors="replace")
 
 
-def _run_sync(argv: list[str], env: dict, timeout: float) -> tuple[int, str, str]:
-    p = subprocess.run(argv, capture_output=True, text=True, env=env, timeout=timeout)
+def _run_sync(argv: list[str], env: dict, timeout: float, cwd: Path) -> tuple[int, str, str]:
+    p = subprocess.run(argv, capture_output=True, text=True, env=env, timeout=timeout, cwd=str(cwd))
     return p.returncode, p.stdout, p.stderr
 
 
@@ -174,8 +175,12 @@ class AscConnector:
     title = "App Store Connect + Apple Ads (asc)"
 
     def __init__(self, binary: Path, timeout: float = 180, preview_chars: int = 4000,
-                 runner: Optional[Runner] = None, sync_runner: Optional[SyncRunner] = None):
+                 runner: Optional[Runner] = None, sync_runner: Optional[SyncRunner] = None,
+                 cwd: Optional[Path] = None):
         self.binary, self.timeout, self.preview_chars = Path(binary), timeout, preview_chars
+        # asc's working directory: Hermie-owned (data_dir/connectors), so a ./.asc/config.json planted in the
+        # workspace by sandboxed code can never replace the keychain credentials
+        self.cwd = Path(cwd) if cwd is not None else Path("~/.hermie/connectors").expanduser()
         self.runner = runner or _run
         self.sync_runner = sync_runner or _run_sync
         self._status: Optional[Status] = None
@@ -190,7 +195,7 @@ class AscConnector:
         if not self.binary.exists():
             return Status("missing", f"asc not found at {self.binary}; install it or set ASC_PATH")
         try:
-            code, out, err = self.sync_runner([str(self.binary), "auth", "status"], self._env({}), 15)
+            code, out, err = self._call_sync([str(self.binary), "auth", "status"], self._env({}), 15)
             data = json.loads(out)
         except Exception as e:
             return Status("error", f"`asc auth status` failed: {type(e).__name__}")
@@ -213,6 +218,17 @@ class AscConnector:
                           {"type": "object", "properties": {"command": {"type": "string"}}, "required": ["command"]},
                           self._help),
         ]
+
+    # ------------------------------------------------------------ process
+    def _workdir(self) -> Path:
+        self.cwd.mkdir(parents=True, exist_ok=True)
+        return self.cwd
+
+    async def _call(self, argv: list[str], env: dict, timeout: float) -> tuple[int, str, str]:
+        return await self.runner(argv, env, timeout, self._workdir())
+
+    def _call_sync(self, argv: list[str], env: dict, timeout: float) -> tuple[int, str, str]:
+        return self.sync_runner(argv, env, timeout, self._workdir())
 
     # ------------------------------------------------------------ environment
     def _env(self, state: dict) -> dict:
@@ -269,7 +285,7 @@ class AscConnector:
             own += ["--output", "json"]
         argv = argv[:len(path)] + own + argv[len(path):]
         try:
-            code, out, err = await self.runner([str(self.binary), *argv], self._env(state), self.timeout)
+            code, out, err = await self._call([str(self.binary), *argv], self._env(state), self.timeout)
         except asyncio.TimeoutError:
             return ConnectorResult(f"asc {label} timed out after {self.timeout:.0f}s; try a narrower date range or "
                                    "fewer pages.", label=label, ok=False)
@@ -311,7 +327,7 @@ class AscConnector:
         else:
             argv = [str(self.binary), "search", " ".join(words), "--output", "json"]
         try:
-            code, out, err = await self.runner(argv, self._env({}), 30)
+            code, out, err = await self._call(argv, self._env({}), 30)
         except asyncio.TimeoutError:
             return ConnectorResult("asc help timed out.", label="help", ok=False)
         except (OSError, ValueError) as e:
@@ -323,7 +339,7 @@ class AscConnector:
         cat = state.get("catalog")
         if not refresh and cat and time.time() - cat.get("ts", 0) < CATALOG_TTL_S:
             return cat["apps"]
-        code, out, err = await self.runner([str(self.binary), "apps", "list", "--paginate", "--output", "json"],
+        code, out, err = await self._call([str(self.binary), "apps", "list", "--paginate", "--output", "json"],
                                            self._env(state), self.timeout)
         if code != 0:
             raise RuntimeError(f"asc apps list failed (exit {code}): {_tail(err or out, 300)}")
@@ -389,7 +405,7 @@ class AscConnector:
         if path[0] != "ads" or path in ORGLESS or _flag_value(argv, "--org") or state.get("ads_org"):
             return None
         try:
-            code, out, err = await self.runner([str(self.binary), "ads", "acls", "list", "--output", "json"],
+            code, out, err = await self._call([str(self.binary), "ads", "acls", "list", "--output", "json"],
                                                self._env(state), self.timeout)
         except asyncio.TimeoutError:
             return "Apple Ads did not answer in time."

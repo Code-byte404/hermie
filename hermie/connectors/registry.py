@@ -42,7 +42,8 @@ def build_connectors(s: "Settings") -> tuple[list[Connector], list[str]]:
             if not asc_bin:
                 notes.append("Connector asc: the asc CLI was not found; install it or set ASC_PATH")
                 continue
-            out.append(AscConnector(Path(asc_bin), timeout=s.connector_timeout, preview_chars=s.connector_preview_chars))
+            out.append(AscConnector(Path(asc_bin), timeout=s.connector_timeout, preview_chars=s.connector_preview_chars,
+                                    cwd=s.connector_dir))
         else:
             notes.append(f"Unknown connector {n!r} in CONNECTORS (known: asc)")
     return out, notes

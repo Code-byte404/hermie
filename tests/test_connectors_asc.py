@@ -47,9 +47,11 @@ class FakeRunner:
     def __init__(self, replies=None):
         self.replies = {("apps", "list"): (0, json.dumps(APPS), ""), **(replies or {})}
         self.calls: list[tuple[list[str], dict]] = []
+        self.cwds: list = []
 
-    async def __call__(self, argv, env, timeout):
+    async def __call__(self, argv, env, timeout, cwd=None):
         self.calls.append((argv, env))
+        self.cwds.append(cwd)
         path = command_path(argv[1:])
         reply = self.replies.get(path, (0, json.dumps({"data": []}), ""))
         if callable(reply):
@@ -146,7 +148,7 @@ async def test_nonzero_exit_and_ads_hint(tmp_path):
 
 
 async def test_timeout(tmp_path):
-    async def slow(argv, env, timeout):
+    async def slow(argv, env, timeout, cwd):
         raise asyncio.TimeoutError
     r = await tool(make(slow), "asc").call({"args": ["finance", "regions"]}, Ctx(tmp_path))
     assert not r.ok and "timed out" in r.preview and "narrower" in r.preview
@@ -180,9 +182,9 @@ async def test_asc_help_allowed_and_search(tmp_path):
 
 
 def test_status(tmp_path):
-    ok = make(sync_runner=lambda argv, env, t: (0, json.dumps({"credentials": [{"name": "Main"}]}), ""))
+    ok = make(sync_runner=lambda argv, env, t, cwd: (0, json.dumps({"credentials": [{"name": "Main"}]}), ""))
     assert ok.status().state == "ready"
-    none = make(sync_runner=lambda argv, env, t: (0, json.dumps({"credentials": []}), ""))
+    none = make(sync_runner=lambda argv, env, t, cwd: (0, json.dumps({"credentials": []}), ""))
     st = none.status()
     assert st.state == "not_authenticated" and "asc auth login" in st.reason
     missing = AscConnector(tmp_path / "nope", runner=FakeRunner())
@@ -340,7 +342,7 @@ async def test_single_dash_app_flag_is_resolved(tmp_path):
 
 
 async def test_runner_oserror_and_ads_hint_not_for_downloads(tmp_path):
-    async def boom(argv, env, timeout):
+    async def boom(argv, env, timeout, cwd):
         raise OSError("no such file")
     r = await tool(make(boom), "asc").call({"args": ["finance", "regions"]}, Ctx(tmp_path))
     assert not r.ok and "OSError" in r.preview
@@ -350,7 +352,7 @@ async def test_runner_oserror_and_ads_hint_not_for_downloads(tmp_path):
 
 
 def test_status_non_dict_json_is_error():
-    assert make(sync_runner=lambda argv, env, t: (0, "[]", "")).status().state == "error"
+    assert make(sync_runner=lambda argv, env, t, cwd: (0, "[]", "")).status().state == "error"
 
 
 async def test_own_flags_come_right_after_the_path(tmp_path):
@@ -383,7 +385,7 @@ async def test_next_only_apple_hosts(tmp_path):
 
 
 async def test_org_and_help_runner_errors(tmp_path):
-    async def boom(argv, env, timeout):
+    async def boom(argv, env, timeout, cwd):
         raise OSError("gone")
     conn = make(boom)
     r = await tool(conn, "asc").call({"args": ["ads", "campaigns", "list"]}, Ctx(tmp_path))
@@ -400,3 +402,28 @@ async def test_reuse_existing_cannot_be_overridden(tmp_path):
                                          Ctx(tmp_path))
         assert not r.ok and "reuse-existing" in r.preview
     assert runner.calls == []
+
+
+async def test_asc_runs_in_a_hermie_owned_directory(tmp_path):
+    """asc reads ./.asc/config.json from its working directory, which would let a planted workspace file override
+    the keychain credentials: every asc call runs in a Hermie-owned directory instead."""
+    runner = FakeRunner({("finance", "regions"): (0, "[]", "")})
+    home = tmp_path / "connectors"
+    conn = make(runner, cwd=home)
+    await tool(conn, "asc").call({"args": ["finance", "regions"]}, Ctx(tmp_path))
+    await tool(conn, "asc").call({"args": ["reviews", "list", "--app", "Alpha Notes"]}, Ctx(tmp_path))
+    await tool(conn, "asc_help").call({"command": "reviews list"}, Ctx(tmp_path))
+    assert runner.cwds and all(c == home for c in runner.cwds) and home.is_dir()
+    seen = []
+    conn = make(runner, cwd=home, sync_runner=lambda a, e, t, cwd=None: seen.append(cwd) or (0, "{}", ""))
+    conn.binary = Path(__file__)
+    conn.status()
+    assert seen == [home]
+
+
+async def test_default_runners_honour_cwd(tmp_path):
+    from hermie.connectors.asc import _run, _run_sync
+    code, out, _ = await _run(["/bin/pwd"], {}, 5, tmp_path)
+    assert code == 0 and Path(out.strip()).resolve() == tmp_path.resolve()
+    code, out, _ = _run_sync(["/bin/pwd"], {}, 5, tmp_path)
+    assert code == 0 and Path(out.strip()).resolve() == tmp_path.resolve()

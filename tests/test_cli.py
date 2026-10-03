@@ -63,3 +63,22 @@ def test_data_flag_parsed():
     from hermie.cli import _parser
     args = _parser().parse_args(["--json", "--data", "downloads last week?"])
     assert args.data is True
+
+
+async def test_headless_passes_data_flag_as_business(make_agent, monkeypatch):
+    """hermie --data: _headless must hand business=True to Hermie.run."""
+    from hermie import cli
+    from hermie.policy import Force
+
+    from .conftest import FakeConnector, FakeJudge
+    agent = make_agent(FakeJudge(task="repetitive"), connectors=[FakeConnector()])
+    seen = {}
+    real_run = agent.run
+
+    async def spy(*a, **k):
+        seen.update(k)
+        return await real_run(*a, **k)
+    agent.run = spy
+    monkeypatch.setattr("hermie.core.Hermie", lambda s: agent)   # _headless imports Hermie from .core at call time
+    await cli._headless(agent.s, "revenue last week?", "", Force.NONE, business=True)
+    assert seen.get("business") is True and agent.session.business

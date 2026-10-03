@@ -286,9 +286,14 @@ async def _outbound_check(st: TaskState, kind: str, payload: str) -> Optional[st
     return None
 
 
+BUSINESS_WEB_REFUSAL = "Web access is off while business data is involved; answer from local data."
+
+
 async def web_fetch(ctx: RunContext[TaskState], url: str) -> str:
     """Fetch a public web page and return its text (HTML converted to plain text; very long pages are truncated)."""
     st = ctx.deps
+    if st.business:   # in every mode, before anything is certified, logged or sent: a URL can carry a figure
+        return BUSINESS_WEB_REFUSAL
     if st.session.web is None:
         return "Web access is disabled (WEB_ENABLED=false)."
     try:
@@ -314,6 +319,8 @@ async def web_fetch(ctx: RunContext[TaskState], url: str) -> str:
 async def web_search(ctx: RunContext[TaskState], query: str) -> str:
     """Search the web for up-to-date information; returns titles, links and snippets. Use web_fetch to read the full text."""
     st = ctx.deps
+    if st.business:   # see web_fetch
+        return BUSINESS_WEB_REFUSAL
     if st.session.web is None or not st.session.web.search_available:
         return "Search is disabled (TAVILY_API_KEY required)."
     if msg := await _outbound_check(st, "search", query):

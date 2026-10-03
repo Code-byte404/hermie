@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import re
 import shlex
 import time
@@ -135,6 +136,30 @@ def rule_risk(command: str) -> str | None:
     return "low"
 
 
+_CMD_SPLIT = re.compile(r"\$\(|[;&|()`\n]+")
+_PREFIX_WORDS = {"sudo", "env", "exec", "command", "time", "nohup", "nice", "xargs", "builtin", "noglob"}
+ASC_REFUSAL = ("asc cannot run in run_command (the sandbox has no access to the App Store Connect account): use the "
+               "`asc` tool instead, which reads App Store Connect / Apple Ads data read-only and saves the full "
+               "result to a file you can process with python.")
+
+
+def runs_asc(command: str) -> bool:
+    """Whether any command in a shell line starts the asc CLI (by name or path, after env assignments or
+    sudo/env/xargs...). The Seatbelt profile denies exec of the asc binary anyway; this gives the model a hint."""
+    for seg in _CMD_SPLIT.split(command):
+        try:
+            words = shlex.split(seg)
+        except ValueError:
+            words = seg.split()
+        for w in words:
+            if re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*=.*", w) or w in _PREFIX_WORDS or w.startswith("-"):
+                continue
+            if os.path.basename(w) == "asc":
+                return True
+            break
+    return False
+
+
 def command_key(command: str) -> str:
     try:
         return shlex.split(command)[0]
@@ -152,6 +177,8 @@ class CommandGuard(AbstractCapability[TaskState]):
         if call.tool_name != "run_command":
             return await handler(args)
         command = args.get("command", "") if isinstance(args, dict) else getattr(args, "command", "")
+        if runs_asc(command):
+            return ASC_REFUSAL
         risk = rule_risk(command)
         if risk is None:
             try:
