@@ -5,6 +5,7 @@ import os
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
+from typing import Optional
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 
@@ -36,6 +37,12 @@ def _env_int(name: str, default: int) -> int:
 
 def _env_bool(name: str, default: bool) -> bool:
     return os.environ.get(name, str(default)).strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _env_list(name: str) -> Optional[list[str]]:
+    """Comma list; None when the variable is unset (callers treat None as "auto")."""
+    v = os.environ.get(name)
+    return None if v is None else [x.strip() for x in v.split(",") if x.strip()]
 
 
 class RunMode(str, Enum):
@@ -204,6 +211,14 @@ class Settings:
     skill_retire_uses: int = field(default_factory=lambda: _env_int("SKILL_RETIRE_USES", 5))
     skill_retire_rate: float = field(default_factory=lambda: _env_float("SKILL_RETIRE_RATE", 0.3))
 
+    # Data connectors (read-only business data, processed by local models only; see hermie/connectors/).
+    # CONNECTORS unset = auto: asc when the asc CLI is installed. An empty value turns connectors off.
+    connectors: Optional[list[str]] = field(default_factory=lambda: _env_list("CONNECTORS"))
+    asc_path: str = field(default_factory=lambda: _env("ASC_PATH", ""))
+    connector_timeout: float = field(default_factory=lambda: _env_float("CONNECTOR_TIMEOUT", 180))
+    connector_preview_chars: int = field(default_factory=lambda: _env_int("CONNECTOR_PREVIEW_CHARS", 4000))
+    connector_data_keep_days: int = field(default_factory=lambda: _env_int("CONNECTOR_DATA_KEEP_DAYS", 7))
+
     def __post_init__(self) -> None:
         if self.cloud_provider not in CLOUD_PROVIDERS:
             raise ValueError(f"CLOUD_PROVIDER must be one of {', '.join(CLOUD_PROVIDERS)}, not {self.cloud_provider!r}")
@@ -250,6 +265,18 @@ class Settings:
     @property
     def skills_dir(self) -> Path:
         return self.data_dir / "skills"
+
+    @property
+    def connector_dir(self) -> Path:
+        return self.data_dir / "connectors"
+
+    @property
+    def connector_rooms_dir(self) -> Path:
+        return self.connector_dir / "rooms"
+
+    @property
+    def connector_log_path(self) -> Path:
+        return self.data_dir / "connectors.jsonl"
 
     def ensure_dirs(self) -> None:
         self.workspace.mkdir(parents=True, exist_ok=True)

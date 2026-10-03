@@ -14,6 +14,7 @@ from pydantic_ai.models.function import AgentInfo, DeltaToolCall, FunctionModel
 from hermie.agents import SMUGGLE_QUESTION, ModelFactory
 from hermie.capabilities import RISK_QUESTION, STUCK_QUESTION
 from hermie.config import RunMode, Settings
+from hermie.connectors.base import ConnectorResult, ConnectorTool, Status
 from hermie.core import Hermie
 from hermie.judge import ChoiceAnswer, ScoreAnswer, form_via_primitives
 from hermie.policy import NEEDS_WORKSPACE_QUESTION
@@ -79,6 +80,32 @@ class FakeEmbedder:
         v = [float(sum(w.startswith(t) for w in words)) for t in self.VOCAB]
         n = math.sqrt(sum(x * x for x in v)) or 1.0
         return [x / n for x in v]
+
+
+class FakeConnector:
+    """A connector that returns a fixed business figure and saves it to the data room. Records its calls."""
+    name, title = "fake", "Fake business data"
+    FIGURE = "REVENUE 98765.43"
+
+    def __init__(self, state="ready"):
+        self.calls: list[dict] = []
+        self._state = state
+
+    def status(self):
+        return Status(self._state, "" if self._state == "ready" else "not set up")
+
+    def instructions(self):
+        return "FAKE_CHEATSHEET: call fake_lookup(query) for business numbers."
+
+    def tools(self):
+        async def call(args, ctx):
+            self.calls.append(dict(args))
+            p = ctx.room_path("fake.json")
+            p.write_text(json.dumps({"figure": self.FIGURE}))
+            return ConnectorResult(preview=self.FIGURE, files=(p,), label="lookup")
+        return [ConnectorTool("fake_lookup", "Look up the user's business numbers.",
+                              {"type": "object", "properties": {"query": {"type": "string"}}, "required": ["query"]},
+                              call)]
 
 
 class Script:
@@ -161,7 +188,7 @@ def settings(tmp_path):
                     stuck_check_every=0, env_path=tmp_path / ".env",
                     # the self-verification loop is off by default; the relevant tests enable it explicitly
                     verify_required=False, verify_rounds=0, recon_enabled=False, lessons_enabled=False,
-                    skills_enabled=False,
+                    skills_enabled=False, connectors=[],
                     plan_design=False)  # the plan design phase is off by default; tests/test_plan_design.py enables it
 
 
