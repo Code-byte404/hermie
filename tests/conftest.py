@@ -194,7 +194,7 @@ def settings(tmp_path):
 
 @pytest.fixture
 def make_agent(settings, analyzer):
-    def _make(judge=None, executor=None, planner=None, cloud=None, compressor=None, reviewer=None, **overrides):
+    def _make(judge=None, executor=None, planner=None, cloud=None, compressor=None, reviewer=None, connectors=None, **overrides):
         for k, v in overrides.items():
             setattr(settings, k, v)
         models = ModelFactory(settings,
@@ -205,7 +205,8 @@ def make_agent(settings, analyzer):
                               reviewer=reviewer.model if reviewer else None)
         if not settings.cloud_api_key:
             models._planner = models._cloud = None
-        agent = Hermie(settings, judge=judge or FakeJudge(), analyzer=analyzer, scorer=False, models=models)
+        agent = Hermie(settings, judge=judge or FakeJudge(), analyzer=analyzer, scorer=False, models=models,
+                       connectors=connectors)
         events = []
         agent.bus.subscribe(events.append)
         agent.events = events

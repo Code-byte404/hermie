@@ -13,7 +13,7 @@ import json
 import logging
 import time
 from enum import Enum
-from typing import Optional
+from typing import Optional, Sequence
 from urllib.parse import urlparse
 
 from pydantic import BaseModel, Field
@@ -515,9 +515,9 @@ class ModelFactory:
         return bool(self._planner or self._cloud or self.s.cloud_api_key)
 
 
-def build_executor(models: ModelFactory) -> Agent[TaskState, ExecutorOutput]:
+def build_executor(models: ModelFactory, connectors: Sequence = ()) -> Agent[TaskState, ExecutorOutput]:
     s = models.s
-    tools = [run_command, read_file, write_file, edit_file, list_files]
+    tools: list = [run_command, read_file, write_file, edit_file, list_files]
     instructions = EXECUTOR_INSTRUCTIONS
     if s.mac_tools:
         tools.append(screenshot)
@@ -531,12 +531,24 @@ def build_executor(models: ModelFactory) -> Agent[TaskState, ExecutorOutput]:
             instructions += WEB_INSTRUCTIONS
         else:
             instructions += WEB_FETCH_ONLY_INSTRUCTIONS
+    capabilities = [CommandGuard(), TaintTracker(), ExecutorToolBudget(), *models.tracker("executor", "local")]
+    if connectors:
+        from .connectors.registry import CONNECTOR_INSTRUCTIONS, ConnectorScope, connector_tools
+        ctools = connector_tools(list(connectors))
+        tools += ctools
+        capabilities.append(ConnectorScope(frozenset(t.name for t in ctools)))
+        instructions += CONNECTOR_INSTRUCTIONS
     agent = Agent(models.executor(), deps_type=TaskState, output_type=ExecutorOutput,
                   instructions=instructions, model_settings=models.local_settings(0.2),
-                  tools=tools,
-                  retries=s.report_retries + 1, name="executor",
-                  capabilities=[CommandGuard(), TaintTracker(), ExecutorToolBudget(), *models.tracker("executor", "local")])
+                  tools=tools, retries=s.report_retries + 1, name="executor", capabilities=capabilities)
     agent.output_validator(validate_report)
+    if connectors:
+        from .connectors.registry import connector_instructions
+        cheat = connector_instructions(list(connectors))
+
+        @agent.instructions
+        def _business_data(ctx: RunContext[TaskState]) -> str:   # the cheat sheet only where it is needed
+            return cheat if ctx.deps.business else ""
     return agent
 
 

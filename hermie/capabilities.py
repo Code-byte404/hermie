@@ -216,7 +216,8 @@ class TaintTracker(AbstractCapability[TaskState]):
     The rules layer (Presidio) is fast and runs synchronously; the judge model is slow and runs in the
     background so tool returns are not blocked -- the taint result is only needed at outbound time and at
     the end of the task, and those places call settle_checks() first. A judge failure also counts as
-    tainted (fail closed)."""
+    tainted (fail closed). Once the task is business (connectors), nothing is scanned: the business lock is stricter
+    than taint."""
 
     async def after_tool_execute(self, ctx: RunContext[TaskState], *, call, tool_def, args, result: Any):
         st = ctx.deps
@@ -232,7 +233,7 @@ class TaintTracker(AbstractCapability[TaskState]):
             if args["path"] not in st.changed_paths:
                 st.changed_paths.append(str(args["path"]))
         st.recent_calls.append(f"{call.tool_name}({str(args)[:200]}) -> {text[:200]}")
-        if not st.tainted and call.tool_name not in _PUBLIC_TOOLS:
+        if not st.tainted and not st.business and call.tool_name not in _PUBLIC_TOOLS:
             verdict = await asyncio.to_thread(st.gate.check, text, False)
             if verdict.sensitive:
                 mark_tainted(st, call.tool_name, verdict.reason)

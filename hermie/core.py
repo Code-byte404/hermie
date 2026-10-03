@@ -5,6 +5,7 @@ import asyncio
 import logging
 import re
 import time
+import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Optional, Sequence
@@ -110,7 +111,7 @@ class Hermie:
     def __init__(self, settings: Optional[Settings] = None, *, judge: Optional[Judge] = None,
                  analyzer=None, scorer: Optional[RouteLLMScorer] | bool = None,
                  models: Optional[ModelFactory] = None, bus: Optional[EventBus] = None,
-                 web: Optional[WebClient] | bool = None):
+                 web: Optional[WebClient] | bool = None, connectors: Optional[list] = None):
         s = settings or Settings()
         s.ensure_dirs()
         judge = judge or OllamaJudge(s)
@@ -125,9 +126,6 @@ class Hermie:
             audit=AuditLog(s.audit_log_path), outbound_log=JsonlLog(s.outbound_log_path),
             command_log=JsonlLog(s.command_log_path), review_log=JsonlLog(s.review_log_path),
             trajectory_log=JsonlLog(s.trajectory_log_path))
-        from .connectors.guard import StateStore
-        self.session.connector_states = StateStore(s.connector_dir)
-        self.session.connector_log = JsonlLog(s.connector_log_path)
         if web is None:
             web = WebClient(s) if s.web_enabled else None
         from .memory import Embedder, LessonStore
@@ -146,6 +144,15 @@ class Hermie:
         # the result is not held up by local-model distillation and an interruption cannot lose the task record.
         self.learn_in_background = True
         self._learning: set[asyncio.Task] = set()
+        from .connectors.guard import StateStore
+        from .connectors.registry import build_connectors, prune_rooms, ready_connectors
+        built, notes = (list(connectors), []) if connectors is not None else build_connectors(s)
+        ready, more = ready_connectors(built)
+        self.startup_notes += notes + more
+        self.connectors = {c.name: c for c in ready}
+        self.session.connector_states = StateStore(s.connector_dir)
+        self.session.connector_log = JsonlLog(s.connector_log_path)
+        prune_rooms(s.connector_rooms_dir, s.connector_data_keep_days)
         self.session.web = web or None
         self.session.screen = ScreenCapture(s) if s.mac_tools else None
         self.router = EntryRouter(s, judge, gate, self.scorer)
@@ -154,7 +161,7 @@ class Hermie:
         self.models.stats = stats
         if isinstance(judge, OllamaJudge):
             judge.usage_sink = stats.judge_usage
-        self.executor = build_executor(self.models)
+        self.executor = build_executor(self.models, list(self.connectors.values()))
         self.step_graph = build_step_graph(self)
         self.task_graph = build_task_graph(self)
 
@@ -179,7 +186,7 @@ class Hermie:
         s, changed = self.s, {}
         if worker and worker != s.worker_model:
             s.worker_model = worker
-            self.executor = build_executor(self.models)
+            self.executor = build_executor(self.models, list(self.connectors.values()))
             changed["WORKER_MODEL"] = worker
         if judge and judge != s.judge_model:
             s.judge_model = judge
@@ -230,9 +237,9 @@ class Hermie:
         self.session.sandbox.kill_all()
 
     async def run(self, task: str, material: str = "", force: Force = Force.NONE,
-                  read_roots: Sequence[Path] = ()) -> TaskResult:
+                  read_roots: Sequence[Path] = (), business: bool = False) -> TaskResult:
         """read_roots: the files/directories the user attached, readable (never writable) by the executor for this
-        task only (Sandbox.grant_read)."""
+        task only (Sandbox.grant_read). business: the user marked the task as business data (keeps it local)."""
         text = f"{task}\n\n{material}".strip() if material else task
         # With lesson memory on, AGENT.md's "Lessons" section reaches the executor through recall_lessons instead of being
         # pasted in; with it off, the executor reads the section as before. The planner never gets it (_outbound_task).
@@ -240,13 +247,18 @@ class Hermie:
                        project_doc=project_doc.load(self.s.workspace, include_lessons=not self.s.lessons_enabled),
                        flow=FlowState(task=task, force=force))
         st.host = self
+        if self.connectors:
+            st.data_room = self.s.connector_rooms_dir / f"{time.strftime('%Y%m%d-%H%M%S')}-{uuid.uuid4().hex[:6]}"
+            st.data_room.mkdir(parents=True, exist_ok=True)
+        if business or self.session.business:
+            st.mark_business("prefix" if business else "session")
         await self._sync_lessons()
         t0 = time.time()
         self.session.stats.task_started_at = t0
         self.bus.emit(ChatMessage("user", task))
         result: Optional[TaskResult] = None
         try:
-            with self.session.sandbox.grant_read(read_roots):
+            with self.session.sandbox.grant_read([*read_roots, *([st.data_room] if st.data_room else [])]):
                 result = await self.task_graph.run(state=st, deps=self)
             routing = st.flow.routing
             result.reasons = routing.decision.reasons + result.reasons
