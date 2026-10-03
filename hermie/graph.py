@@ -283,8 +283,10 @@ def _fallback(st: TaskState, why: str, notify: bool = True) -> Literal["fallback
 @traced("route")
 async def _route(ctx: TaskCtx) -> Literal["local", "local_verify", "cloud", "plan"]:
     st, agent = ctx.state, ctx.deps
-    routing = await agent.router.route(st.flow.task, st.text, st.flow.force)
+    routing = await agent.router.route(st.flow.task, st.text, st.flow.force, business=st.business)
     st.flow.routing = routing
+    if routing.signals is not None and routing.signals.business and not st.business:
+        st.mark_business("judge")
     d = routing.decision
     st.sensitive_input = routing.verdict.sensitive
     st.route = d.route.value

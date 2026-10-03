@@ -157,3 +157,22 @@ def test_redact_continues_existing_numbering(analyzer):
     t2, m2 = PrivacyGate.redact(text, v.findings, existing=m1)
     assert t2 == "use <CN_MOBILE_2> or <CN_MOBILE_1>"
     assert m2 == {"<CN_MOBILE_2>": "13987654321"}      # only the new placeholder
+
+
+def _business_sig(**kw):
+    base = dict(sensitive=False, task=ChoiceAnswer("planning", {"planning": 0.9}, 0.9),
+                complexity=ScoreAnswer(2, [0, 0, 1.0], 0.9), win_rate=0.9, needs_workspace=False, business=True)
+    base.update(kw)
+    return Signals(**base)
+
+
+def test_business_is_local_under_every_force(settings):
+    for force in Force:
+        d = decide(_business_sig(), settings, force)
+        assert d.route is Route.LOCAL and d.reasons[0] == "business data: local only"
+    d = decide(_business_sig(), settings, Force.CLOUD)
+    assert "never leaves this machine" in d.reasons[1]
+
+
+def test_business_beats_sensitive_plan(settings):
+    assert decide(_business_sig(sensitive=True, needs_workspace=True), settings).route is Route.LOCAL

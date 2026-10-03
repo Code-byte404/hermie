@@ -17,7 +17,7 @@ from hermie.config import RunMode, Settings
 from hermie.connectors.base import ConnectorResult, ConnectorTool, Status
 from hermie.core import Hermie
 from hermie.judge import ChoiceAnswer, ScoreAnswer, form_via_primitives
-from hermie.policy import NEEDS_WORKSPACE_QUESTION
+from hermie.policy import BUSINESS_DATA_QUESTION, NEEDS_WORKSPACE_QUESTION
 from hermie.privacy import CONTEXTUAL_PRIVACY_QUESTION, build_analyzer
 
 
@@ -26,10 +26,11 @@ class FakeJudge:
     contextually sensitive."""
 
     def __init__(self, task="simple", conf=0.9, cx=0, cx_conf=0.9, needs_ws=True, verify=0.9,
-                 secrets=(), fail_privacy=False, fail_task=False, risk=0):
+                 secrets=(), fail_privacy=False, fail_task=False, risk=0, business=False):
         self.task, self.conf, self.cx, self.cx_conf = task, conf, cx, cx_conf
         self.needs_ws, self.verify, self.secrets = needs_ws, verify, secrets
         self.fail_privacy, self.fail_task, self.risk = fail_privacy, fail_task, risk
+        self.business = business
         self.calls: list[tuple[str, str]] = []   # (statement, state) of every noul call
         self.form_calls = 0
 
@@ -62,6 +63,8 @@ class FakeJudge:
             return 1.0 if self.needs_ws else 0.0
         if statement in (STUCK_QUESTION, SMUGGLE_QUESTION):
             return 0.0
+        if statement == BUSINESS_DATA_QUESTION:
+            return 1.0 if self.business else 0.0
         return self.verify
 
 

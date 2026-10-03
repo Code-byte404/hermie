@@ -160,6 +160,7 @@ class Hermie:
         self.session.web = web or None
         self.session.screen = ScreenCapture(s) if s.mac_tools else None
         self.router = EntryRouter(s, judge, gate, self.scorer)
+        self.router.ask_business = bool(self.connectors)  # the business question only matters with a connector ready
         stats = self.session.stats
         stats.on_change = lambda: self.bus.emit(StatsUpdated(stats.snapshot()))
         self.models.stats = stats

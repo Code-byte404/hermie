@@ -52,6 +52,13 @@ NEEDS_WORKSPACE_QUESTION = (
     "such that files must be created or modified on the computer for the task to count as done?"
 )
 
+# Asked only when a data connector is ready. Concrete examples on purpose, like NEEDS_WORKSPACE_QUESTION.
+BUSINESS_DATA_QUESTION = (
+    "Does answering this need the user's own business data from one of their online accounts -- for example "
+    "App Store Connect sales, downloads or reviews, Google Play Console, Google Analytics, Apple Ads or other ad "
+    "spend, or revenue reports -- rather than general knowledge?"
+)
+
 
 @dataclass
 class Signals:
@@ -61,6 +68,8 @@ class Signals:
     win_rate: Optional[float]
     needs_workspace: bool
     needs_workspace_prob: Optional[float] = None  # raw vote share, for the calibration script to tune the threshold
+    business: bool = False                        # business data involved (prefix, session or judge): local only
+    business_prob: Optional[float] = None         # raw vote share of BUSINESS_DATA_QUESTION (None: not asked)
 
 
 @dataclass
@@ -70,6 +79,11 @@ class Decision:
 
 
 def decide(sig: Signals, s: Settings, force: Force = Force.NONE) -> Decision:
+    if sig.business:
+        reasons = ["business data: local only"]
+        if force is Force.CLOUD:
+            reasons.append("cloud was requested, but business data never leaves this machine")
+        return Decision(Route.LOCAL, reasons)
     reasons: list[str] = []
     if force is Force.LOCAL:
         return Decision(Route.LOCAL, ["user forced local"])

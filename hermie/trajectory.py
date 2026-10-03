@@ -30,6 +30,7 @@ def task_record(st: "TaskState", r: "TaskResult", latency_s: float, interrupted:
         "latency_s": round(latency_s, 3),
         "sensitive": st.sensitive_input,
         "tainted": st.tainted,
+        "business": st.business,
         "outbound_count": st.outbound_count,
         "delegations": st.delegations,
         "review_failures": st.review_failures,
