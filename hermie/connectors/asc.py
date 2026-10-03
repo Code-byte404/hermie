@@ -58,6 +58,7 @@ APP_REQUIRED = {("apps", "view"), ("reviews", "list"), ("insights", "weekly"), (
 VENDOR_REQUIRED = {("analytics", "sales"), ("analytics", "compare"), ("finance", "reports"), ("insights", "daily")}
 ORGLESS = {("ads", "acls", "list"), ("ads", "me", "view")}
 CATALOG_TTL_S = 24 * 3600
+NEXT_PREFIXES = ("https://api.appstoreconnect.apple.com/", "https://api.searchads.apple.com/")
 ADS_HINT = "Apple Ads is not set up for asc: run `asc ads auth login` in a terminal."
 
 ASC_INSTRUCTIONS = """\
@@ -104,7 +105,8 @@ def _flag_value(argv: list[str], flag: str) -> Optional[str]:
     return None
 
 
-def _set_flag(argv: list[str], flag: str, value: str) -> list[str]:
+def _set_flag(argv: list[str], flag: str, value: str, at: Optional[int] = None) -> list[str]:
+    """Replace any spelling of `flag`. `at` = index to insert at (right after the command path), else append."""
     out, skip = [], False
     for i, a in enumerate(argv):
         if skip:
@@ -114,7 +116,9 @@ def _set_flag(argv: list[str], flag: str, value: str) -> list[str]:
             skip = "=" not in a
             continue
         out.append(a)
-    return out + [flag, value]
+    if at is None:
+        return out + [flag, value]
+    return out[:at] + [flag, value] + out[at:]
 
 
 def _tail(text: str, n: int = 1200) -> str:
@@ -231,10 +235,16 @@ class AscConnector:
                                    + "; ".join(" ".join(p) for p in sorted(ALLOWED)), label=label, ok=False)
         if "--" in argv:
             return ConnectorResult("A bare `--` is not allowed in asc arguments.", label=label, ok=False)
-        verbs = sorted({a for a in argv[len(path):] if a.lower() in WRITE_VERBS})
+        verbs = sorted({a for a in argv[len(path):] if a.casefold() in WRITE_VERBS})
         if verbs:
             return ConnectorResult(f"Refused: `{', '.join(verbs)}` is a write verb; this connector is read-only.",
                                    label=label, ok=False)
+        for i, a in enumerate(argv):
+            if _flag_name(a) == "next":
+                nxt = a.split("=", 1)[1] if "=" in a else (argv[i + 1] if i + 1 < len(argv) else "")
+                if not nxt.startswith(NEXT_PREFIXES):
+                    return ConnectorResult("--next is only accepted with an Apple API URL (links.next) from an "
+                                           "earlier result.", label=label, ok=False)
         bad = sorted({"--" + n for n in map(_flag_name, argv) if n in REFUSED_FLAGS})
         if bad:
             return ConnectorResult(f"{', '.join(bad)} not allowed: Hermie saves the full result to the data room "
@@ -245,14 +255,18 @@ class AscConnector:
         problem = problem or await self._fill_org(path, argv, ctx, state)
         if problem:
             return ConnectorResult(problem, label=label, ok=False)
-        if path == ("analytics", "request") and "--reuse-existing" not in argv:
-            argv.append("--reuse-existing")
+        # Hermie's own flags go right after the command path: Go flag parsing stops at the first stray positional, so
+        # flags appended at the end could be silently turned into positionals
+        own: list[str] = []
+        if path == ("analytics", "request"):
+            own += ["--reuse-existing"]
         out_file = None
         if path in FILE_COMMANDS:
             out_file = ctx.room_path("asc-" + "-".join(path) + FILE_COMMANDS[path])
-            argv += ["--output", str(out_file), "--decompress", "--output-format", "json"]
+            own += ["--output", str(out_file), "--decompress", "--output-format", "json"]
         else:
-            argv += ["--output", "json"]
+            own += ["--output", "json"]
+        argv = argv[:len(path)] + own + argv[len(path):]
         try:
             code, out, err = await self.runner([str(self.binary), *argv], self._env(state), self.timeout)
         except asyncio.TimeoutError:
@@ -299,6 +313,8 @@ class AscConnector:
             code, out, err = await self.runner(argv, self._env({}), 30)
         except asyncio.TimeoutError:
             return ConnectorResult("asc help timed out.", label="help", ok=False)
+        except (OSError, ValueError) as e:
+            return ConnectorResult(f"asc help could not run: {type(e).__name__}: {e}", label="help", ok=False)
         return ConnectorResult(cap_text(out or err, self.preview_chars), label="help", ok=code == 0)
 
     # ------------------------------------------------------------ IDs the user never types
@@ -337,14 +353,14 @@ class AscConnector:
                     return argv, f"Could not list your apps: {e}"
                 hits = resolve_app(value, apps)
             if len(hits) == 1:
-                return _set_flag(argv, flag, hits[0]["id"]), None
+                return _set_flag(argv, flag, hits[0]["id"], len(path)), None
             options = hits or apps
         else:
             default = ctx.session_state().get("app")
             if default and any(a["id"] == default for a in apps):
-                return _set_flag(argv, flag, default), None
+                return _set_flag(argv, flag, default, len(path)), None
             if len(apps) == 1:
-                return _set_flag(argv, flag, apps[0]["id"]), None
+                return _set_flag(argv, flag, apps[0]["id"], len(path)), None
             options = apps
         names = [a["name"] for a in options]
         choice = await ctx.choose("Which app?", names)
@@ -353,7 +369,7 @@ class AscConnector:
                           + f". Name one of them with {flag}.")
         app = options[names.index(choice)]
         ctx.session_state()["app"] = app["id"]
-        return _set_flag(argv, flag, app["id"]), None
+        return _set_flag(argv, flag, app["id"], len(path)), None
 
     async def _fill_vendor(self, path: tuple, argv: list[str], ctx: ConnectorContext, state: dict) -> Optional[str]:
         needs = path in VENDOR_REQUIRED or (path == ("insights", "weekly") and _flag_value(argv, "--source") == "sales")
@@ -376,6 +392,8 @@ class AscConnector:
                                                self._env(state), self.timeout)
         except asyncio.TimeoutError:
             return "Apple Ads did not answer in time."
+        except (OSError, ValueError) as e:
+            return f"Apple Ads could not be reached: {type(e).__name__}: {e}"
         if code != 0:
             return f"Apple Ads is not reachable: {_tail(err or out, 300)}\n{ADS_HINT}"
         orgs = parse_orgs(out)

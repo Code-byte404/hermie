@@ -198,6 +198,17 @@ def test_allowlist_exists_in_installed_asc():
                                   "DO_NOT_TRACK": "1"})
         text = out.stdout + out.stderr
         assert f"asc {' '.join(path)}" in text, f"asc {' '.join(path)} does not exist in the installed asc"
+        subs, in_subs = [], False
+        for line in text.split("\n"):
+            if line.startswith("SUBCOMMANDS"):
+                in_subs = True
+            elif in_subs and line and not line.startswith(" "):
+                break
+            elif in_subs and line.strip():
+                subs.append(line.split()[0])
+        from hermie.connectors.asc import WRITE_VERBS
+        extra = [x for x in subs if x not in WRITE_VERBS]
+        assert not extra, f"asc {' '.join(path)} has subcommands {extra} not in WRITE_VERBS"
 
 
 async def test_app_name_resolved_to_id(tmp_path):
@@ -340,3 +351,43 @@ async def test_runner_oserror_and_ads_hint_not_for_downloads(tmp_path):
 
 def test_status_non_dict_json_is_error():
     assert make(sync_runner=lambda argv, env, t: (0, "[]", "")).status().state == "error"
+
+
+
+async def test_own_flags_come_right_after_the_path(tmp_path):
+    runner = FakeRunner({("finance", "reports"): lambda argv: (Path(argv[argv.index("--output") + 1]).write_text("A\n1\n"), (0, "{}", ""))[1]})
+    ctx = Ctx(tmp_path)
+    ctx.state()["vendor"] = "123"
+    r = await tool(make(runner), "asc").call({"args": ["finance", "reports", "--pretty", "x"]}, ctx)
+    argv = runner.calls[-1][0]
+    assert r.ok and argv[1:4] == ["finance", "reports", "--output"] and argv.index("--pretty") > argv.index("--output-format")
+    runner2 = FakeRunner()
+    ctx2 = Ctx(tmp_path)
+    ctx2.session_state()["app"] = "111"
+    await tool(make(runner2), "asc").call({"args": ["analytics", "request", "--pretty", "x"]}, ctx2)
+    argv = runner2.calls[-1][0]
+    assert argv.index("--reuse-existing") < argv.index("--pretty")
+    assert argv.index("--app") < argv.index("--pretty")
+
+
+async def test_next_only_apple_hosts(tmp_path):
+    runner = FakeRunner()
+    conn = make(runner)
+    for bad in (["--next", "https://evil.example/x"], ["-next=http://api.appstoreconnect.apple.com/x"],
+                ["--next=https://api.appstoreconnect.apple.com.evil.example/x"]):
+        r = await tool(conn, "asc").call({"args": ["apps", "list", *bad]}, Ctx(tmp_path))
+        assert not r.ok and "--next" in r.preview
+    assert runner.calls == []
+    for good in ("https://api.appstoreconnect.apple.com/v1/apps?cursor=x", "https://api.searchads.apple.com/api/v5/x"):
+        r = await tool(conn, "asc").call({"args": ["apps", "list", "--next", good]}, Ctx(tmp_path))
+        assert r.ok
+
+
+async def test_org_and_help_runner_errors(tmp_path):
+    async def boom(argv, env, timeout):
+        raise OSError("gone")
+    conn = make(boom)
+    r = await tool(conn, "asc").call({"args": ["ads", "campaigns", "list"]}, Ctx(tmp_path))
+    assert not r.ok and "OSError" in r.preview
+    r = await tool(conn, "asc_help").call({"command": "reviews list"}, Ctx(tmp_path))
+    assert not r.ok and "OSError" in r.preview
