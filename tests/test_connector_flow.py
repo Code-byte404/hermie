@@ -82,10 +82,106 @@ def test_build_connectors_auto_and_explicit(settings, monkeypatch):
     assert "Unknown connector 'nope'" in build_connectors(settings)[1][0]
 
 
-def test_duplicate_tool_names_rejected():
+class _Broken(FakeConnector):
+    name = "broken"
+
+    def __init__(self, where):
+        super().__init__()
+        self.where = where
+
+    def status(self):
+        if self.where == "status":
+            raise RuntimeError("status exploded")
+        return super().status()
+
+    def tools(self):
+        if self.where == "tools":
+            raise RuntimeError("tools exploded")
+        return super().tools()
+
+
+class _Other(FakeConnector):
+    name = "other"
+
+
+def test_duplicate_tool_names_drop_the_later_connector():
+    first, second = FakeConnector(), _Other()
+    ready, notes = ready_connectors([first, second])
+    assert ready == [first]
+    assert any("Connector other unavailable" in n and "fake_lookup" in n for n in notes)
+
+
+def test_status_raising_becomes_a_note():
+    ready, notes = ready_connectors([_Broken("status")])
+    assert ready == [] and "Connector broken unavailable (error): RuntimeError: status exploded" in notes[0]
+
+
+def test_broken_connectors_never_stop_startup(make_agent):
+    good = FakeConnector()
+    agent = make_agent(connectors=[_Broken("tools"), good, _Other()])
+    assert agent.connectors == {"fake": good}
+    assert any("Connector broken unavailable (error): RuntimeError: tools exploded" in n for n in agent.startup_notes)
+    assert any("Connector other unavailable" in n for n in agent.startup_notes)
+    assert "fake_lookup" in agent.executor._function_toolset.tools
+
+
+def test_writable_data_room_is_a_startup_note(make_agent):
+    # the fixture's data dir is under tmp_path, inside the sandbox-writable per-user temp dir
+    agent = make_agent(connectors=[FakeConnector()])
+    assert any("would not be read-only" in n and "HERMIE_DATA_DIR" in n for n in agent.startup_notes)
+
+
+def test_data_room_outside_writable_dirs_has_no_note(make_agent):
+    data_dir = Path.home() / f".hermie-test-room-{uuid.uuid4().hex[:8]}"
+    try:
+        agent = make_agent(connectors=[FakeConnector()], data_dir=data_dir)
+        assert not any("would not be read-only" in n for n in agent.startup_notes)
+    finally:
+        shutil.rmtree(data_dir, ignore_errors=True)
+
+
+def test_prune_rooms_ignores_os_errors(tmp_path, monkeypatch):
+    def boom(self):
+        raise PermissionError("denied")
+    monkeypatch.setattr(Path, "iterdir", boom)
+    prune_rooms(tmp_path, 7)   # logged, not raised
+
+
+async def test_room_mkdir_failure_still_records_the_task(make_agent, settings):
+    import json
     import pytest
-    with pytest.raises(ValueError):
-        ready_connectors([FakeConnector(), FakeConnector()])
+    agent = make_agent(FakeJudge(task="repetitive"), connectors=[FakeConnector()])
+    settings.connector_rooms_dir.parent.mkdir(parents=True, exist_ok=True)
+    settings.connector_rooms_dir.write_text("not a directory")
+    with pytest.raises(OSError):
+        await agent.run("revenue?")
+    lines = settings.audit_log_path.read_text().strip().splitlines()
+    assert lines and json.loads(lines[-1])["route"] == "cancelled"
+    assert settings.trajectory_log_path.read_text().strip()
+
+
+async def test_cheatsheet_arrives_after_a_connector_call_in_a_plain_task(make_agent):
+    ex = Script([tool("fake_lookup", query="downloads")], final=final())
+    agent = make_agent(FakeJudge(task="repetitive"), executor=ex, connectors=[FakeConnector()])
+    await agent.run("How are things going?")
+    assert "FAKE_CHEATSHEET" not in str(ex.seen[0])
+    assert "FAKE_CHEATSHEET" in str(ex.seen[1])
+
+
+async def test_plan_mode_executor_prompt_never_mentions_connectors(make_agent):
+    planner = Script([tool("delegate", step="Write notes.md")], name="planner")
+    ex = Script(final=final())
+    agent = make_agent(FakeJudge(task="planning"), executor=ex, planner=planner, connectors=[FakeConnector()])
+    r = await agent.run("Plan and build a small notes tool")
+    assert r.route == "plan" and ex.seen
+    assert all("Business-data tools" not in str(m) and "FAKE_CHEATSHEET" not in str(m) for m in ex.seen)
+
+
+async def test_plain_task_executor_prompt_describes_connector_tools(make_agent):
+    ex = Script(final=final())
+    agent = make_agent(FakeJudge(task="repetitive"), executor=ex, connectors=[FakeConnector()])
+    await agent.run("Rename files to lowercase")
+    assert "Business-data tools" in str(ex.seen[0])
 
 
 def test_prune_rooms(tmp_path):

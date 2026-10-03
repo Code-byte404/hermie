@@ -533,22 +533,25 @@ def build_executor(models: ModelFactory, connectors: Sequence = ()) -> Agent[Tas
             instructions += WEB_FETCH_ONLY_INSTRUCTIONS
     capabilities = [CommandGuard(), TaintTracker(), ExecutorToolBudget(), *models.tracker("executor", "local")]
     if connectors:
-        from .connectors.registry import CONNECTOR_INSTRUCTIONS, ConnectorScope, connector_tools
+        from .connectors.registry import ConnectorScope, connector_tools
         ctools = connector_tools(list(connectors))
         tools += ctools
         capabilities.append(ConnectorScope(frozenset(t.name for t in ctools)))
-        instructions += CONNECTOR_INSTRUCTIONS
     agent = Agent(models.executor(), deps_type=TaskState, output_type=ExecutorOutput,
                   instructions=instructions, model_settings=models.local_settings(0.2),
                   tools=tools, retries=s.report_retries + 1, name="executor", capabilities=capabilities)
     agent.output_validator(validate_report)
     if connectors:
-        from .connectors.registry import connector_instructions
+        from .connectors.registry import CONNECTOR_INSTRUCTIONS, connector_instructions
         cheat = connector_instructions(list(connectors))
 
         @agent.instructions
-        def _business_data(ctx: RunContext[TaskState]) -> str:   # the cheat sheet only where it is needed
-            return cheat if ctx.deps.business else ""
+        def _business_data(ctx: RunContext[TaskState]) -> str:
+            # Inside a planner delegation the connector tools are hidden (ConnectorScope), so nothing mentions them;
+            # elsewhere the tools are described always, the cheat sheet only once the task is business.
+            if ctx.deps.report_for_cloud:
+                return ""
+            return CONNECTOR_INSTRUCTIONS.strip() + ("\n\n" + cheat if ctx.deps.business else "")
     return agent
 
 

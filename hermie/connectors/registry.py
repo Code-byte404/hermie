@@ -1,6 +1,7 @@
 """Which connectors exist, which are ready, and how their tools reach the executor."""
 from __future__ import annotations
 
+import logging
 import shutil
 import time
 from dataclasses import dataclass
@@ -18,6 +19,8 @@ from .guard import run_connector_tool
 if TYPE_CHECKING:
     from ..config import Settings
     from ..session import TaskState
+
+log = logging.getLogger(__name__)
 
 CONNECTOR_INSTRUCTIONS = """
 
@@ -46,31 +49,48 @@ def build_connectors(s: "Settings") -> tuple[list[Connector], list[str]]:
 
 
 def ready_connectors(conns: list[Connector]) -> tuple[list[Connector], list[str]]:
+    """The connectors that can be offered. A connector whose status(), tools() or instructions() raises, or that is
+    not ready, becomes a startup note; one whose tool names collide with an earlier connector's is dropped with a
+    note. Never raises: a broken connector must not stop Hermie from starting."""
     ready: list[Connector] = []
     notes: list[str] = []
+    taken: set[str] = set()
     for c in conns:
+        name = getattr(c, "name", type(c).__name__)
         try:
             st = c.status()
+            if st.state != "ready":
+                notes.append(f"Connector {name} unavailable ({st.state}): {st.reason}")
+                continue
+            tool_names = [t.name for t in c.tools()]
+            c.instructions()
         except Exception as e:
-            st = Status("error", f"{type(e).__name__}: {e}")
-        if st.state == "ready":
-            ready.append(c)
-        else:
-            notes.append(f"Connector {c.name} unavailable ({st.state}): {st.reason}")
-    names = [t.name for c in ready for t in c.tools()]
-    dup = sorted({n for n in names if names.count(n) > 1})
-    if dup:
-        raise ValueError(f"Connector tool names collide: {dup}")
+            log.exception("Connector %s failed to start", name)
+            notes.append(f"Connector {name} unavailable (error): {type(e).__name__}: {e}")
+            continue
+        clash = sorted(set(tool_names) & taken | {n for n in tool_names if tool_names.count(n) > 1})
+        if clash:
+            notes.append(f"Connector {name} unavailable: tool names {clash} collide with another connector's")
+            continue
+        taken.update(tool_names)
+        ready.append(c)
     return ready, notes
 
 
 def prune_rooms(rooms_dir: Path, keep_days: int) -> None:
-    if not rooms_dir.is_dir():
-        return
-    cutoff = time.time() - keep_days * 86400
-    for d in rooms_dir.iterdir():
-        if d.is_dir() and d.stat().st_mtime < cutoff:
-            shutil.rmtree(d, ignore_errors=True)
+    """Delete data rooms older than keep_days. Fail-open: a cleanup problem is logged, never raised."""
+    try:
+        if not rooms_dir.is_dir():
+            return
+        cutoff = time.time() - keep_days * 86400
+        for d in rooms_dir.iterdir():
+            try:
+                if d.is_dir() and d.stat().st_mtime < cutoff:
+                    shutil.rmtree(d, ignore_errors=True)
+            except OSError:
+                log.warning("Could not prune data room %s", d, exc_info=True)
+    except OSError:
+        log.warning("Could not prune data rooms in %s", rooms_dir, exc_info=True)
 
 
 def _bind(c: Connector, t: ConnectorTool):

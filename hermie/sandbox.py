@@ -222,6 +222,14 @@ class Sandbox:
         return not (p.is_file() and any(fnmatch.fnmatch(p.name, n)
                                         for n in (*self.s.sandbox_deny_names, *_ATTACHED_DENY_NAMES)))
 
+    def writable(self, path: Path) -> bool:
+        """Whether sandboxed commands may write to path: the workspace, the sandbox temp dir and the per-user
+        temp/cache dirs are writable (build_profile); everything else is not. Always True without the sandbox."""
+        if not self.sandboxed:
+            return True
+        p = Path(os.path.realpath(path))
+        return any(p.is_relative_to(os.path.realpath(r)) for r in (self.workspace, self.tmpdir, *_user_temp_dirs()))
+
     @contextmanager
     def grant_read(self, paths: Iterable[Path]) -> Iterator[tuple[Path, ...]]:
         """Make the files/directories the user attached to a task readable (never writable) for its duration:

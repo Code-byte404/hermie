@@ -153,6 +153,10 @@ class Hermie:
         self.session.connector_states = StateStore(s.connector_dir)
         self.session.connector_log = JsonlLog(s.connector_log_path)
         prune_rooms(s.connector_rooms_dir, s.connector_data_keep_days)
+        if self.connectors and self.session.sandbox.writable(s.connector_rooms_dir):
+            self.startup_notes.append(
+                f"Connector data rooms ({s.connector_rooms_dir}) are inside a directory sandboxed commands can write "
+                "to, so the data room would not be read-only; move HERMIE_DATA_DIR outside the workspace and temp dirs")
         self.session.web = web or None
         self.session.screen = ScreenCapture(s) if s.mac_tools else None
         self.router = EntryRouter(s, judge, gate, self.scorer)
@@ -247,9 +251,6 @@ class Hermie:
                        project_doc=project_doc.load(self.s.workspace, include_lessons=not self.s.lessons_enabled),
                        flow=FlowState(task=task, force=force))
         st.host = self
-        if self.connectors:
-            st.data_room = self.s.connector_rooms_dir / f"{time.strftime('%Y%m%d-%H%M%S')}-{uuid.uuid4().hex[:6]}"
-            st.data_room.mkdir(parents=True, exist_ok=True)
         if business or self.session.business:
             st.mark_business("prefix" if business else "session")
         await self._sync_lessons()
@@ -258,6 +259,9 @@ class Hermie:
         self.bus.emit(ChatMessage("user", task))
         result: Optional[TaskResult] = None
         try:
+            if self.connectors:
+                st.data_room = self.s.connector_rooms_dir / f"{time.strftime('%Y%m%d-%H%M%S')}-{uuid.uuid4().hex[:6]}"
+                st.data_room.mkdir(parents=True, exist_ok=True)
             with self.session.sandbox.grant_read([*read_roots, *([st.data_room] if st.data_room else [])]):
                 result = await self.task_graph.run(state=st, deps=self)
             routing = st.flow.routing
