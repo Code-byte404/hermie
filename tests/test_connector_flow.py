@@ -264,20 +264,23 @@ async def test_prefixed_business_task_room_granted_from_the_start(make_agent, se
         shutil.rmtree(data_dir, ignore_errors=True)
 
 
-def test_build_connectors_ga4_auto_and_explicit(settings, monkeypatch, tmp_path):
+def test_build_connectors_ga4_is_opt_in(settings, monkeypatch, tmp_path):
     import hermie.connectors.registry as reg
     monkeypatch.setattr(reg.shutil, "which", lambda name: None)
     monkeypatch.setattr(reg, "find_uvx", lambda configured: None)
     settings.connectors, settings.asc_path = None, ""
-    assert build_connectors(settings) == ([], [])                       # auto: nothing installed, silent
+    assert build_connectors(settings) == ([], [])
     settings.connectors = ["ga4"]
-    conns, notes = build_connectors(settings)
+    conns, notes = build_connectors(settings)                           # explicit, prerequisites missing
     assert len(conns) == 1 and conns[0].name == "ga4" and conns[0].status().state == "missing"
+    ready, rnotes = ready_connectors(conns)
+    assert ready == [] and any("ga4" in n for n in rnotes)
     uvx = tmp_path / "uvx"
     uvx.write_text("")
     monkeypatch.setattr(reg, "find_uvx", lambda configured: uvx)
     settings.ga4_adc_path = tmp_path / "adc.json"
     settings.ga4_adc_path.write_text('{"quota_project_id": "p"}')
     settings.connectors = None
-    conns, _ = build_connectors(settings)
-    assert [c.name for c in conns] == ["ga4"]                          # auto: uvx + mcp + ADC present
+    assert build_connectors(settings) == ([], [])                       # auto never enables ga4
+    settings.connectors = ["ga4"]
+    assert [c.name for c in build_connectors(settings)[0]] == ["ga4"]

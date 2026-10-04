@@ -1192,12 +1192,19 @@ class HermieApp(App):
             self.speaker.close()
         except Exception:
             pass
+        await self._close_agent()
+        self.exit()
+
+    async def _close_agent(self) -> None:
+        """Stop connector processes. Idempotent; runs on every exit path (quit key, app.exit(), on_unmount)."""
         if self._agent is not None:
             try:
                 await self._agent.aclose()
             except Exception:
                 pass
-        self.exit()
+
+    async def on_unmount(self) -> None:
+        await self._close_agent()
 
     # ------------------------------------------------------------ approval
     async def _approve(self, req: ApprovalRequest) -> Approval:

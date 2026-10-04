@@ -940,3 +940,18 @@ async def test_choice_screen_shows_markup_names_literally(make_agent):
         assert app.screen.query_one("#choice-list", OptionList).get_option_at_index(0).prompt.plain == "My [bold]App"
         await pilot.press("enter")
         assert await task == "My [bold]App"
+
+
+async def test_exit_closes_the_agent(make_agent):
+    agent = make_agent(FakeJudge(task="repetitive"))
+    calls = []
+
+    async def spy():
+        calls.append(1)
+    agent.aclose = spy
+    app = HermieApp(agent=agent, perf=FakeSampler())
+    async with app.run_test(size=(160, 45)) as pilot:
+        await pilot.pause(0.1)
+        app.exit()
+        await pilot.pause(0.3)
+    assert calls

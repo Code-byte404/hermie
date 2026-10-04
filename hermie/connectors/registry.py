@@ -1,7 +1,6 @@
 """Which connectors exist, which are ready, and how their tools reach the executor."""
 from __future__ import annotations
 
-import importlib.util
 import logging
 import shutil
 import time
@@ -36,9 +35,8 @@ def build_connectors(s: "Settings") -> tuple[list[Connector], list[str]]:
     names = s.connectors
     asc_bin = s.asc_path or shutil.which("asc")
     uvx = find_uvx(s.uvx_path)
-    if names is None:   # auto: what is installed and set up, silently nothing otherwise
-        names = (["asc"] if asc_bin else []) + (
-            ["ga4"] if uvx and importlib.util.find_spec("mcp") is not None and s.ga4_adc_path.is_file() else [])
+    if names is None:   # auto: asc when installed, silently nothing otherwise; ga4 is opt-in (CONNECTORS=ga4)
+        names = ["asc"] if asc_bin else []
     out: list[Connector] = []
     notes: list[str] = []
     for n in names:

@@ -282,8 +282,10 @@ async def test_ga4_figure_never_leaves(make_agent, settings, tmp_path):
                 final=final(answer="US had SESSIONS 4242.17"))
     agent = make_agent(FakeJudge(task="complex", cx=1, verify=0.1, needs_ws=False), executor=ex, cloud=cloud,
                        planner=planner, connectors=[ga4])
-    r = await agent.run("how is the website doing?")
-    await agent.aclose()
+    try:
+        await agent.run("how is the website doing?")
+    finally:
+        await agent.aclose()
     assert agent.session.business and not cloud.seen and not planner.seen
     assert "SESSIONS 4242.17" in ex.sent_text()
     for path in (settings.outbound_log_path, settings.trajectory_log_path, settings.workspace / "AGENT.md"):
@@ -292,9 +294,48 @@ async def test_ga4_figure_never_leaves(make_agent, settings, tmp_path):
 
 async def test_list_and_set_default_property(make_agent, tmp_path):
     agent = make_agent(connectors=[_ga4(tmp_path)])
-    assert await agent.list_properties() == ["Alpha Web", "Alpha App", "Beta Site"]
-    assert await agent.set_default_property("beta") == "Beta Site"
-    assert agent.session.connector_session["ga4"]["property"] == "333"
-    with pytest.raises(LookupError):
-        await agent.set_default_property("alpha")                      # ambiguous
+    try:
+        assert await agent.list_properties() == ["Alpha Web", "Alpha App", "Beta Site"]
+        assert await agent.set_default_property("beta") == "Beta Site"
+        assert agent.session.connector_session["ga4"]["property"] == "333"
+        with pytest.raises(LookupError):
+            await agent.set_default_property("alpha")                  # ambiguous
+    finally:
+        await agent.aclose()
+
+
+async def test_aclose_idempotent_tolerant_and_closed_for_good(make_agent, tmp_path, monkeypatch):
+    import asyncio
+    import hermie.core as core
+    from hermie.connectors.mcp_session import McpConnectionError
+    closed = []
+
+    class NoTools(FakeConnector):
+        def tools(self):
+            return []   # avoid tool-name collisions between the fakes
+
+    class Boom(NoTools):
+        name = "boom"
+        async def aclose(self):
+            raise RuntimeError("secret detail")
+
+    class Slow(NoTools):
+        name = "slow"
+        async def aclose(self):
+            await asyncio.sleep(30)
+
+    class Good(NoTools):
+        name = "good"
+        async def aclose(self):
+            closed.append(1)
+
+    monkeypatch.setattr(core, "CLOSE_TIMEOUT_S", 0.2)
+    ga4 = _ga4(tmp_path)
+    agent = make_agent(connectors=[Boom(), Slow(), Good(), ga4])
+    t0 = asyncio.get_running_loop().time()
     await agent.aclose()
+    await agent.aclose()                                                # twice is fine
+    assert asyncio.get_running_loop().time() - t0 < 5
+    assert len(closed) == 2                                             # others still closed
+    with pytest.raises(McpConnectionError, match="closed"):
+        await ga4.request("tools/list")

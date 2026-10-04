@@ -35,6 +35,8 @@ from .web import WebClient
 
 log = logging.getLogger(__name__)
 
+CLOSE_TIMEOUT_S = 5.0   # per connector, so quitting can never hang on a stuck MCP server
+
 
 def _mmss(seconds: float) -> str:
     s = max(0, int(seconds))
@@ -309,8 +311,8 @@ class Hermie:
             close = getattr(conn, "aclose", None)
             if close is not None:
                 try:
-                    await close()
-                except Exception as e:
+                    await asyncio.wait_for(close(), CLOSE_TIMEOUT_S)
+                except Exception as e:   # includes TimeoutError
                     log.warning("Closing connector %s failed (%s)", getattr(conn, "name", "?"), type(e).__name__)
 
     async def run(self, task: str, material: str = "", force: Force = Force.NONE,
