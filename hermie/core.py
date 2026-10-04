@@ -35,7 +35,7 @@ from .web import WebClient
 
 log = logging.getLogger(__name__)
 
-CLOSE_TIMEOUT_S = 5.0   # per connector, so quitting can never hang on a stuck MCP server
+CLOSE_TIMEOUT_S = 8.0   # per connector, so quitting never hangs on a stuck MCP server (> grace + mcp teardown 2+2 s)
 
 
 def _mmss(seconds: float) -> str:

@@ -11,7 +11,15 @@ Errors callers see from `request`:
 - `McpConnectionError` (a ConnectionError): the server could not start, went away, or was closed. A request that never
   reached a dead server is retried once on a new one, so an idle server death costs no failed request.
 - `asyncio.TimeoutError`: the timeout ran out (starting, waiting in the queue, or in the call itself).
-- anything else (e.g. `mcp.shared.exceptions.McpError` from a live server) passes through unchanged."""
+- anything else (e.g. `mcp.shared.exceptions.McpError` from a live server) passes through unchanged.
+
+Child environment: the given `env`, plus whatever mcp's `stdio_client` merges in underneath it from its
+`get_default_environment()` (on macOS/Linux HOME, LOGNAME, PATH, SHELL, TERM, USER from Hermie's environment; a key
+given in `env` wins). Nothing else from `os.environ` reaches the server.
+
+Server stderr goes to `errlog_path`: truncated on the first start in each Hermie process, appended across restarts
+within the process (crash output stays), started over once it passes ~1 MB. The `mcp` logger is set to CRITICAL when
+the first session starts: mcp logs a snippet of non-JSON server stdout through logger.exception."""
 from __future__ import annotations
 
 import asyncio
@@ -23,8 +31,11 @@ log = logging.getLogger(__name__)
 
 _STOP = "__stop__"          # queue item from aclose: end the session cleanly
 _LOST = "__lost__"          # queue item from the pump: the server's stdout closed
-_CLOSE_GRACE_S = 3.0
+# mcp's own teardown after the grace can take 2 s (exit on stdin EOF) + 2 s (SIGTERM) before SIGKILL; grace plus
+# that stays inside Hermie's per-connector close bound (core.CLOSE_TIMEOUT_S, 8 s)
+_CLOSE_GRACE_S = 1.0
 _ERRLOG_MAX_BYTES = 1_000_000
+_started_logs: set[Path] = set()   # errlog paths already started over in this process
 
 
 class McpConnectionError(ConnectionError):
@@ -170,13 +181,17 @@ class McpSession:
     # ---- owner task ----
 
     def _open_errlog(self):
-        """Server stderr, appended across restarts (the crash output stays), started over once it passes ~1 MB."""
+        """Server stderr: started over on the first start in this process, then appended across restarts (the crash
+        output stays), started over again once it passes ~1 MB."""
         self.errlog_path.parent.mkdir(parents=True, exist_ok=True)
+        key = self.errlog_path.resolve()
         try:
             too_big = self.errlog_path.stat().st_size > _ERRLOG_MAX_BYTES
         except FileNotFoundError:
             too_big = False
-        return open(self.errlog_path, "w" if too_big else "a", encoding="utf-8")
+        f = open(self.errlog_path, "w" if too_big or key not in _started_logs else "a", encoding="utf-8")
+        _started_logs.add(key)
+        return f
 
     async def _serve(self, owner: _Owner) -> None:
         """Own the process and the session for their whole life. Outcomes:
@@ -216,6 +231,7 @@ class McpSession:
         from mcp import ClientSession, StdioServerParameters
         from mcp.client.stdio import stdio_client
 
+        logging.getLogger("mcp").setLevel(logging.CRITICAL)   # see the module docstring
         params = StdioServerParameters(command=self.command[0], args=self.command[1:], env=self.env, cwd=self.cwd)
         async with stdio_client(params, errlog=errlog) as (read, write):
             to_session, session_read = anyio.create_memory_object_stream(0)

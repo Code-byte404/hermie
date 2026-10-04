@@ -22,6 +22,10 @@ def make(tmp_path, **env):
     return McpSession([sys.executable, FAKE], base, tmp_path, tmp_path / "fake.stderr.log")
 
 
+# set by the child Python itself (PEP 538 C-locale coercion when no locale is given), not passed by Hermie
+_OS_ADDED_ENV = {"LC_CTYPE"}
+
+
 def text(result) -> str:
     return "\n".join(c.text for c in result.content if getattr(c, "type", "") == "text")
 
@@ -38,11 +42,17 @@ async def test_lazy_start_and_call(tmp_path):
 
 
 async def test_env_and_cwd_are_exactly_given(tmp_path, monkeypatch):
+    """The child gets the given env plus mcp's own inherited defaults (HOME, LOGNAME, PATH, SHELL, TERM, USER;
+    given values win) and nothing else from Hermie's environment."""
+    from mcp.client.stdio import DEFAULT_INHERITED_ENV_VARS
     monkeypatch.setenv("SECRET_FOR_TEST", "leak")
     s = make(tmp_path)
     data = json.loads(text(await s.request("call_tool", "echo_env", {}, timeout=30)))
     await s.aclose()
     assert "SECRET_FOR_TEST" not in data["env"] and data["env"]["MARKER"] == "fixed"
+    allowed = set(s.env) | set(DEFAULT_INHERITED_ENV_VARS) | _OS_ADDED_ENV
+    assert set(data["env"]) <= allowed, set(data["env"]) - allowed
+    assert data["env"]["HOME"] == str(tmp_path)                    # the given value wins over mcp's default
     assert os.path.realpath(data["cwd"]) == os.path.realpath(tmp_path)
 
 
@@ -171,12 +181,39 @@ async def test_unusable_errlog_fails_the_start_fast(tmp_path):
 
 async def test_errlog_is_appended_and_bounded(tmp_path, monkeypatch):
     log_path = tmp_path / "fake.stderr.log"
-    log_path.write_text("earlier crash\n")
+    log_path.write_text("output of an earlier Hermie process\n")
     s = make(tmp_path)
     await s.request("list_tools", timeout=30)
     await s.aclose()
-    assert log_path.read_text().startswith("earlier crash\n")
+    assert "earlier Hermie process" not in log_path.read_text()      # first start in this process: truncated
+    with open(log_path, "a") as f:
+        f.write("earlier crash\n")
+    await s.request("list_tools", timeout=30)                        # a restart within this process appends
+    await s.aclose()
+    assert "earlier crash\n" in log_path.read_text()
+    s2 = make(tmp_path)                                              # another session on the same file too
+    await s2.request("list_tools", timeout=30)
+    await s2.aclose()
+    assert "earlier crash\n" in log_path.read_text()
     monkeypatch.setattr(mcp_session, "_ERRLOG_MAX_BYTES", 5)
     await s.request("list_tools", timeout=30)
     await s.aclose()
     assert "earlier crash" not in log_path.read_text()
+
+
+async def test_mcp_logger_is_silenced_once_a_session_starts(tmp_path):
+    """mcp logs a snippet of non-JSON server stdout via logger.exception; that text must not reach Hermie's log."""
+    import logging
+    logging.getLogger("mcp").setLevel(logging.NOTSET)
+    s = make(tmp_path)
+    await s.request("list_tools", timeout=30)
+    await s.aclose()
+    assert logging.getLogger("mcp").level == logging.CRITICAL
+
+
+def test_close_grace_fits_hermies_close_bound():
+    """Worst case: grace, then mcp's teardown waits for stdin EOF exit and for SIGTERM before SIGKILL."""
+    from mcp.client.stdio import PROCESS_TERMINATION_TIMEOUT
+    from hermie import core
+    assert mcp_session._CLOSE_GRACE_S == 1.0 and core.CLOSE_TIMEOUT_S == 8.0
+    assert mcp_session._CLOSE_GRACE_S + 2 * PROCESS_TERMINATION_TIMEOUT + 2 <= core.CLOSE_TIMEOUT_S
