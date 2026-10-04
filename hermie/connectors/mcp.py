@@ -101,6 +101,8 @@ class McpConnector:
                                    "dimensions and try again.", label=tool, ok=False)
         except Exception as e:
             log.error("MCP connector %s: %s failed (%s)", self.name, tool, type(e).__name__)
+            if type(e).__name__ == "McpError":     # the server answered with a protocol error: the tool failed
+                return ConnectorResult(cap_text(f"{tool} failed: {e}", 2000), label=tool, ok=False)
             return ConnectorResult(f"{self.title} is not reachable ({type(e).__name__}: {e}).", label=tool, ok=False)
         text = _text(result)
         if getattr(result, "isError", False):
@@ -117,6 +119,8 @@ class McpConnector:
             if self._tool_info is None:
                 listed = await self.request("list_tools")
                 self._tool_info = {t.name: (t.description or "", t.inputSchema) for t in listed.tools}
+        except asyncio.TimeoutError:
+            return ConnectorResult(f"{self.title} timed out after {self.timeout:.0f}s.", label="help", ok=False)
         except Exception as e:
             log.error("MCP connector %s: list_tools failed (%s)", self.name, type(e).__name__)
             return ConnectorResult(f"{self.title} is not reachable ({type(e).__name__}).", label="help", ok=False)

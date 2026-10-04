@@ -1,4 +1,5 @@
 """McpConnector against the fake server: allowlist, hook, room output, errors, help."""
+import asyncio
 import json
 import sys
 from pathlib import Path
@@ -124,3 +125,40 @@ async def test_preview_is_capped(tmp_path):
     r = await tool(conn, "fake").call({"tool": "get_account_summaries", "arguments": {}}, Ctx(tmp_path))
     await conn.aclose()
     assert len(r.preview) < 200 and "truncated" in r.preview
+
+
+class _RaisingSession:
+    def __init__(self, exc):
+        self.exc = exc
+
+    async def request(self, method, *args, timeout=None):
+        raise self.exc
+
+    async def aclose(self):
+        pass
+
+
+def _stub_conn(tmp_path, exc):
+    return McpConnector(spec(tmp_path), timeout=30, preview_chars=4000, session_factory=lambda s: _RaisingSession(exc))
+
+
+async def test_tool_level_mcp_error_reads_as_tool_failure(tmp_path):
+    from mcp.shared.exceptions import McpError
+    from mcp.types import ErrorData
+    conn = _stub_conn(tmp_path, McpError(ErrorData(code=-32602, message="Invalid params: bad date")))
+    r = await tool(conn, "fake").call({"tool": "run_report", "arguments": {}}, Ctx(tmp_path))
+    assert not r.ok and r.label == "run_report"
+    assert r.preview.startswith("run_report failed:") and "bad date" in r.preview and "not reachable" not in r.preview
+
+
+async def test_connection_error_still_reads_as_outage(tmp_path):
+    from hermie.connectors.mcp_session import McpConnectionError
+    conn = _stub_conn(tmp_path, McpConnectionError("server died"))
+    r = await tool(conn, "fake").call({"tool": "run_report", "arguments": {}}, Ctx(tmp_path))
+    assert not r.ok and "not reachable" in r.preview
+
+
+async def test_help_timeout_message(tmp_path):
+    conn = _stub_conn(tmp_path, asyncio.TimeoutError())
+    r = await tool(conn, "fake_help").call({"tool": "run_report"}, Ctx(tmp_path))
+    assert not r.ok and "timed out" in r.preview
