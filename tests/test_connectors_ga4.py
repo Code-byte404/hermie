@@ -1,12 +1,13 @@
 """Ga4Connector: status checks, child env, property catalog and resolution (fake server stands in for analytics-mcp)."""
 import json
+import re
 import sys
 import time
 from pathlib import Path
 
 import pytest
 
-from hermie.connectors.ga4 import (GA4_SERVER_VERSION, GA4_TOOLS, Ga4Connector, find_uvx, ga4_status,
+from hermie.connectors.ga4 import (GA4_RESOLVED_BEFORE, GA4_SERVER_VERSION, GA4_TOOLS, Ga4Connector, find_uvx, ga4_status,
                                    parse_summaries, resolve_property)
 
 FAKE = str(Path(__file__).parent / "fake_mcp_server.py")
@@ -52,7 +53,8 @@ def test_spec_command_env_and_allowlist(tmp_path, monkeypatch):
     conn = Ga4Connector(uvx=uvx, adc_path=adc(tmp_path), cwd=tmp_path / "cwd", timeout=30, preview_chars=4000,
                         mcp_available=True)
     s = conn.spec
-    assert s.command == [str(uvx), f"analytics-mcp=={GA4_SERVER_VERSION}"]
+    assert s.command == [str(uvx), "--exclude-newer", GA4_RESOLVED_BEFORE, f"analytics-mcp=={GA4_SERVER_VERSION}"]
+    assert re.fullmatch(r"\d{4}-\d{2}-\d{2}T00:00:00Z", GA4_RESOLVED_BEFORE)
     assert s.allow_tools == GA4_TOOLS and len(GA4_TOOLS) == 9 and s.cwd == tmp_path / "cwd"
     assert s.env["GOOGLE_CLOUD_PROJECT"] == "my-proj" and s.env["GOOGLE_APPLICATION_CREDENTIALS"] == str(adc(tmp_path))
     assert "SECRET_FOR_TEST" not in s.env and str(uvx.parent) in s.env["PATH"].split(":")

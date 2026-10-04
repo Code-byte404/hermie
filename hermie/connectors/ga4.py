@@ -1,6 +1,6 @@
 """GA4 through Google's official analytics-mcp server (read-only: it requests only the analytics.readonly scope).
 
-Runs as `uvx analytics-mcp==<pinned>` in uv's isolated environment, outside the sandbox, with Application Default
+Runs as `uvx --exclude-newer <date> analytics-mcp==<pinned>` (dependencies frozen at that date) in uv's isolated environment, outside the sandbox, with Application Default
 Credentials of the user's Google account. The model names properties; this module resolves names to property IDs
 from a cached account summary, so the user never types an ID."""
 from __future__ import annotations
@@ -18,6 +18,9 @@ from .mcp import McpConnector, McpServerSpec
 from .mcp_session import McpSession
 
 GA4_SERVER_VERSION = "0.7.0"
+# uv resolves analytics-mcp's dependencies (google-adk, google-auth, grpc, ...) only from files uploaded before this
+# moment, so a cache cleanup can never pull in a newer transitive release. Move it together with GA4_SERVER_VERSION.
+GA4_RESOLVED_BEFORE = "2026-10-04T00:00:00Z"
 GA4_TOOLS = frozenset({"get_account_summaries", "get_property_details", "list_google_ads_links",
                        "list_property_annotations", "run_report", "run_realtime_report", "run_funnel_report",
                        "run_conversions_report", "get_custom_dimensions_and_metrics"})
@@ -124,7 +127,8 @@ class Ga4Connector(McpConnector):
             if os.environ.get(key):
                 env[key] = os.environ[key]
         spec = McpServerSpec(name="ga4", title="Google Analytics 4",
-                             command=command or [str(uvx), f"analytics-mcp=={GA4_SERVER_VERSION}"],
+                             command=command or [str(uvx), "--exclude-newer", GA4_RESOLVED_BEFORE,
+                                                 f"analytics-mcp=={GA4_SERVER_VERSION}"],
                              env=env, allow_tools=GA4_TOOLS, instructions=GA4_INSTRUCTIONS, cwd=Path(cwd))
         super().__init__(spec, timeout=timeout, preview_chars=preview_chars, session_factory=session_factory)
 
