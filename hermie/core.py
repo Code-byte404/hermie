@@ -256,11 +256,14 @@ class Hermie:
                                      + ("; business lock lifted" if locked else "")))
         return True
 
-    def _asc(self):
-        conn = self.connectors.get("asc")
+    def _connector(self, name: str):
+        conn = self.connectors.get(name)
         if conn is None:
-            raise LookupError("The asc connector is not available (see the startup notes)")
+            raise LookupError(f"The {name} connector is not available (see the startup notes)")
         return conn
+
+    def _asc(self):
+        return self._connector("asc")
 
     async def list_apps(self, refresh: bool = True) -> list[str]:
         conn, store = self._asc(), self.session.connector_states
@@ -280,6 +283,35 @@ class Hermie:
             raise LookupError(f"{'No app' if not hits else 'Several apps'} match {name!r}")
         self.session.connector_session.setdefault("asc", {})["app"] = hits[0]["id"]
         return hits[0]["name"]
+
+    async def list_properties(self, refresh: bool = True) -> list[str]:
+        conn, store = self._connector("ga4"), self.session.connector_states
+        state = store.load("ga4")
+        props = await conn.properties(state, refresh=refresh)
+        store.save("ga4", {"catalog": state["catalog"]})   # only what changed: other keys may be newer on disk
+        return [p["name"] for p in props]
+
+    async def set_default_property(self, name: str) -> str:
+        from .connectors.ga4 import resolve_property
+        conn, store = self._connector("ga4"), self.session.connector_states
+        state = store.load("ga4")
+        hits = resolve_property(name, await conn.properties(state))
+        if "catalog" in state:
+            store.save("ga4", {"catalog": state["catalog"]})
+        if len(hits) != 1:
+            raise LookupError(f"{'No GA4 property' if not hits else 'Several GA4 properties'} match {name!r}")
+        self.session.connector_session.setdefault("ga4", {})["property"] = hits[0]["id"]
+        return hits[0]["name"]
+
+    async def aclose(self) -> None:
+        """Stop connector processes (MCP servers). Safe to call more than once; errors are logged, never raised."""
+        for conn in self.connectors.values():
+            close = getattr(conn, "aclose", None)
+            if close is not None:
+                try:
+                    await close()
+                except Exception as e:
+                    log.warning("Closing connector %s failed (%s)", getattr(conn, "name", "?"), type(e).__name__)
 
     async def run(self, task: str, material: str = "", force: Force = Force.NONE,
                   read_roots: Sequence[Path] = (), business: bool = False) -> TaskResult:

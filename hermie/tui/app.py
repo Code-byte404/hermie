@@ -1192,6 +1192,11 @@ class HermieApp(App):
             self.speaker.close()
         except Exception:
             pass
+        if self._agent is not None:
+            try:
+                await self._agent.aclose()
+            except Exception:
+                pass
         self.exit()
 
     # ------------------------------------------------------------ approval

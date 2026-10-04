@@ -1,6 +1,8 @@
 """Business data stays on this machine: routing, session lock, and the planted figure never reaching the cloud."""
 import json
 
+import pytest
+
 from hermie.events import Notice, RouteDecided
 from hermie.policy import BUSINESS_DATA_QUESTION
 
@@ -258,3 +260,41 @@ async def test_list_apps_saves_only_the_catalog(make_agent):
     store.save("asc", {"vendor": "111", "catalog": {}})
     await agent.set_default_app("beta")
     assert store.load("asc")["vendor"] == "222"
+
+
+def _ga4(tmp_path):
+    import sys
+    from pathlib import Path as _P
+    pytest.importorskip("mcp")
+    from hermie.connectors.ga4 import Ga4Connector
+    uvx = tmp_path / "uvx"
+    uvx.write_text("")
+    adc = tmp_path / "adc.json"
+    adc.write_text('{"quota_project_id": "p"}')
+    return Ga4Connector(uvx=uvx, adc_path=adc, cwd=tmp_path, timeout=30, preview_chars=4000, mcp_available=True,
+                        command=[sys.executable, str(_P(__file__).parent / "fake_mcp_server.py")])
+
+
+async def test_ga4_figure_never_leaves(make_agent, settings, tmp_path):
+    ga4 = _ga4(tmp_path)
+    cloud, planner = Script(name="cloud"), Script(name="planner")
+    ex = Script([tool("ga4", tool="run_report", arguments={"property_id": "Beta Site"})],
+                final=final(answer="US had SESSIONS 4242.17"))
+    agent = make_agent(FakeJudge(task="complex", cx=1, verify=0.1, needs_ws=False), executor=ex, cloud=cloud,
+                       planner=planner, connectors=[ga4])
+    r = await agent.run("how is the website doing?")
+    await agent.aclose()
+    assert agent.session.business and not cloud.seen and not planner.seen
+    assert "SESSIONS 4242.17" in ex.sent_text()
+    for path in (settings.outbound_log_path, settings.trajectory_log_path, settings.workspace / "AGENT.md"):
+        assert not path.exists() or "4242.17" not in path.read_text()
+
+
+async def test_list_and_set_default_property(make_agent, tmp_path):
+    agent = make_agent(connectors=[_ga4(tmp_path)])
+    assert await agent.list_properties() == ["Alpha Web", "Alpha App", "Beta Site"]
+    assert await agent.set_default_property("beta") == "Beta Site"
+    assert agent.session.connector_session["ga4"]["property"] == "333"
+    with pytest.raises(LookupError):
+        await agent.set_default_property("alpha")                      # ambiguous
+    await agent.aclose()

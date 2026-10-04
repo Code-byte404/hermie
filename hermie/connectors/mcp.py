@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import Any, Callable, Optional
 
 from .base import ConnectorContext, ConnectorResult, ConnectorTool, Status
-from .mcp_session import McpSession
+from .mcp_session import McpConnectionError, McpSession
 from .preview import cap_text, preview_json
 
 log = logging.getLogger(__name__)
@@ -43,6 +43,7 @@ class McpConnector:
         self.timeout, self.preview_chars = timeout, preview_chars
         self._factory = session_factory or _default_session
         self._session: Optional[McpSession] = None
+        self._closed = False
         self._tool_info: Optional[dict] = None     # name -> (description, input schema), per session of Hermie
 
     # ------------------------------------------------------------ protocol
@@ -74,11 +75,14 @@ class McpConnector:
 
     # ------------------------------------------------------------ transport
     async def request(self, method: str, *args: Any) -> Any:
+        if self._closed:
+            raise McpConnectionError("connector closed")
         if self._session is None:
             self._session = self._factory(self.spec)
         return await self._session.request(method, *args, timeout=self.timeout)
 
     async def aclose(self) -> None:
+        self._closed = True   # no server can be started after this
         if self._session is not None:
             await self._session.aclose()
 

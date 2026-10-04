@@ -1,6 +1,7 @@
 """Which connectors exist, which are ready, and how their tools reach the executor."""
 from __future__ import annotations
 
+import importlib.util
 import logging
 import shutil
 import time
@@ -14,6 +15,7 @@ from pydantic_ai.tools import ToolDefinition
 
 from .asc import AscConnector
 from .base import Connector, ConnectorTool, Status
+from .ga4 import Ga4Connector, find_uvx
 from .guard import run_connector_tool
 
 if TYPE_CHECKING:
@@ -24,7 +26,7 @@ log = logging.getLogger(__name__)
 
 CONNECTOR_INSTRUCTIONS = """
 
-Business-data tools (listed below as tools) read the user's own App Store / advertising data, read-only. Calling one
+Business-data tools (listed below as tools) read the user's own App Store, advertising and analytics data, read-only. Calling one
 keeps the whole task on this machine. Their full outputs are saved to read-only files whose paths the tool returns:
 compute totals, changes and rankings from those files with python in run_command instead of estimating from the
 preview."""
@@ -33,8 +35,10 @@ preview."""
 def build_connectors(s: "Settings") -> tuple[list[Connector], list[str]]:
     names = s.connectors
     asc_bin = s.asc_path or shutil.which("asc")
-    if names is None:                       # auto: asc when installed, silently nothing otherwise
-        names = ["asc"] if asc_bin else []
+    uvx = find_uvx(s.uvx_path)
+    if names is None:   # auto: what is installed and set up, silently nothing otherwise
+        names = (["asc"] if asc_bin else []) + (
+            ["ga4"] if uvx and importlib.util.find_spec("mcp") is not None and s.ga4_adc_path.is_file() else [])
     out: list[Connector] = []
     notes: list[str] = []
     for n in names:
@@ -44,8 +48,11 @@ def build_connectors(s: "Settings") -> tuple[list[Connector], list[str]]:
                 continue
             out.append(AscConnector(Path(asc_bin), timeout=s.connector_timeout, preview_chars=s.connector_preview_chars,
                                     cwd=s.connector_dir))
+        elif n == "ga4":
+            out.append(Ga4Connector(uvx=uvx, adc_path=s.ga4_adc_path, cwd=s.connector_dir,
+                                    timeout=s.connector_timeout, preview_chars=s.connector_preview_chars))
         else:
-            notes.append(f"Unknown connector {n!r} in CONNECTORS (known: asc)")
+            notes.append(f"Unknown connector {n!r} in CONNECTORS (known: asc, ga4)")
     return out, notes
 
 

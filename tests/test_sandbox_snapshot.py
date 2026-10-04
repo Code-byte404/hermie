@@ -444,3 +444,18 @@ def test_absurd_pid_in_stale_profile_name_does_not_crash_startup(settings):
     bogus.write_text("(version 1)")
     sb = Sandbox(settings)
     assert sb.profile_path.exists() and not bogus.exists()
+
+
+async def test_sandbox_cannot_read_google_credentials_dir(settings):
+    """ADC lives under ~/.config/gcloud; nothing under ~/.config is readable from the sandbox."""
+    import shutil
+    import uuid
+    probe = Path.home() / ".config" / f"hermie-test-{uuid.uuid4().hex[:8]}"
+    probe.mkdir(parents=True)
+    try:
+        (probe / "application_default_credentials.json").write_text('{"refresh_token": "x"}')
+        sb = Sandbox(settings)
+        r = await sb.run_shell(f"cat {probe}/application_default_credentials.json")
+        assert r.exit_code != 0 and "refresh_token" not in r.stdout
+    finally:
+        shutil.rmtree(probe, ignore_errors=True)
