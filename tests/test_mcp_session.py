@@ -2,6 +2,7 @@
 import asyncio
 import json
 import os
+import signal
 import sys
 from pathlib import Path
 
@@ -9,6 +10,7 @@ import pytest
 
 pytest.importorskip("mcp")
 
+from hermie.connectors import mcp_session  # noqa: E402
 from hermie.connectors.mcp_session import McpSession  # noqa: E402
 
 FAKE = str(Path(__file__).parent / "fake_mcp_server.py")
@@ -100,3 +102,81 @@ async def test_server_exits_when_parent_closes_pipes(tmp_path):
                                                 stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL)
     proc.stdin.close()
     await asyncio.wait_for(proc.wait(), 15)
+
+
+async def _server_pid(s) -> int:
+    return json.loads(text(await s.request("call_tool", "echo_env", {}, timeout=30)))["pid"]
+
+
+async def test_idle_server_death_is_noticed_and_next_request_works(tmp_path):
+    """A server killed while idle: `running` turns False on its own and the next request starts a new server."""
+    s = make(tmp_path)
+    pid = await _server_pid(s)
+    os.kill(pid, signal.SIGKILL)
+    for _ in range(100):
+        if not s.running:
+            break
+        await asyncio.sleep(0.05)
+    assert not s.running
+    assert "SESSIONS" in text(await s.request("call_tool", "run_report", {"property_id": "1"}, timeout=30))
+    assert await _server_pid(s) != pid
+    await s.aclose()
+
+
+async def test_request_right_after_idle_kill_costs_at_most_one_connection_error(tmp_path):
+    s = make(tmp_path)
+    os.kill(await _server_pid(s), signal.SIGKILL)
+    try:                                         # may race the death: then it fails, but only as a ConnectionError
+        await s.request("call_tool", "run_report", {"property_id": "1"}, timeout=30)
+    except ConnectionError:
+        pass
+    assert "SESSIONS" in text(await s.request("call_tool", "run_report", {"property_id": "1"}, timeout=30))
+    await s.aclose()
+
+
+async def test_aclose_during_slow_start_gives_starter_connection_error(tmp_path, monkeypatch):
+    """aclose from another task while the first launch is still slow: the starter, never cancelled itself, gets a
+    ConnectionError, not CancelledError."""
+    monkeypatch.setattr(mcp_session, "_CLOSE_GRACE_S", 0.2)
+    s = McpSession(["/bin/sh", "-c", f"sleep 2; exec {sys.executable} {FAKE}"],
+                   {"PATH": "/usr/bin:/bin", "HOME": str(tmp_path)}, tmp_path, tmp_path / "slow.log")
+    starter = asyncio.create_task(s.request("list_tools", timeout=30))
+    await asyncio.sleep(0.2)
+    await s.aclose()
+    with pytest.raises(ConnectionError):
+        await starter
+    assert not starter.cancelled() and not s.running
+
+
+async def test_queued_request_timeout_leaves_the_call_in_flight_alone(tmp_path):
+    s = make(tmp_path)
+    await s.request("list_tools", timeout=30)
+    long = asyncio.create_task(s.request("call_tool", "slow_tool", {"seconds": 1.5}, timeout=30))
+    await asyncio.sleep(0.2)
+    with pytest.raises(asyncio.TimeoutError):
+        await s.request("call_tool", "run_report", {"property_id": "1"}, timeout=0.3)
+    assert s.running
+    assert text(await long) == "done"
+    assert "SESSIONS" in text(await s.request("call_tool", "run_report", {"property_id": "1"}, timeout=30))
+    await s.aclose()
+
+
+async def test_unusable_errlog_fails_the_start_fast(tmp_path):
+    (tmp_path / "file").write_text("x")
+    s = McpSession([sys.executable, FAKE], {"PATH": "/usr/bin:/bin"}, tmp_path, tmp_path / "file" / "err.log")
+    with pytest.raises(ConnectionError):
+        await s.request("list_tools", timeout=15)
+    assert not s.running
+
+
+async def test_errlog_is_appended_and_bounded(tmp_path, monkeypatch):
+    log_path = tmp_path / "fake.stderr.log"
+    log_path.write_text("earlier crash\n")
+    s = make(tmp_path)
+    await s.request("list_tools", timeout=30)
+    await s.aclose()
+    assert log_path.read_text().startswith("earlier crash\n")
+    monkeypatch.setattr(mcp_session, "_ERRLOG_MAX_BYTES", 5)
+    await s.request("list_tools", timeout=30)
+    await s.aclose()
+    assert "earlier crash" not in log_path.read_text()

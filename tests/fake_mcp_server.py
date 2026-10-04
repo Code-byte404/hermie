@@ -46,7 +46,7 @@ def fail_tool() -> str:
 
 @app.tool()
 def echo_env() -> str:
-    return json.dumps({"env": dict(os.environ), "cwd": os.getcwd()})
+    return json.dumps({"env": dict(os.environ), "cwd": os.getcwd(), "pid": os.getpid()})
 
 
 @app.tool()
