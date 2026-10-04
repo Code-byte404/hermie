@@ -23,7 +23,7 @@ log = logging.getLogger(__name__)
 
 _STOP = "__stop__"          # queue item from aclose: end the session cleanly
 _LOST = "__lost__"          # queue item from the pump: the server's stdout closed
-_CLOSE_GRACE_S = 5.0
+_CLOSE_GRACE_S = 3.0
 _ERRLOG_MAX_BYTES = 1_000_000
 
 
