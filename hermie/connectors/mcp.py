@@ -44,7 +44,7 @@ class McpConnector:
         self._factory = session_factory or _default_session
         self._session: Optional[McpSession] = None
         self._closed = False
-        self._tool_info: Optional[dict] = None     # name -> (description, input schema), per session of Hermie
+        self._tool_info: Optional[dict] = None     # name -> (description, input schema), kept across server restarts
 
     # ------------------------------------------------------------ protocol
     def status(self) -> Status:
