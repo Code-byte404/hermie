@@ -939,6 +939,30 @@ async def test_ga4_command_lists_and_sets_default(make_agent, monkeypatch):
         assert "Default GA4 property: Beta Site" in texts
 
 
+async def test_ga4_command_explains_failures_and_empty_lists(make_agent, monkeypatch):
+    agent = make_agent()
+    outcomes = [RuntimeError("Google Analytics Admin API has not been used in project p"), asyncio.TimeoutError(), []]
+
+    async def fake_list(refresh=True):
+        out = outcomes.pop(0)
+        if isinstance(out, BaseException):
+            raise out
+        return out
+    monkeypatch.setattr(agent, "list_properties", fake_list)
+    app = HermieApp(agent=agent, perf=FakeSampler())
+    spoken = []
+    monkeypatch.setattr(app.speaker, "speak", lambda phrase: spoken.append(phrase))
+    async with app.run_test(size=(160, 45)) as pilot:
+        for _ in range(3):
+            await _submit(pilot, "/ga4")
+            await pilot.pause(0.3)
+        texts = " ".join(m.source for m in app.query(Markdown) if hasattr(m, "source"))
+        assert "Admin API has not been used in project p" in texts
+        assert "timed out" in texts and "download" in texts
+        assert "No GA4 properties are visible to this Google account." in texts
+        assert not app.query(".notice.error") and not spoken
+
+
 async def test_new_while_busy_keeps_the_lock(make_agent):
     agent = make_agent(connectors=[FakeConnector()])
     agent.session.business = True

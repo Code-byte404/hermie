@@ -290,7 +290,8 @@ class Hermie:
         conn, store = self._connector("ga4"), self.session.connector_states
         state = store.load("ga4")
         props = await conn.properties(state, refresh=refresh)
-        store.save("ga4", {"catalog": state["catalog"]})   # only what changed: other keys may be newer on disk
+        if "catalog" in state:                              # an empty list is never cached
+            store.save("ga4", {"catalog": state["catalog"]})   # only what changed: other keys may be newer on disk
         return [p["name"] for p in props]
 
     async def set_default_property(self, name: str) -> str:

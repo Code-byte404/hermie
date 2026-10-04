@@ -6,7 +6,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Optional
 
@@ -22,7 +22,7 @@ class McpServerSpec:
     name: str
     title: str
     command: list[str]
-    env: dict[str, str]
+    env: dict[str, str] = field(repr=False)     # may hold proxy credentials
     allow_tools: frozenset[str]
     instructions: str
     cwd: Path

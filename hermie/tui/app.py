@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import re
 import time
 from pathlib import Path
@@ -41,6 +42,7 @@ from ..events import (Approval, ApprovalRequest, ChatMessage, ChoiceRequest, Cla
                       RouteDecided, SnapshotTaken, StatsUpdated, Tainted, TaskFinished)
 from ..policy import Force, Route
 
+log = logging.getLogger(__name__)
 
 
 
@@ -1447,11 +1449,17 @@ class HermieApp(App):
                 self._chat_md("system", f"Default GA4 property: {name}")
             else:
                 names = await self.agent.list_properties()
-                self._chat_md("system", "Your GA4 properties:\n" + "\n".join(f"- {n}" for n in names))
+                if names:
+                    self._chat_md("system", "Your GA4 properties:\n" + "\n".join(f"- {n}" for n in names))
+                else:
+                    self._chat_md("system", "No GA4 properties are visible to this Google account.")
         except LookupError as e:
             self._notice("warn", str(e))
         except Exception as e:
-            self._notice("error", f"/ga4 failed: {type(e).__name__}")
+            from ..connectors.ga4 import setup_error
+            log.warning("/ga4 failed (%s)", type(e).__name__)
+            # a chat message, not an error notice: notices are spoken aloud, and this text is Google's setup message
+            self._chat_md("system", f"/ga4 could not list your GA4 properties: {setup_error(e)}")
 
     def _refresh_status(self) -> None:
         try:

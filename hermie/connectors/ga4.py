@@ -5,6 +5,7 @@ Credentials of the user's Google account. The model names properties; this modul
 from a cached account summary, so the user never types an ID."""
 from __future__ import annotations
 
+import asyncio
 import importlib.util
 import json
 import os
@@ -15,7 +16,8 @@ from typing import Callable, Optional
 
 from .base import ConnectorContext, Status
 from .mcp import McpConnector, McpServerSpec
-from .mcp_session import McpSession
+from .mcp_session import McpConnectionError, McpSession
+from .preview import cap_text
 
 GA4_SERVER_VERSION = "0.7.0"
 # uv resolves analytics-mcp's dependencies (google-adk, google-auth, grpc, ...) only from files uploaded before this
@@ -100,6 +102,16 @@ def error_message(text: str) -> Optional[str]:
     return None
 
 
+def setup_error(e: BaseException) -> str:
+    """Why the property list could not be fetched, for the user (the standard log keeps the type only). Server and
+    Google API messages (API not enabled, missing scope, wrong quota project) are shown; other exceptions by type."""
+    if isinstance(e, asyncio.TimeoutError):
+        return ("timed out; the first start downloads the GA4 server, so retrying usually works")
+    if isinstance(e, (RuntimeError, McpConnectionError)) and str(e):
+        return f"{type(e).__name__}: {cap_text(str(e), 300)}"
+    return type(e).__name__
+
+
 def resolve_property(value: str, props: list[dict]) -> list[dict]:
     v = str(value).strip().lower().removeprefix("properties/")
     for key in ("id", "name"):
@@ -148,7 +160,7 @@ class Ga4Connector(McpConnector):
             raise RuntimeError("get_account_summaries failed")
         problem = error_message(text)
         if problem:
-            raise RuntimeError(problem[:200])
+            raise RuntimeError(problem)
         props = parse_summaries(text)
         if props:
             state["catalog"] = {"ts": time.time(), "properties": props}
@@ -161,7 +173,7 @@ class Ga4Connector(McpConnector):
         try:
             props = await self.properties(state)
         except Exception as e:
-            return args, f"Could not list your GA4 properties ({type(e).__name__})."
+            return args, f"Could not list your GA4 properties ({setup_error(e)})."
         if not props:
             return args, "No GA4 properties are visible to this Google account."
         value = args.get("property_id")
@@ -171,7 +183,7 @@ class Ga4Connector(McpConnector):
                 try:
                     props = await self.properties(state, refresh=True)
                 except Exception as e:
-                    return args, f"Could not list your GA4 properties ({type(e).__name__})."
+                    return args, f"Could not list your GA4 properties ({setup_error(e)})."
                 hits = resolve_property(str(value), props)
             if len(hits) == 1:
                 return {**args, "property_id": hits[0]["id"]}, None

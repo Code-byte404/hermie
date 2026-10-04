@@ -304,6 +304,30 @@ async def test_list_and_set_default_property(make_agent, tmp_path):
         await agent.aclose()
 
 
+async def test_list_properties_with_no_properties(make_agent, tmp_path):
+    import json
+    from hermie.connectors.ga4 import Ga4Connector
+
+    class Empty:
+        async def request(self, method, *args, timeout=None):
+            class T:
+                type, text = "text", json.dumps({"result": []})
+            class R:
+                isError, content = False, [T()]
+            return R()
+
+        async def aclose(self):
+            pass
+    uvx, adc = tmp_path / "uvx", tmp_path / "adc.json"
+    uvx.write_text("")
+    adc.write_text('{"quota_project_id": "p"}')
+    ga4 = Ga4Connector(uvx=uvx, adc_path=adc, cwd=tmp_path, timeout=30, preview_chars=4000, mcp_available=True,
+                       session_factory=lambda s: Empty())
+    agent = make_agent(connectors=[ga4])
+    assert await agent.list_properties() == []
+    assert "catalog" not in agent.session.connector_states.load("ga4")
+
+
 async def test_aclose_idempotent_tolerant_and_closed_for_good(make_agent, tmp_path, monkeypatch):
     import asyncio
     import hermie.core as core

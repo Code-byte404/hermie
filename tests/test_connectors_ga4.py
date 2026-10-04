@@ -1,4 +1,5 @@
 """Ga4Connector: status checks, child env, property catalog and resolution (fake server stands in for analytics-mcp)."""
+import asyncio
 import json
 import re
 import sys
@@ -201,6 +202,7 @@ async def test_failed_catalog_is_not_cached_and_recovers(tmp_path):
     ctx = Ctx(tmp_path)
     args, problem = await conn.prepare_args("run_report", {"property_id": "alpha"}, ctx)
     assert problem and problem.startswith("Could not list your GA4 properties") and "catalog" not in ctx.state()
+    assert "token expired" in problem                               # the real reason, not just the type
     sess.ok = True
     args, problem = await conn.prepare_args("run_report", {"property_id": "alpha"}, ctx)
     assert problem is None and args["property_id"] == "111"
@@ -243,3 +245,48 @@ def test_parse_summaries_skips_malformed_entries():
     text = json.dumps({"result": [{"display_name": "Main Co", "property_summaries": [
         "junk", None, {"property": "properties/111", "display_name": "Alpha Web"}]}]})
     assert parse_summaries(text) == [{"id": "111", "name": "Alpha Web", "account": "Main Co"}]
+
+
+class _RaisingSession:
+    def __init__(self, exc):
+        self.exc = exc
+
+    async def request(self, method, *args, timeout=None):
+        raise self.exc
+
+    async def aclose(self):
+        pass
+
+
+def _conn_with(tmp_path, sess):
+    uvx = tmp_path / "uvx"
+    uvx.write_text("")
+    return Ga4Connector(uvx=uvx, adc_path=adc(tmp_path), cwd=tmp_path, timeout=30, preview_chars=4000,
+                        mcp_available=True, session_factory=lambda s: sess)
+
+
+async def test_setup_errors_say_why(tmp_path, caplog):
+    from hermie.connectors.mcp_session import McpConnectionError
+    ctx = Ctx(tmp_path)
+    conn = _conn_with(tmp_path, _RaisingSession(McpConnectionError("MCP server failed to start (FileNotFoundError)")))
+    _, problem = await conn.prepare_args("run_report", {"property_id": "alpha"}, ctx)
+    assert "FileNotFoundError" in problem and "failed to start" in problem
+    conn = _conn_with(tmp_path, _RaisingSession(RuntimeError("API not enabled " + "x" * 1000)))
+    _, problem = await conn.prepare_args("run_report", {"property_id": "alpha"}, ctx)
+    assert "API not enabled" in problem and len(problem) < 500
+    conn = _conn_with(tmp_path, _RaisingSession(asyncio.TimeoutError()))
+    _, problem = await conn.prepare_args("run_report", {"property_id": "alpha"}, ctx)
+    assert "timed out" in problem and "download" in problem and "retry" in problem.lower()
+    conn = _conn_with(tmp_path, _RaisingSession(ValueError("some other detail")))
+    _, problem = await conn.prepare_args("run_report", {"property_id": "alpha"}, ctx)
+    assert "ValueError" in problem and "some other detail" not in problem
+
+
+def test_spec_repr_hides_env_values(tmp_path, monkeypatch):
+    monkeypatch.setenv("HTTPS_PROXY", "http://user:hunter2@proxy:3128")
+    uvx = tmp_path / "uvx"
+    uvx.write_text("")
+    spec = Ga4Connector(uvx=uvx, adc_path=adc(tmp_path), cwd=tmp_path, timeout=30, preview_chars=4000,
+                        mcp_available=True).spec
+    assert spec.env["HTTPS_PROXY"].endswith("@proxy:3128")
+    assert "hunter2" not in repr(spec) and "my-proj" not in repr(spec)
