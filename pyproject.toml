@@ -44,8 +44,10 @@ router = ["torch==2.14.0", "transformers==5.17.0"]
 anthropic = ["pydantic-ai-slim[anthropic]==2.51.0"]
 # Voice input/output: sounddevice recording, mlx-whisper local transcription (Apple Silicon)
 voice = ["sounddevice==0.5.6", "mlx-whisper==0.4.3"]
+# Data connectors over MCP (GA4 through Google's analytics-mcp, run with uvx in its own environment)
+mcp = ["mcp==1.30.0"]
 test = ["pytest==9.1.1", "pytest-asyncio==1.4.0"]
-all = ["hermie[router,voice,anthropic,test]"]
+all = ["hermie[router,voice,anthropic,mcp,test]"]
 
 [project.urls]
 Homepage = "https://github.com/Code-byte404/hermie"
