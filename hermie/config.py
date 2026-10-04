@@ -215,6 +215,10 @@ class Settings:
     # CONNECTORS unset = auto: asc when the asc CLI is installed. An empty value turns connectors off.
     connectors: Optional[list[str]] = field(default_factory=lambda: _env_list("CONNECTORS"))
     asc_path: str = field(default_factory=lambda: _env("ASC_PATH", ""))
+    # GA4 connector (Google's analytics-mcp run with uvx): ADC created with `gcloud auth application-default login`
+    ga4_adc_path: Path = field(default_factory=lambda: Path(_env(
+        "GA4_ADC_PATH", "~/.config/gcloud/application_default_credentials.json")).expanduser())
+    uvx_path: str = field(default_factory=lambda: _env("UVX_PATH", ""))
     connector_timeout: float = field(default_factory=lambda: _env_float("CONNECTOR_TIMEOUT", 180))
     connector_preview_chars: int = field(default_factory=lambda: _env_int("CONNECTOR_PREVIEW_CHARS", 4000))
     connector_data_keep_days: int = field(default_factory=lambda: _env_int("CONNECTOR_DATA_KEEP_DAYS", 7))
