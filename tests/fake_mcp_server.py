@@ -45,6 +45,11 @@ def fail_tool() -> str:
 
 
 @app.tool()
+def error_text_tool() -> str:
+    return json.dumps({"error": "bad dimension"})
+
+
+@app.tool()
 def echo_env() -> str:
     return json.dumps({"env": dict(os.environ), "cwd": os.getcwd(), "pid": os.getpid()})
 

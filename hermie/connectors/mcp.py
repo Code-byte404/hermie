@@ -68,6 +68,10 @@ class McpConnector:
         """Hook for subclasses: resolve arguments (e.g. names to IDs). A string return value is a refusal message."""
         return args, None
 
+    def interpret_error(self, tool: str, text: str) -> Optional[str]:
+        """Hook for subclasses: servers that report failures as ordinary result text return the message here."""
+        return None
+
     # ------------------------------------------------------------ transport
     async def request(self, method: str, *args: Any) -> Any:
         if self._session is None:
@@ -107,6 +111,9 @@ class McpConnector:
         text = _text(result)
         if getattr(result, "isError", False):
             return ConnectorResult(f"{tool} failed:\n{cap_text(text, 2000)}", label=tool, ok=False)
+        problem = self.interpret_error(tool, text)
+        if problem:
+            return ConnectorResult(cap_text(f"{tool} failed: {problem}", 2000), label=tool, ok=False)
         saved = ctx.room_path(f"{self.name}-{tool}.json")
         saved.write_text(text, encoding="utf-8")
         return ConnectorResult(preview_json(text, self.preview_chars), (saved,), label=tool)

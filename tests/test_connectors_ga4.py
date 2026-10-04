@@ -156,3 +156,88 @@ async def test_catalog_cached_and_refreshed_on_miss(tmp_path):
     await call(conn, ctx, "run_report", property_id="Beta Site")
     await conn.aclose()
     assert ctx.state()["catalog"]["ts"] > ts                         # expired -> refreshed
+
+
+# ------------------------------------------------------------ analytics-mcp reports errors as ordinary text
+
+class _Text:
+    type = "text"
+
+    def __init__(self, text):
+        self.text = text
+
+
+class _Result:
+    isError = False
+
+    def __init__(self, text):
+        self.content = [_Text(text)]
+
+
+class _FlakySession:
+    """Stands in for the server: get_account_summaries fails until `ok` is set."""
+
+    def __init__(self):
+        self.ok = False
+
+    async def request(self, method, *args, timeout=None):
+        if not self.ok:
+            return _Result(json.dumps({"error": "Failed to execute tool 'get_account_summaries': token expired"}))
+        return _Result(json.dumps({"result": [{"account": "accounts/1", "display_name": "Main Co", "property_summaries": [
+            {"property": "properties/111", "display_name": "Alpha Web"}]}]}))
+
+    async def aclose(self):
+        pass
+
+
+async def test_failed_catalog_is_not_cached_and_recovers(tmp_path):
+    uvx = tmp_path / "uvx"
+    uvx.write_text("")
+    sess = _FlakySession()
+    conn = Ga4Connector(uvx=uvx, adc_path=adc(tmp_path), cwd=tmp_path, timeout=30, preview_chars=4000,
+                        mcp_available=True, session_factory=lambda s: sess)
+    ctx = Ctx(tmp_path)
+    args, problem = await conn.prepare_args("run_report", {"property_id": "alpha"}, ctx)
+    assert problem and problem.startswith("Could not list your GA4 properties") and "catalog" not in ctx.state()
+    sess.ok = True
+    args, problem = await conn.prepare_args("run_report", {"property_id": "alpha"}, ctx)
+    assert problem is None and args["property_id"] == "111"
+
+
+async def test_empty_cached_catalog_is_a_miss(tmp_path):
+    conn, ctx = fake_conn(tmp_path), Ctx(tmp_path)
+    ctx.state()["catalog"] = {"ts": time.time(), "properties": []}
+    r = await call(conn, ctx, "run_report", property_id="Beta Site")
+    await conn.aclose()
+    assert r.ok and json.loads(r.files[0].read_text())["property"] == "333"
+
+
+async def test_error_text_result_is_a_failure_and_not_saved(tmp_path):
+    import dataclasses
+    conn, ctx = fake_conn(tmp_path), Ctx(tmp_path)
+    conn.spec = dataclasses.replace(conn.spec, allow_tools=GA4_TOOLS | {"error_text_tool"})
+    r = await call(conn, ctx, "error_text_tool", property_id="Beta Site")
+    await conn.aclose()
+    assert not r.ok and r.preview == "error_text_tool failed: bad dimension" and not r.files
+    assert list(tmp_path.glob("0*")) == []
+
+
+def test_env_quota_project_and_proxy_passthrough(tmp_path, monkeypatch):
+    for k in ("HTTPS_PROXY", "https_proxy", "SSL_CERT_FILE"):
+        monkeypatch.delenv(k, raising=False)
+    monkeypatch.setenv("HTTPS_PROXY", "http://proxy:3128")
+    monkeypatch.setenv("SSL_CERT_FILE", "/etc/ca.pem")
+    monkeypatch.setenv("SECRET_FOR_TEST", "leak")
+    uvx = tmp_path / "uvx"
+    uvx.write_text("")
+    env = Ga4Connector(uvx=uvx, adc_path=adc(tmp_path), cwd=tmp_path, timeout=30, preview_chars=4000,
+                       mcp_available=True).spec.env
+    assert env["GOOGLE_CLOUD_QUOTA_PROJECT"] == "my-proj" and env["GOOGLE_CLOUD_PROJECT"] == "my-proj"
+    assert env["HTTPS_PROXY"] == "http://proxy:3128" and env["SSL_CERT_FILE"] == "/etc/ca.pem"
+    assert "https_proxy" not in env and "SECRET_FOR_TEST" not in env
+
+
+def test_parse_summaries_skips_malformed_entries():
+    text = json.dumps({"result": [{"display_name": "Main Co", "property_summaries": [
+        "junk", None, {"property": "properties/111", "display_name": "Alpha Web"}]}]})
+    assert parse_summaries(text) == [{"id": "111", "name": "Alpha Web", "account": "Main Co"}]

@@ -21,6 +21,8 @@ GA4_SERVER_VERSION = "0.7.0"
 GA4_TOOLS = frozenset({"get_account_summaries", "get_property_details", "list_google_ads_links",
                        "list_property_annotations", "run_report", "run_realtime_report", "run_funnel_report",
                        "run_conversions_report", "get_custom_dimensions_and_metrics"})
+PASSTHROUGH_ENV = ("HTTPS_PROXY", "HTTP_PROXY", "NO_PROXY", "SSL_CERT_FILE", "REQUESTS_CA_BUNDLE",
+                   "https_proxy", "http_proxy", "no_proxy")
 CATALOG_TTL_S = 24 * 3600
 LOGIN_CMD = ("gcloud auth application-default login --scopes="
              "https://www.googleapis.com/auth/analytics.readonly,https://www.googleapis.com/auth/cloud-platform")
@@ -75,11 +77,24 @@ def parse_summaries(text: str) -> list[dict]:
         if not isinstance(acc, dict):
             continue
         for p in acc.get("property_summaries") or []:
+            if not isinstance(p, dict):
+                continue
             pid = str(p.get("property", "")).removeprefix("properties/")
             if pid:
                 out.append({"id": pid, "name": str(p.get("display_name") or pid),
                             "account": str(acc.get("display_name") or "")})
     return out
+
+
+def error_message(text: str) -> Optional[str]:
+    """analytics-mcp reports failures as ordinary text: {"error": "Failed to execute tool ..."}."""
+    try:
+        data = json.loads(text)
+    except ValueError:
+        return None
+    if isinstance(data, dict) and isinstance(data.get("error"), str):
+        return data["error"]
+    return None
 
 
 def resolve_property(value: str, props: list[dict]) -> list[dict]:
@@ -103,7 +118,11 @@ class Ga4Connector(McpConnector):
         env = {"PATH": ":".join(dict.fromkeys(path_dirs)), "HOME": str(Path.home()),
                "USER": os.environ.get("USER", ""), "TMPDIR": os.environ.get("TMPDIR", "/tmp"),
                "LANG": "en_US.UTF-8", "DO_NOT_TRACK": "1",
-               "GOOGLE_APPLICATION_CREDENTIALS": str(adc_path), "GOOGLE_CLOUD_PROJECT": project}
+               "GOOGLE_APPLICATION_CREDENTIALS": str(adc_path), "GOOGLE_CLOUD_PROJECT": project,
+               "GOOGLE_CLOUD_QUOTA_PROJECT": project}
+        for key in PASSTHROUGH_ENV:
+            if os.environ.get(key):
+                env[key] = os.environ[key]
         spec = McpServerSpec(name="ga4", title="Google Analytics 4",
                              command=command or [str(uvx), f"analytics-mcp=={GA4_SERVER_VERSION}"],
                              env=env, allow_tools=GA4_TOOLS, instructions=GA4_INSTRUCTIONS, cwd=Path(cwd))
@@ -112,16 +131,23 @@ class Ga4Connector(McpConnector):
     def status(self) -> Status:
         return self._status
 
+    def interpret_error(self, tool: str, text: str) -> Optional[str]:
+        return error_message(text)
+
     async def properties(self, state: dict, refresh: bool = False) -> list[dict]:
         cat = state.get("catalog")
-        if not refresh and cat and time.time() - cat.get("ts", 0) < CATALOG_TTL_S:
+        if not refresh and cat and cat.get("properties") and time.time() - cat.get("ts", 0) < CATALOG_TTL_S:
             return cat["properties"]
         result = await self.request("call_tool", "get_account_summaries", {})
         text = "\n".join(c.text for c in result.content if getattr(c, "type", "") == "text")
         if getattr(result, "isError", False):
             raise RuntimeError("get_account_summaries failed")
+        problem = error_message(text)
+        if problem:
+            raise RuntimeError(problem[:200])
         props = parse_summaries(text)
-        state["catalog"] = {"ts": time.time(), "properties": props}
+        if props:
+            state["catalog"] = {"ts": time.time(), "properties": props}
         return props
 
     async def prepare_args(self, tool: str, args: dict, ctx: ConnectorContext) -> tuple[dict, Optional[str]]:

@@ -162,3 +162,15 @@ async def test_help_timeout_message(tmp_path):
     conn = _stub_conn(tmp_path, asyncio.TimeoutError())
     r = await tool(conn, "fake_help").call({"tool": "run_report"}, Ctx(tmp_path))
     assert not r.ok and "timed out" in r.preview
+
+
+async def test_interpret_error_hook_fails_result_without_saving(tmp_path):
+    class Strict(McpConnector):
+        def interpret_error(self, tool, text):
+            return "bad dimension" if "SESSIONS" in text else None
+
+    conn = Strict(spec(tmp_path), timeout=30, preview_chars=4000)
+    r = await tool(conn, "fake").call({"tool": "run_report", "arguments": {"property_id": "1"}}, Ctx(tmp_path))
+    await conn.aclose()
+    assert not r.ok and r.preview == "run_report failed: bad dimension" and r.label == "run_report" and not r.files
+    assert list(tmp_path.glob("0*")) == []
