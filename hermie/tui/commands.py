@@ -20,6 +20,7 @@ COMMANDS: list[Command] = [
     Command("/cloud", "/cloud TASK", "Force cloud (still goes through the privacy gate)", True),
     Command("/data", "/data QUESTION", "Ask about your App Store / Apple Ads data; runs locally, nothing goes to the cloud", True),
     Command("/apps", "/apps [NAME]", "List your App Store apps / set the default app for this session", True),
+    Command("/ga4", "/ga4 [NAME]", "List your GA4 properties / set the default property for this session", True),
     Command("/new", "/new", "Start a new session: clear executor history and lift the business-data lock"),
     Command("/model", "/model [list | local|judge|cloud|plan NAME]", "Show / switch local and remote models; changes are written to .env", True),
     Command("/voice", "/voice [on|off|list|test|key KEY|VOICE]", "Speech output toggle, voice, record key; changes are written to .env", True),

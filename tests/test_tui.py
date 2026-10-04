@@ -917,6 +917,28 @@ async def test_apps_command_lists_and_sets_default(make_agent, monkeypatch):
         assert "Default app: Beta Fit" in texts
 
 
+async def test_ga4_command_lists_and_sets_default(make_agent, monkeypatch):
+    agent = make_agent()
+
+    async def fake_list(refresh=True):
+        return ["Alpha Web", "Beta Site"]
+
+    async def fake_set(name):
+        return "Beta Site"
+    monkeypatch.setattr(agent, "list_properties", fake_list)
+    monkeypatch.setattr(agent, "set_default_property", fake_set)
+    app = HermieApp(agent=agent, perf=FakeSampler())
+    async with app.run_test(size=(160, 45)) as pilot:
+        await _submit(pilot, "/ga4")
+        await pilot.pause(0.3)
+        texts = " ".join(m.source for m in app.query(Markdown) if hasattr(m, "source"))
+        assert "Alpha Web" in texts and "Beta Site" in texts
+        await _submit(pilot, "/ga4 beta")
+        await pilot.pause(0.3)
+        texts = " ".join(m.source for m in app.query(Markdown) if hasattr(m, "source"))
+        assert "Default GA4 property: Beta Site" in texts
+
+
 async def test_new_while_busy_keeps_the_lock(make_agent):
     agent = make_agent(connectors=[FakeConnector()])
     agent.session.business = True

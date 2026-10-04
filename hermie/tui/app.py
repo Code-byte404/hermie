@@ -1122,6 +1122,8 @@ class HermieApp(App):
             self._start_task(arg, Force.NONE, business=True)
         elif cmd == "/apps":
             self.run_worker(self._apps_cmd(arg), group="apps", exclusive=True, exit_on_error=False)
+        elif cmd == "/ga4":
+            self.run_worker(self._ga4_cmd(arg), group="ga4", exclusive=True, exit_on_error=False)
         elif cmd == "/new":
             if self._busy:
                 self._notice("warn", "The task is still running; /new after it finishes or press Esc")
@@ -1437,6 +1439,19 @@ class HermieApp(App):
             self._notice("warn", str(e))
         except Exception as e:
             self._notice("error", f"/apps failed: {type(e).__name__}: {e}")
+
+    async def _ga4_cmd(self, arg: str) -> None:
+        try:
+            if arg:
+                name = await self.agent.set_default_property(arg)
+                self._chat_md("system", f"Default GA4 property: {name}")
+            else:
+                names = await self.agent.list_properties()
+                self._chat_md("system", "Your GA4 properties:\n" + "\n".join(f"- {n}" for n in names))
+        except LookupError as e:
+            self._notice("warn", str(e))
+        except Exception as e:
+            self._notice("error", f"/ga4 failed: {type(e).__name__}")
 
     def _refresh_status(self) -> None:
         try:
