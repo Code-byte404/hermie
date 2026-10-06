@@ -248,6 +248,36 @@ async def test_partial_stream_read_still_writes_receipt_and_closes_upstream(tmp_
     assert body.closed and _receipts(tmp_path)[-1]["stream"] is True
 
 
+def _raw_scope(payload):
+    return {"type": "http", "asgi": {"version": "3.0", "spec_version": "2.4"}, "http_version": "1.1", "method": "POST",
+            "scheme": "http", "path": "/anthropic/v1/messages", "raw_path": b"/anthropic/v1/messages", "query_string": b"",
+            "headers": [(b"content-type", b"application/json")], "client": ("127.0.0.1", 1), "server": ("h", 80)}
+
+
+async def test_client_disconnect_before_first_byte_writes_one_receipt_and_closes_upstream(tmp_path, analyzer):
+    from starlette.requests import ClientDisconnect
+    body = _ChunkedSSE()
+    cfg, c = _app(tmp_path, analyzer, lambda req: httpx.Response(200, headers={"content-type": "text/event-stream"}, stream=body))
+    payload = json.dumps(_body("anthropic") | {"stream": True}).encode()
+    async def receive(): return {"type": "http.request", "body": payload, "more_body": False}
+    async def send(msg):
+        if msg["type"] == "http.response.start":
+            raise OSError("client went away")
+    try:
+        await c.app(_raw_scope(payload), receive, send)
+    except (ClientDisconnect, OSError):
+        pass
+    lines = _receipts(tmp_path)
+    assert body.closed and len(lines) == 1 and lines[0]["status"] == 200 and lines[0]["unrestored"] == 0
+
+
+def test_normal_stream_writes_exactly_one_receipt(tmp_path, analyzer):
+    body = _ChunkedSSE()
+    cfg, c = _app(tmp_path, analyzer, lambda req: httpx.Response(200, headers={"content-type": "text/event-stream"}, stream=body))
+    assert c.post("/anthropic/v1/messages", json=_body("anthropic") | {"stream": True}).status_code == 200
+    assert body.closed and len(_receipts(tmp_path)) == 1
+
+
 async def test_client_disconnect_mid_stream_writes_receipt_and_closes_upstream(tmp_path, analyzer):
     body = _ChunkedSSE()
     cfg, c = _app(tmp_path, analyzer, lambda req: httpx.Response(200, headers={"content-type": "text/event-stream"}, stream=body))
@@ -266,4 +296,4 @@ async def test_client_disconnect_mid_stream_writes_receipt_and_closes_upstream(t
         await c.app(scope, receive, send)
     except Exception:
         pass
-    assert sent and body.closed and _receipts(tmp_path)[-1]["status"] == 200
+    assert sent and body.closed and len(_receipts(tmp_path)) == 1 and _receipts(tmp_path)[0]["status"] == 200

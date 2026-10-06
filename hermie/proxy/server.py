@@ -19,7 +19,6 @@ from typing import AsyncIterator
 import anyio
 import httpx
 from starlette.applications import Starlette
-from starlette.background import BackgroundTask
 from starlette.requests import Request
 from starlette.responses import JSONResponse, Response, StreamingResponse
 from starlette.routing import Route
@@ -119,17 +118,27 @@ def _error(status: int, kind: str, message: str, rid: str, id_: str | None = Non
 
 
 class _RelayResponse(StreamingResponse):
-    """A StreamingResponse that always closes its relay generator, even when the client goes away mid-stream
-    (Starlette leaves a half-read async generator for the garbage collector)."""
+    """A StreamingResponse that owns the end of a relayed stream: whatever happens (normal end, client gone mid-stream,
+    client gone before the first byte), it closes the relay generator, then calls `finish` exactly once.
+
+    Starlette cannot be relied on for this: a failing `send` leaves a half-read generator for the garbage collector,
+    `aclose()` on a generator that never started skips its `finally`, and `background` does not run after a disconnect."""
+
+    def __init__(self, content, finish, **kw):
+        super().__init__(content, **kw)
+        self._finish = finish
 
     async def __call__(self, scope, receive, send) -> None:
         try:
             await super().__call__(scope, receive, send)
         finally:
             with anyio.CancelScope(shield=True):
-                aclose = getattr(self.body_iterator, "aclose", None)
-                if aclose is not None:
-                    await aclose()
+                try:
+                    aclose = getattr(self.body_iterator, "aclose", None)
+                    if aclose is not None:
+                        await aclose()
+                finally:
+                    await self._finish()
 
 
 # --- judge accounting: a per-request counter carried into the walker thread by the context ---
@@ -268,12 +277,17 @@ def create_app(config: Config, gate: Gate | None = None, upstream_client: httpx.
                 yield chunk
         except httpx.HTTPError as e:
             rec.upstream_error = type(e).__name__
-        finally:
-            # receipt first: a client disconnect cancels this generator, and the close below may be interrupted
+
+    def stream_finisher(resp: httpx.Response, stats: StreamStats, rec: _Rec):
+        """Receipt then upstream close, once; called from _RelayResponse in every outcome (unrestored is 0
+        when the relay never started)."""
+        async def finish() -> None:
             rec.unrestored = stats.unrestored
-            write_receipt(rec)
-            with anyio.CancelScope(shield=True):
-                await resp.aclose()
+            try:
+                write_receipt(rec)
+            finally:
+                await resp.aclose()   # idempotent
+        return finish
 
     async def handle(request: Request) -> Response:
         rid = secrets.token_hex(6)
@@ -368,9 +382,8 @@ def create_app(config: Config, gate: Gate | None = None, upstream_client: httpx.
             if stream and ct.split(";", 1)[0].strip().lower() == "text/event-stream":
                 stats = StreamStats()
                 deferred = True
-                # the background close covers a response whose body iteration never starts (aclose is idempotent)
-                return _RelayResponse(relay(resp, stats, rec), status_code=resp.status_code, headers=headers,
-                                         media_type=ct, background=BackgroundTask(resp.aclose))
+                return _RelayResponse(relay(resp, stats, rec), stream_finisher(resp, stats, rec),
+                                      status_code=resp.status_code, headers=headers, media_type=ct)
             try:
                 data = await resp.aread()
             except httpx.HTTPError as e:
