@@ -32,6 +32,8 @@ class Decision:
     id: str | None
     reason: str
     size: int
+    hash: str = ""      # full hash of the leaf (or of the image data), for the allow store
+    excerpt: str = ""   # hold only: the pattern-redacted text, single line, first 200 chars
 
 
 @dataclass
@@ -193,9 +195,9 @@ class _Walker:
         did = self._id(full)
         size = len(_image_data(node).encode())
         if self.approvals.is_allowed(full):
-            self.out.decisions.append(Decision("pass", did, "image released", size))
+            self.out.decisions.append(Decision("pass", did, "image released", size, full))
             return
-        self.out.decisions.append(Decision("withhold", did, "image", size))
+        self.out.decisions.append(Decision("withhold", did, "image", size, full))
         if not self.observe:
             parent[key] = _image_note(node, WITHHELD_IMAGE.format(id=did))
 
@@ -225,18 +227,18 @@ class _Walker:
             did = self._id(res.hash)
             if origin is Origin.USER:
                 if self.approvals.is_allowed(res.hash):
-                    self.out.decisions.append(Decision("pass", did, res.reason, size))
+                    self.out.decisions.append(Decision("pass", did, res.reason, size, res.hash))
                 else:
-                    d = Decision("hold", did, res.reason, size)
+                    d = Decision("hold", did, res.reason, size, res.hash, " ".join(res.text[:400].split())[:200])
                     self.out.decisions.append(d)
                     if not self.observe:
                         self.out.held = d
                         return False
                 return self.apply(parent, key, res.text)
             if self.approvals.is_allowed(res.hash):
-                self.out.decisions.append(Decision("pass", did, res.reason, size))
+                self.out.decisions.append(Decision("pass", did, res.reason, size, res.hash))
                 return self.apply(parent, key, res.text)
-            self.out.decisions.append(Decision("withhold", did, res.reason, size))
+            self.out.decisions.append(Decision("withhold", did, res.reason, size, res.hash))
             note = WITHHELD_NOTE.format(id=did, size=_fmt_size(size), reason=res.reason)
             return self.apply(parent, key, note)
         return self.apply(parent, key, res.text)
