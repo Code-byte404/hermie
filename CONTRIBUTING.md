@@ -1,54 +1,49 @@
 # Contributing to Hermie
 
-Thanks for looking under the shell. This page covers the environment, the tests, and the few rules that keep the privacy guarantees intact.
+Thanks for looking under the shell. This page covers the setup, the tests, and the rules that keep the privacy guarantees intact.
 
 ## Setup
 
-Hermie runs on macOS on Apple Silicon (the sandbox is Seatbelt, transcription is mlx-whisper, speech is `say`).
+Python 3.12 on macOS or Linux.
 
 ```bash
-conda env create -f environment.yml
+conda env create -f environment.yml      # or: python3.12 -m venv .venv && pip install -e ".[test]"
 conda activate hermie
-python -m spacy download zh_core_web_sm
-cp .env.example .env            # models and thresholds; a DeepSeek key is only needed for cloud routes
+python -m spacy download en_core_web_lg
+python -m spacy download zh_core_web_sm  # optional: the Chinese-engine tests skip without it
 ```
-
-Everything below assumes the env is active.
 
 ## Tests
 
 ```bash
-pytest -q                                      # full suite, about two minutes, no Ollama or DeepSeek needed
-pytest -q tests/test_pipeline.py -k plan_mode  # one area
-pytest -q tests/test_tui.py                    # Textual Pilot UI tests
+pytest -q                                   # the default suite; no network, no Ollama, no API key
+pytest -q tests/test_server.py              # one module
+pytest -m live tests/test_live.py::test_claude_code -s   # a real client through a real proxy (needs the client installed and logged in)
 ```
 
-The models are faked (`tests/conftest.py`: `FakeJudge` drives routing, `Script` plays back executor/planner turns and records what the model saw). Presidio, the Seatbelt sandbox and snapshots are real. When you add a feature that sends anything to the cloud, add a test that asserts on `Script.sent_text()` that the private data is absent.
+The default suite excludes live tests (`addopts = "-m 'not live'"`). Upstreams are faked with `httpx.MockTransport` (the `Upstream` recorder in `tests/test_server.py` keeps every request that reached the "cloud", so tests assert that a value is absent there). The judge is faked (`FakeJudge` in `tests/test_gate.py`). Presidio and spaCy are real.
 
-`evals/` holds labelled cases for calibrating thresholds against real models. The rules-layer privacy cases double as a regression test (`tests/test_evals.py`): a new recognizer or a changed pattern must keep them passing.
+`evals/` holds labelled privacy cases. The rules-layer cases double as a regression test (`tests/test_evals.py`): a new recognizer or a changed pattern must keep them passing. `python evals/run_evals.py privacy --languages en --cases evals/privacy_cases_en.jsonl` prints the metrics.
+
+## Two common contributions
+
+**A new recognizer.** Add the pattern (`hermie/gate/recognizers.py`: `SECRET_PATTERNS` for keys and credentials, or a Presidio recognizer in `build_analyzer`), add positive and near-miss cases to `evals/privacy_cases_en.jsonl` (or `privacy_cases.jsonl` for the Chinese engine), and keep `tests/test_evals.py` green. If the pattern also fires on code, extend `plausible` rather than lowering `presidio_threshold`.
+
+**A new client or wire format.** Add a captured request to `tests/fixtures/requests` and a captured stream to `tests/fixtures/streams` (fake values only), add the keys that carry streamed text to `BUFFERED_KEYS` in `hermie/proxy/stream.py`, teach `walker.classify` where its tool results live if the shape is new, and add a live test to `tests/test_live.py` plus a row in the README's client table with the real result.
 
 ## Rules that are not negotiable
 
-These are the privacy invariants. A pull request that weakens one will not be merged, however good the feature is. The reasoning behind each is in [docs/architecture.md](docs/architecture.md).
+A pull request that weakens one of these will not be merged, however good the feature is.
 
-- `CleanText` is constructed only in `privacy.py` via `certify()` or `trusted_template()`. Never pass user-derived text through `trusted_template()`.
-- Any exception in Presidio or the judge means "sensitive". Any DeepSeek failure falls back to local.
-- The planner gets only redacted or abstracted task text, the workspace overview, the project doc and `format_report()` output. Never `answer`, never file contents, never the diff.
-- History compression and abstraction use `models.compressor()`, a local model. `ModelFactory.reviewer()` stays local because it sees diffs.
-- The env passed into the sandbox is a fixed allowlist. Never pass `os.environ` through.
-- No token accounting outside `ActivityTracker` and `OllamaJudge.usage_sink`, or the stats double-count.
-
-## Conventions
-
-- Python 3.12, type hints, `asyncio`. Routing logic lives in the pure `policy.decide()` and is tested directly.
-- Comments, prompts, log messages, docs and UI strings are in English. No Chinese characters anywhere in the repo; the privacy recognizers target Chinese-format PII, but that is logic, not text.
-- Slash commands are declared once in `hermie/tui/commands.py`; the popup and `/help` are generated from that table.
-- `sounddevice` and `mlx_whisper` must stay lazy imports (tests assert they are never imported by the core).
-- Pin dependency versions in `environment.yml` and `pyproject.toml` together.
+- `send_upstream` only accepts a `CleanBody`, and a `CleanBody` is built only by `gate.certify_body` (after redaction) or `gate.empty_body` (body-less passthrough). No other path to the network.
+- Fail closed: an exception in a detector or the judge means "sensitive".
+- The receipt never holds a real value: no free-text field in `ReceiptLine`.
+- No API key is stored, ever.
+- Tests and fixtures use fake data only: 555-01xx phone numbers, `example.com` emails, card-network test numbers, keys that are obviously not real (no live-looking prefixes).
+- English only in code and docs: comments, messages, docs and UI strings. The recognizers target Chinese-format data; that is logic, not text.
 
 ## Pull requests
 
-1. Open an issue first for anything that changes routing, the gate or the sandbox, so the design can be discussed before the code.
-2. Keep one concern per PR. Run `pytest -q` before pushing.
-3. If you changed a recognizer or a prompt, run `python evals/run_evals.py privacy` (rules only, seconds) and paste the summary in the PR.
-4. Describe what the cloud model can now see that it could not see before, even if the answer is "nothing".
+1. Open an issue first for anything that changes what is scanned, what is sent or what is stored.
+2. One concern per PR. Run `pytest -q` before pushing.
+3. Say what the upstream can now see that it could not see before, even if the answer is "nothing".

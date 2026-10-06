@@ -7,8 +7,11 @@ on:
 
 jobs:
   pytest:
-    # Seatbelt (sandbox-exec) and APFS clones only exist on macOS; macos-14 runners are Apple Silicon.
-    runs-on: macos-14
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-14]
+    runs-on: ${{ matrix.os }}
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
@@ -19,14 +22,11 @@ jobs:
           cache: pip
 
       - name: Install
-        # The anthropic extra is small and covers CLOUD_PROVIDER=anthropic; the voice and RouteLLM extras are not needed by the test suite (models are faked, imports are lazy).
         run: |
           python -m pip install --upgrade pip
-          pip install -e ".[test,anthropic]"
-          python -m spacy download zh_core_web_sm
+          pip install -e ".[test]"
+          python -m spacy download en_core_web_lg
 
       - name: Test
-        # Web tests use a mock HTTP transport, so WEB_ENABLED stays at its default (true); nothing reaches the network.
-        env:
-          ROUTELLM_ENABLED: "false"
+        # The default suite excludes live tests (-m 'not live'); upstreams are mocked, no secrets needed.
         run: pytest -q

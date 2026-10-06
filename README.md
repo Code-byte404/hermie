@@ -4,106 +4,125 @@
 
 <h1 align="center">Hermie</h1>
 
-<p align="center">A local-first coding and document agent for macOS.<br>
-Local models do the work inside a sandbox. The cloud planner only ever sees certified, privacy-free text.</p>
+<p align="center">Hermie is a local proxy between a coding agent and its cloud API: it redacts what goes out, restores placeholders in what comes back, and keeps a verbatim receipt of every request.</p>
 
 <p align="center">
   <a href="LICENSE"><img alt="MIT" src="https://img.shields.io/badge/license-MIT-orange"></a>
-  <img alt="macOS Apple Silicon" src="https://img.shields.io/badge/platform-macOS%20Apple%20Silicon-lightgrey">
   <img alt="Python 3.12" src="https://img.shields.io/badge/python-3.12-blue">
+  <img alt="platform: macOS / Linux" src="https://img.shields.io/badge/platform-macOS%20%2F%20Linux-lightgrey">
 </p>
 
-![A plan-mode task whose text contains a customer's phone number. The local panes show the real number and the report the executor wrote. The Outbound tab on the right shows everything the cloud planner received: the task with the number replaced by a placeholder, the plan acknowledgement and two structured step reports. No file contents, no diff, no answer.](assets/screenshot.png)
+## What it looks like
 
-*The task above contains a customer's phone number. The cloud planner (right pane) got `<CN_MOBILE_1>` instead; the number, the CSV and the finished report never left the machine.*
+Claude Code reads `demo/customers.csv` and `demo/.env` through Hermie. `hermie tail` in a second terminal prints one entry per request, with the entities replaced in the parts that were new in that request (times and sizes vary):
 
-## What it does
+```text
+$ hermie tail
+12:14:02  claude-code -> anthropic/claude-sonnet-4-5  stream  +0 parts, 0 bytes new
+12:14:09  claude-code -> anthropic/claude-sonnet-4-5  stream  +1 parts, 1622 bytes new
+  [tool]  Read  1622  CREDIT_CARD, EMAIL_ADDRESS, PHONE_NUMBER
+12:14:15  claude-code -> anthropic/claude-sonnet-4-5  stream  +1 parts, 214 bytes new
+  [tool]  Read  214  SECRET
+```
 
-Like a hermit crab, Hermie carries its own shell and only pokes its eyes out.
+`hermie show ID` prints the stored body exactly as it was sent, with the placeholders highlighted (the request id is in `hermie tail --json` and in the `x-hermie-request-id` response header). The two tool results above reached the model like this (excerpt):
 
-- **Repetitive and simple work stays local.** An Ollama model runs the task with file and shell tools inside a macOS Seatbelt sandbox: write access only to the workspace, no keychain, no `~/.ssh`. The sandbox is online so dependencies can be installed; network commands such as `curl` or `pip install` ask for approval in default mode.
-- **Hard work gets a cloud planner, not a cloud executor.** For tasks that need overall planning, a cloud model (DeepSeek by default; OpenAI, Anthropic or any OpenAI-compatible endpoint) writes the plan and delegates steps one by one. It receives the de-identified task and fixed-structure step reports. It never receives file contents, diffs, or the executor's answer.
-- **Or, opt-in, a cloud brain with local hands.** With `CLOUD_EXEC=true`, a task that holds no private data but needs the workspace lets the cloud model choose the tool calls while the tools run in the local sandbox. Every tool result passes the privacy gate before it goes back: pattern hits (phones, IDs, secrets) become placeholders that are restored locally when the model uses them in an argument; a result the gate cannot certify hands the step to the local executor, which continues from the same tool history. Measured on the same task, this finished in 6 minutes where the local executor needed 21 to 35. The trade: clean file contents and command output do leave the machine on this route, so it is off by default and never used for sensitive or business tasks.
-- **Nothing leaves without a certificate.** Every outbound message passes a three-layer privacy gate (regex recognizers for phones, IDs, cards, secrets; Presidio NER; a local judge model for context). The cloud client only accepts the `CleanText` type that the gate produces. If any layer errors, the text counts as sensitive.
-- **The executor has to prove it.** A local reviewer reads the actual workspace diff before a task is allowed to report done. Failed reviews go back to the executor for a bounded number of fixes.
-- **You can see everything.** The Outbound tab shows every message sent to the cloud, verbatim. The Changes tab shows the diff. Every task is snapshotted first and can be rolled back.
-- **It learns on your machine.** When a review fails and the fix works, or the reviewer keeps raising the same problem, a local model writes a lesson. Lessons are embedded locally and the most relevant ones are handed to the executor before each step; the cloud planner never sees them. Multi-step jobs that passed review become Markdown playbooks in `~/.hermie/skills/`, used for similar steps once a second success confirms them. Every task also leaves a data-free trajectory line, and `hermie --calibrate` uses those to propose better routing thresholds.
+```text
+1,...,<PHONE_NUMBER_1>,<EMAIL_ADDRESS_1>,<CREDIT_CARD_1>
+STRIPE_KEY=<SECRET_1>
+```
 
-## How a task is routed
+The reply comes back with `<PHONE_NUMBER_1>` turned into the real number again, so the agent edits the real file. To record your own run, `demo/record.sh` opens the agent and `hermie tail` side by side in tmux.
 
-| Route | Who runs it | When |
+## Quickstart
+
+```bash
+pip install git+https://github.com/Code-byte404/hermie && python -m spacy download en_core_web_lg
+hermie serve                                   # prints the base URLs
+ANTHROPIC_BASE_URL=http://127.0.0.1:8787/anthropic claude
+hermie tail                                    # in another terminal
+```
+
+After 0.3.0 is published on PyPI, the first line becomes `pip install hermie && python -m spacy download en_core_web_lg`.
+
+`hermie serve` listens on `127.0.0.1:8787` and prints one base URL per upstream: `/anthropic` (api.anthropic.com), `/openai/v1` (api.openai.com), `/gemini` (generativelanguage.googleapis.com) and `/custom` (any upstream you name with `--upstream`). Your API key or login token is forwarded to the upstream as the client sends it; Hermie never stores it.
+
+Other commands: `hermie show ID` (the stored outbound body of a request), `hermie allow ID` (release a held or withheld item), `hermie stats [--days N]` (totals from the receipt), `hermie forget` (clear the placeholder mapping). `hermie COMMAND --help` lists the options.
+
+## What leaves your machine
+
+Every string in the JSON request body is scanned before the request is sent:
+
+1. **Rules.** Regex recognizers for API keys and credentials (OpenAI, Anthropic, AWS, GitHub, Slack, Google, Stripe, Hugging Face, npm, PyPI, private-key blocks, JWTs, database URLs, `password=...` assignments), phone numbers, emails, cards, IBANs, IP addresses and US SSN / passport / driver-license numbers. Matches become placeholders such as `<PHONE_NUMBER_1>`.
+2. **NER.** Presidio with spaCy finds person names (two or more capitalized words), also replaced by placeholders. Optional Chinese engine (`languages = ["en", "zh"]`) adds mainland mobile, ID-card and bank-card numbers.
+3. **Judge (optional, `--judge ollama:MODEL`).** A local Ollama model answers "is this sensitive?" for user messages and tool results that the first two layers left alone, and flags encoded data (base64, hex, long digit runs). A flagged user message is held for you; a flagged tool result is withheld and replaced by a short note.
+
+Images are withheld by default (`images = "pass"` sends them). The same value always gets the same placeholder, and replies are restored from a local mapping before the agent sees them, in JSON replies and in streams (a placeholder split across two stream events is reassembled).
+
+## Verified clients
+
+| Client | How to point it at Hermie | Status |
 |---|---|---|
-| `local` | local executor + local review | repetitive, simple, or touches private data |
-| `local_verify` | local executor, then a judge self-check | medium difficulty; escalates to plan or cloud if the check fails |
-| `cloud` | cloud model alone | no workspace needed, no private data (explanations, tutorials) |
-| `plan` | cloud planner driving the local executor step by step | needs planning across many steps |
-| `cloud_exec` | cloud model driving the local sandbox tools, every tool result certified first | the same tasks as `plan`, when `CLOUD_EXEC=true` and the task holds no private data |
+| Claude Code 2.1.291 | `ANTHROPIC_BASE_URL=http://127.0.0.1:8787/anthropic` | Verified with a subscription login (2026-10-06): no real value reached the stored outbound bodies, placeholders were restored, receipt labelled `claude-code`. |
+| Codex CLI 0.147.0 | a `model_providers` entry in `~/.codex/config.toml` with `base_url = "http://127.0.0.1:8787/openai/v1"`, `wire_api = "responses"`, `env_key = "OPENAI_API_KEY"` | Not verified. The ChatGPT login does not go through a custom `base_url`; only API-key use through the provider entry can work. |
+| Gemini CLI 0.44.1 | `GEMINI_API_KEY=...` and `GOOGLE_GEMINI_BASE_URL=http://127.0.0.1:8787/gemini` | Not verified. Google login (`oauth-personal`) talks to the Code Assist endpoint and bypasses `GOOGLE_GEMINI_BASE_URL`; only API-key auth can work. |
+| aider | `ANTHROPIC_BASE_URL=http://127.0.0.1:8787/anthropic` or `OPENAI_BASE_URL=http://127.0.0.1:8787/openai/v1` | Not tested (not installed during the live run). Expected to work through either variable. |
 
-Routing is a pure function of three parallel signals: the privacy check, one structured request to a local judge model (task type, difficulty, does it need the workspace), and a RouteLLM complexity score. Any hint that the task needs the workspace keeps it local. Any cloud error falls back to local. The whole flow runs as an explicit graph; `hermie --graph` prints it.
+The live tests are in `tests/test_live.py` (`pytest -m live tests/test_live.py::test_claude_code -s`).
 
-## Requirements
+## Modes
 
-- macOS on Apple Silicon. The sandbox is Seatbelt, transcription is mlx-whisper, speech is `say`.
-- [Ollama](https://ollama.com) running locally with an executor model and a judge model pulled, one shared model for both so nothing swaps (`WORKER_MODEL` and `JUDGE_MODEL`). Measured on a 32 GB M2 Pro (2026-10): `gemma4:e4b-mlx` (9.5 GB) does 550 tokens/s prefill and 44 tokens/s decode and leaves memory for the browser; `qwen3.6:35b-a3b-coding` (22 GB) is the better coder but pushed swap to 7.7 GB and its hybrid-attention layers defeat Ollama's prompt cache, so whole prompts are re-read each turn; a dense `gemma4:12b-mlx` was slower than both (120 / 22 tokens/s). Small models follow the report protocol less reliably, which Hermie now tolerates: named output tools, a missing report status is inferred, extra output retries (`EXTRA_OUTPUT_RETRIES`). Thinking is off unless `WORKER_THINKING=true`. Re-run the evals in [docs/guide.md](docs/guide.md) when you switch the judge: routing thresholds move with the model.
-- Optional: `ollama pull nomic-embed-text` for lesson memory (without it, lessons are matched by word overlap).
-- A cloud API key (DeepSeek by default; `CLOUD_PROVIDER` switches to OpenAI, Anthropic or an OpenAI-compatible endpoint), only if you want the `cloud` and `plan` routes. Everything else works fully offline.
+- `enforce` (default): replace, withhold and hold as described above.
+- `observe` (`hermie serve --mode observe`): scan and write the receipt, but send every request unchanged. Nothing is blocked or replaced. Use it to see what Hermie would do before you rely on it.
 
-## Install
+## When the judge flags something
 
-```bash
-git clone https://github.com/Code-byte404/hermie.git && cd hermie
-conda env create -f environment.yml && conda activate hermie
-python -m spacy download zh_core_web_sm
-cp .env.example .env          # add CLOUD_API_KEY if you want cloud routes; pick your Ollama models
+With a judge configured, a user message the judge flags is held. If `hermie serve` runs in a terminal, it asks there:
+
+```text
+Hermie holds this message (412 chars): ...
+  reason: judge
+  kind: message
+  [s]end as is  [r]eject  [a]llow everything this session
+  or later: hermie allow 3fa2
 ```
 
-Or with plain pip into any Python 3.12 environment:
+Type `s`, `r` or `a` and Enter. No answer within `hold_timeout_s` (60 s) rejects. Without a terminal (for example under a process manager) held messages are rejected right away. A rejected request returns HTTP 422 to the agent with a message that names the id; run `hermie allow ID` in any terminal and retry. Withheld tool results and images show up in `hermie tail` with the same `hermie allow ID` line; once allowed, the next request sends them.
 
-```bash
-pip install -e ".[router,voice]"   # drop the extras you do not need
-python -m spacy download zh_core_web_sm
-```
+## What this does not protect
 
-## Run
+- Detection above the rules layer is probabilistic, and without `--judge` only the rules and Presidio run. A name or a secret in an unusual shape can pass.
+- The model can still infer that a person, a phone number or a key exists from the placeholder and the surrounding text.
+- The upstream still sees your code. Hermie protects data in the code and the conversation, not the code itself.
+- Requests that do not go through the base URL are invisible to Hermie: telemetry, OAuth login flows, Gemini's Code Assist endpoint, or any client that ignores the variable.
+- `observe` mode blocks nothing.
 
-The directory you start in is the workspace. The sandbox only lets the executor write there. `$HOME` and `/` are refused.
+[SECURITY.md](SECURITY.md) has the full list, including the query string, passthrough paths and the mapping file.
 
-```bash
-cd ~/projects/my-app
-hermie                     # full-screen UI; high-risk commands prompt for approval
-hermie --auto              # no approval prompts; sandbox, gate, snapshots and audit unchanged
-hermie --json "task" file  # headless: JSON event stream, then the final result (file or directory as material)
-hermie --calibrate         # propose routing thresholds from your own recorded tasks (--apply writes .env)
-hermie --graph             # print the task graph as a Mermaid diagram
-```
+## Configuration
 
-`start.sh` in the repo does the whole warm-up: activates the env, starts Ollama if needed, pulls missing models, opens the UI.
+Copy [`config.example.toml`](config.example.toml) to `~/.hermie/config.toml`; every field is commented there. Each field can also be set as an environment variable `HERMIE_<FIELD>` (for example `HERMIE_PORT=8788`, `HERMIE_DENY_WORDS=Project Falcon,ACME`), and the `hermie serve` flags (`--host`, `--port`, `--mode`, `--judge`, `--upstream`, `--no-bodies`, `--data-dir`, `--config`) override both. Useful fields: `deny_words` (names and codenames that must always be replaced), `allow_values` (exact values never replaced), `allow_paths` (file globs whose content is never scanned), `images`, `bodies` / `bodies_keep_mb` (the stored outbound bodies), `hold_timeout_s`.
 
-Inside the UI: type a task and press `Enter`. Drag a file or folder from Finder into the input box to attach it: its path stays in the text, a 📎 line shows what will be attached, and the content (text extracted from PDF / Word / Excel, a file tree for folders) is read locally and goes through the privacy gate with the task, so nothing unredacted leaves the machine. `/` opens the command list. `F2` switches default/auto mode, `F5` records a voice task, `F6` toggles speech. The full list is in the [user guide](docs/guide.md).
+Everything Hermie writes lives in `~/.hermie`: `receipt.jsonl`, `outbound/`, `mapping.json`, `allowed.jsonl`, `pending.jsonl`. See [docs/architecture.md](docs/architecture.md).
 
-## Where the privacy guarantee comes from
+## Roadmap
 
-1. **Types.** `CleanText` can only be constructed by `PrivacyGate.certify()`. The cloud agents accept nothing else.
-2. **An outbound guard on every cloud request.** Any message part that is not already certified is re-checked on the spot or the request is aborted.
-3. **A kernel boundary, not a prompt.** The executor's reads, writes and commands run under `sandbox-exec` with a fixed environment allowlist. The API key never enters the sandbox.
-4. **Fail closed.** A detector exception means "sensitive". A cloud exception means "run it locally".
-   On the opt-in `cloud_exec` route the same guard certifies every tool result before the next cloud request; pattern hits are replaced by placeholders whose mapping stays on the machine, and a result the judge will not certify ends the cloud's part of the step and hands it, with the tool history, to the local executor.
-5. **Hashes in the audit log.** `~/.hermie/audit.jsonl` records the route and the input's SHA-256, never the input. `~/.hermie/outbound.jsonl` records exactly what was sent.
+- Cursor, once its request origin (client or Cursor's servers) is verified.
+- Per-project mapping namespaces.
+- A judge that does not need Ollama.
+- A launchd / systemd unit to run `hermie serve` in the background.
+- Faster scanning of tool results with many findings.
+- Windows: the file locks use `fcntl`, which Windows does not have.
 
-What the gate cannot promise (probabilistic name detection, uncalibrated thresholds, the no-sandbox flag) is written down in [SECURITY.md](SECURITY.md).
+## Contributing
 
-## Documentation
+- A new recognizer: the pattern, eval cases in `evals/`, and `tests/test_evals.py` green.
+- A new client: a request fixture (`tests/fixtures/requests`), a stream fixture (`tests/fixtures/streams`), a `BUFFERED_KEYS` entry in `hermie/proxy/stream.py` for its streamed text keys, and a live test in `tests/test_live.py`.
 
-- [User guide](docs/guide.md): the UI, `AGENT.md`, the self-verification loop, lesson memory, calibration, voice, web access, examples, evals and known limitations.
-- [Roadmap](docs/roadmap.md): what shipped recently and what comes next.
-- [Architecture](docs/architecture.md): request flow, module responsibilities, privacy invariants.
-- [Design document](docs/design.md): the original design and its reasoning.
-- [Contributing](CONTRIBUTING.md) and [Security](SECURITY.md).
-
-## Status
-
-Alpha. The routing thresholds shipped in `.env.example` are starting points; `hermie --calibrate` tunes them from your own tasks once enough are recorded, and `evals/` has the labelled cases that anchor that tuning. The test suite (fake models, real sandbox and detectors) runs with `pytest -q` and needs no Ollama or cloud key.
+Details in [CONTRIBUTING.md](CONTRIBUTING.md). Security reports go through [SECURITY.md](SECURITY.md).
 
 ## License
 
-MIT. See [LICENSE](LICENSE).
+MIT, see [LICENSE](LICENSE).
+
+Hermie used to be a local-first coding agent; that project is archived at [hermie-agent](https://github.com/Code-byte404/hermie-agent).

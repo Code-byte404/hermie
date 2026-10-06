@@ -1,171 +1,36 @@
 # Architecture
 
-How a task moves through Hermie, which module owns what, and the invariants that keep local data local. The original design rationale is in [design.md](design.md); this page describes the code as it is.
+Hermie is one Starlette app (`hermie/proxy/server.py`) with a single route, `/{provider}/{rest:path}`, and a privacy gate (`hermie/gate/`) behind it. This page follows one request through it.
 
-## Request flow
+## Request path
 
-`core.Hermie.run` does the following for every task:
+1. **Route.** `provider` picks the upstream from `ROUTES`: `anthropic` -> api.anthropic.com, `openai` -> api.openai.com, `gemini` -> generativelanguage.googleapis.com, `custom` -> `custom_upstream` (404 when unset). The upstream URL is the base plus the rest of the path and the query string, as the client encoded them.
+2. **Refusals.** Paths with `.` / `..` segments or encoded slashes: 400. `/openai/v1/files`: 415. Model listings (`PASSTHROUGH_PREFIXES`) pass only as body-less GET / DELETE, sent with `empty_body()`; everything else must be a JSON object (415 / 400 otherwise).
+3. **Walk.** `walker.walk_request` visits every string leaf of a copy of the body, skipping `SKIP_KEYS` outside tool payloads. `classify` labels each leaf by author: `user` (user / system / developer messages, system instructions), `tool` (tool results, function responses), `assistant`, `binary` (image data, never scanned) or `other` (tool definitions and metadata).
+4. **Scan.** `Gate.scan` (`gate/gate.py`) runs the Presidio analyzer (`gate/recognizers.py`: secret patterns, Presidio recognizers, spaCy NER, `plausible` filters) and replaces findings with `<ENTITY_N>` placeholders (`gate/redact.py`). New placeholders are merged into `mapping.json` under an flock, so two Hermie processes never mint the same name for different values. With a judge, `user` and `tool` leaves are also checked for encoded data (`smuggling_risk`) and then asked to the Ollama judge (`gate/judge.py`). Results are cached by text hash (`cache_mb`), so a conversation's history is scanned once.
+5. **Decide.** Per leaf: placeholders only; a flagged `user` leaf is **held** (the walk stops and `approvals.TtyPrompter` asks; reject means HTTP 422); a flagged leaf of any other origin is **withheld** (replaced by `WITHHELD_NOTE`); images are withheld unless `images = "pass"`. Items released with `hermie allow ID` (`allowed.jsonl`) or "allow everything this session" pass. A judge flag on an `other` leaf is ignored; a detector error is not.
+6. **Send.** The rewritten body goes through `certify_body` into a `CleanBody`, is stored as `outbound/<id>.json` (unless `bodies = false`; pruned to `bodies_keep_mb`), and `send_upstream` sends it with the allowlisted headers (`FORWARD_HEADERS`). In `observe` mode the original body is sent and stored.
 
-1. `router.EntryRouter` runs three things in parallel: the privacy check on the task text (Presidio rules plus the judge's contextual question, a request of its own), one structured judge request per sample answering the three routing questions at once (task type, difficulty, does it need the workspace; `ROUTING_QUESTIONS`, `JUDGE_BATCH`), and the RouteLLM complexity score.
-2. `policy.decide()` turns those signals into a route. It is a pure function with no I/O, so routing changes are made there and tested directly in `tests/test_policy_privacy.py`.
-3. The task graph (`graph.py`, on pydantic-graph) runs the task. `snapshot` takes the pre-task snapshot; `run_reviewed` runs the step graph (`execute` → `review` → fix, up to `VERIFY_ROUNDS`); `self_check` asks the judge whether a local_verify result is good enough; `recon` → `outbound_task` → `design` → `plan` is plan mode; `cloud_direct` is the cloud route; the `finish_*` nodes build the result. Every cloud failure is a `fallback` edge back to `snapshot`, so the task finishes locally and keeps what the executor already produced. The planner's `delegate` tool runs the same step graph, plus a `diagnose` node on failure.
-4. The audit log gets a line: route, signals, backend, outbound count, and the SHA-256 of the input. Never the input. `trajectories.jsonl` gets one line too: the nodes the task went through with their durations and decisions, the routing signals and counters. Node bodies only pass counts, flags and probabilities into it, never text.
+## Response path
 
-| Route | Nodes | Who runs |
+- **JSON replies:** every string leaf goes through `Gate.restore`, which swaps placeholders back from the mapping (`stream.restore_json`).
+- **Streams (`text/event-stream`):** `stream.relay_sse` parses each event and restores its data. Text under the streamed keys (`BUFFERED_KEYS`: `text`, `partial_json`, `content`, `arguments`, `delta`) passes through a `PlaceholderBuffer`, which holds back a tail that may be the start of a placeholder until the next event completes it. A held tail is flushed into the event that carried it, so the client sees the same events; only when no such event is left does Hermie add one (`hermie_flush`).
+- Placeholder-shaped tokens that are not in the mapping are left as they are and counted as `unrestored` in the receipt.
+- Response headers passed back: request ids, `retry-after`, rate-limit headers, plus `x-hermie-request-id`.
+
+Every request, refused or not, ends with one line in `receipt.jsonl` (`receipt.ReceiptLine`), written when the response is complete (for streams: when the stream ends or the client leaves).
+
+## Data files
+
+All under `data_dir` (default `~/.hermie`), created 0600:
+
+| File | Holds | Written by |
 |---|---|---|
-| `local` | `snapshot`, `run_reviewed`, `finish_local` | local executor + local review loop |
-| `local_verify` | the same, then `self_check`; escalates to `recon` (plan mode) or `cloud_direct` if the review or the self-check fails | executor + review loop, then a judge self-check |
-| `cloud` | `cloud_direct`, `finish_cloud` | cloud model alone, for tasks that need no workspace and carry no private data |
-| `plan` | `snapshot`, `recon`, `outbound_task`, `design`, `plan`, `finish_plan` | workspace recon, then the cloud planner's design phase (questions, a structured plan, user approval) and execution phase (`delegate(step, acceptance, plan_step)`, `ask_user`, `revise_plan`) driving the local executor step by step |
+| `config.toml` | optional config, see `config.example.toml` | you |
+| `mapping.json` | placeholder -> real value; the most sensitive file | `redact.MappingStore` |
+| `receipt.jsonl` | one data-free line per request | `receipt.Receipt` |
+| `outbound/<id>.json` | each request body exactly as sent | `receipt.BodyStore` |
+| `pending.jsonl` | held / withheld items (hash, kind, reason, size; no text), last 500 | `approvals.AllowStore` |
+| `allowed.jsonl` | hashes released with `hermie allow` or the prompt | `approvals.AllowStore` |
 
-Any yes-vote on "needs the workspace" is treated as "do it locally". Any cloud failure falls back to local and keeps the partial local results.
-
-`hermie --graph` prints both graphs from the code:
-
-```mermaid
----
-title: Task graph
----
-stateDiagram-v2
-  direction TB
-  route
-  state by_route <<choice>>
-  cloud_direct
-  snapshot
-  state after_snapshot <<choice>>
-  state cloud_outcome <<choice>>
-  finish_cloud
-  recon
-  run_reviewed
-  state after_run <<choice>>
-  state recon_outcome <<choice>>
-  finish_local
-  outbound_task
-  self_check
-  state outbound_outcome <<choice>>
-  state self_check_outcome <<choice>>
-  design
-  state design_outcome <<choice>>
-  finish_plan
-  plan
-  state plan_outcome <<choice>>
-
-  [*] --> route
-  route --> by_route
-  by_route --> cloud_direct: cloud
-  by_route --> snapshot: local / local_verify / plan
-  cloud_direct --> cloud_outcome
-  snapshot --> after_snapshot
-  cloud_outcome --> snapshot: blocked or failed: run locally
-  after_snapshot --> recon: plan mode
-  after_snapshot --> run_reviewed: run locally
-  cloud_outcome --> finish_cloud: answered
-  finish_cloud --> [*]
-  recon --> recon_outcome
-  run_reviewed --> after_run
-  recon_outcome --> snapshot: no cloud key: run locally
-  after_run --> finish_local: done
-  after_run --> self_check: local_verify
-  recon_outcome --> outbound_task
-  finish_local --> [*]
-  outbound_task --> outbound_outcome
-  self_check --> self_check_outcome
-  outbound_outcome --> snapshot: not certifiable: run locally
-  self_check_outcome --> cloud_direct: failed, text only
-  self_check_outcome --> recon: failed, needs workspace
-  self_check_outcome --> finish_local: passed
-  outbound_outcome --> design: certified
-  design --> design_outcome
-  design_outcome --> snapshot: failed: run locally
-  design_outcome --> finish_plan: rejected by the user
-  design_outcome --> plan: plan approved
-  finish_plan --> [*]
-  plan --> plan_outcome
-  plan_outcome --> snapshot: failed before local work: run locally
-  plan_outcome --> finish_plan: done, or failed after local work
-```
-
-```mermaid
----
-title: Step graph
----
-stateDiagram-v2
-  direction LR
-  recall_lessons
-  recall_skills
-  execute
-  review
-  state review_outcome <<choice>>
-  diagnose
-  finish_step
-
-  [*] --> recall_lessons
-  recall_lessons --> recall_skills
-  recall_skills --> execute
-  execute --> review
-  review --> review_outcome
-  review_outcome --> execute: failed, rounds left
-  review_outcome --> diagnose: failed, plan mode
-  review_outcome --> finish_step
-  diagnose --> finish_step
-  finish_step --> [*]
-```
-
-## Modules
-
-**`agents.py`** builds the local and cloud-direct agents on Pydantic AI. `build_executor` is the local Ollama model with tools that all go through the sandbox; its structured output separates `report` (may go to the cloud after certification) from `answer` (stays local). `build_reviewer` is a local model that returns a `Review`. `build_cloud_agent` is the cloud model for the direct route. `validate_report` is the output validator: it enforces "verify before done" deterministically and re-certifies every text field of the report, aliasing sensitive paths as `file#n`.
-
-**`planning.py`** builds the two planner agents and owns plan mode end to end. `build_designer` is the cloud model's design phase: its only output tool is `submit_plan` (`Plan`: goal, decisions, assumptions, architecture, steps with files and acceptance criteria, risks, out of scope), and it may also get an `ask_user` tool (1-4 multiple-choice questions per round, 2-4 options each, the recommended one first) when an interactive UI is attached and the task did not arrive by escalation. Questions go through `bus.clarifier` (TUI `ClarifyScreen`); headless or with no UI they are skipped (the designer decides itself), and in `RunMode.AUTO` a `PLAN_AUTO_ANSWER_S` countdown picks the recommended options once the user has not engaged. Approval happens in the output validator, not as a separate node: `review_plan` shows the user the plan via `bus.plan_reviewer` (TUI `PlanScreen`, `RunMode.DEFAULT` only; headless, AUTO mode and a missing UI auto-approve) and turns their decision into either a normal return (approved), a `ModelRetry` carrying the certified change request (the designer revises and calls `submit_plan` again), or `PlanRejected` (nothing executes). `build_planner` is the cloud model's execution phase, with `delegate(step, acceptance, plan_step)` always available; with the design phase on it also gets `revise_plan` and `ask_user` under the same condition as the design phase's (an interactive UI attached and the task did not arrive by escalation: `graph.py::_plan`'s `build_planner(agent.models, agent, st.bus.clarifier is not None and not st.flow.escalated)`; `build_planner` additionally requires `PLAN_DESIGN`); a revision goes through the same `review_plan` approval, counted in `plan_revisions`. `PLAN_DESIGN=false` restores the old behaviour: no questions, no approval, no `revise_plan`; the planner gets `submit_plan` instead, accepted as is (`conftest.settings` sets `plan_design=False`). Planner tools retry an invalid call up to 3 times (`TOOL_RETRIES`). A failing question or plan-review dialog is fail-open but announced with an error notice; a plan approved that way is recorded as `approved_by="auto"`. In the design phase the change request goes out as the `submit_plan` retry prompt, and the exact rendered retry string is what gets certified and remembered. The `plan` node continues the same conversation the `design` node started (`message_history=st.flow.design_messages`), so the planner does not re-read the task. Not every answer takes the outbound ladder: in `answers_text()`, a chosen multiple-choice option is echoed as the planner's own cloud-side text and the lines for a whole round of answers get one `gate.certify()` call (falling back to integers-only placeholders if that fails); only free-text answers ("Other...") and revision change requests are routed through `Hermie._certify_outbound` before they reach the cloud model, with `PrivacyGate.redact(existing=st.mapping)` continuing the placeholder numbering from the task-level redaction. Either way, text that cannot be certified is withheld and the planner is told to decide for itself. **`plan_doc.py`** writes `PLAN.md` from the main process, never through the sandbox: a `<!-- hermie-plan -->` marker line on an existing file means Hermie owns it, otherwise it falls back to `HERMIE_PLAN.md` and the user's own file is never touched; the reviewer's diff strips the plan file's section, and `existing()` feeds `[Existing plan]` through the same gate path as the task. `delegation_limit_for` and `planner_usage_limits` size the delegation and request budgets from the number of plan steps.
-
-**`privacy.py`** is the gate. `certify()` runs rules (regexes for Chinese phone and ID formats, cards, emails, IPs, and `SECRET_PATTERNS` for API keys, cloud credentials, private-key blocks, JWTs and `password=` assignments), then Presidio NER, then the judge's contextual check. It returns a `CleanText`, the only type the cloud agents accept. `trusted_template()` wraps hard-coded constants and nothing else.
-
-**`capabilities.py`** holds the runtime guards. `OutboundGuard` runs before every cloud request: every non-model-generated message part must already be in `TaskState.certified` or pass `certify()` on the spot, otherwise `OutboundBlockedError`. `CommandGuard` rates shell commands (rules first, judge fallback; interpreter invocations with inline code always go to the judge) and asks for approval through `EventBus.approver` in default mode. `TaintTracker` runs Presidio on every tool result synchronously and schedules the judge's contextual check and stuck detection as background tasks; anything that depends on the result calls `settle_checks()` first. Tool budgets live here too.
-
-**`sandbox.py`** writes a Seatbelt profile into the data dir at startup. Shell commands and file operations (delegated to `_fsops.py` under `python -I`) both run under `sandbox-exec`. The environment passed in is a fixed allowlist. `_fsops._resolve` additionally refuses any path whose realpath leaves the workspace; in `RunMode.NO_SANDBOX` that check is the only boundary left. Files and directories the user attaches to a task (dropped into the input box) are readable, never writable, for that task only (`Sandbox.grant_read`); credential and `.env` files inside them stay denied, and `/`, the home directory and its ancestors are never granted.
-
-**`snapshot.py`** takes a snapshot before every task and before every planner delegation. Git workspaces get a commit under `refs/hermie/snapshots/*` (the user's index and HEAD are untouched); other workspaces get an APFS clone. `diff()` feeds the reviewer and the TUI "Changes" tab. `rollback()` with no id returns to the latest task snapshot, not the latest step.
-
-**`web.py`** is the executor's checked network path. `web_fetch` and `web_search` run in the controller process. The sandbox itself is online as well (dependency installs, clones); network commands such as `curl` or `pip install` are rated high risk and need approval in default mode. The URL or query is outbound content: it is percent-decoded, certified, logged to `outbound.jsonl`, and once the task is `exposed` (sensitive task text or a tainted tool output) also checked by `web.smuggling_risk` and a judge question. Results are prefixed with a "reference only" note and excluded from taint.
-
-**`recon.py`** produces a deterministic workspace overview (sandboxed directory listing plus one probe command) for the planner. **`project_doc.py`** manages `AGENT.md` in the workspace: loaded into every executor prompt, appended to the planner's task through the same certify/redact path, progress entries written deterministically after every task, lessons written by a local model after a review-then-fix success (and for problems the reviewer raised twice without a fix). The planner receives AGENT.md without its Lessons section.
-
-**`memory.py`** is the lesson memory: `LessonStore` over `data_dir/lessons.jsonl` (lesson text, tags, an embedding of the lesson and of the task that produced it, never the task text) and `Embedder` over Ollama's `/api/embed`, falling back to word overlap. The step graph's `recall_lessons` node puts the most relevant lessons in front of the executor prompt; same-project lessons always qualify, others need `LESSONS_MIN_SIM`. `sync_doc` imports hand-written AGENT.md lessons and disables deleted ones.
-
-**`skills.py`** is the skill library: `SkillStore` over `data_dir/skills/*.md` (front matter `id`, `title`, `status`; sections When to use / Steps / Verify) plus `index.jsonl` (counters, embeddings, last seen mtime, so user edits are noticed and Hermie's own writes are not). The step graph's `review` node keeps passing runs with enough tool calls in memory (`TaskState.skill_episodes`); after the task, `Hermie._skills_after_task` distills at most two of them with the local model, drops any playbook that fails `gate.check`, never distills for a task that touched sensitive data, and adds a candidate or confirms (activates) a similar one. `recall_skills` injects active skills similar to the step; skills that keep not helping retire themselves. The planner never sees skills.
-
-**`calibrate.py`** reads `trajectories.jsonl`, labels each finished task with the routes that would have been right, replays the pure `policy.decide` over a threshold grid and reports the best configuration (`hermie --calibrate`, `/calibrate`). It writes `.env` only through `apply()`, only for `--apply`, only above `CALIBRATE_MIN_TASKS` labelled tasks. The eval scripts' `sweep` uses the same code.
-
-**`events.py`**: the core never touches the UI. It emits `Event` dataclasses on an `EventBus`; `ApprovalRequest` is the only thing that flows back. `tui/app.py` subscribes and re-posts as Textual messages; `cli.py --json` prints them.
-
-**`session.py`**: `Session` lives across tasks (executor history, session-wide approvals, usage stats). `TaskState` is per task and is the `deps` object for every agent.
-
-**`tui/`**: Textual app. Slash commands are declared once in `tui/commands.py`; the autocomplete popup and `/help` are generated from that table. **`perf.py`** samples CPU, memory and GPU utilization for the Performance tab. **`voice.py`** holds the recorder, the mlx-whisper transcriber and the `say` speaker; only the TUI touches it.
-
-## The self-verification loop
-
-After the executor claims `done`, the step graph (`graph.py`: `execute` → `review`) hands a local reviewer the task, the acceptance criteria, the workspace diff since the task-start snapshot and the recent command outputs. On failure the problems are appended to the prompt and the executor re-runs, up to `VERIFY_ROUNDS`. Reviewer errors fail open (this is a quality mechanism, not a privacy one). Before any of that, `validate_report` bounces a `done` that wrote files without a verification step.
-
-In plan mode each delegated step also produces a `diagnosis`: a local model rewrites the concrete failure into a data-free description of the cause, which is certified before it leaves. The outbound report degrades step by step (with review and diagnosis, with review, bare, status only) until it certifies.
-
-## Privacy invariants
-
-These hold everywhere in the codebase. Changing any of them is a design discussion, not a refactor.
-
-- `CleanText` is constructed only in `privacy.py`. `trusted_template()` is for hard-coded constants; user-derived text never goes through it.
-- Any exception in Presidio or the judge means sensitive. Any cloud failure falls back to local.
-- The planner receives only: redacted or abstracted task text, the workspace overview, project doc and `[Existing plan]` (goal, step titles and ticks of a Hermie PLAN.md) through the same path, certified user answers and change requests from the design phase, and `format_report()` output (report, local review verdict, certified diagnosis, budget line). Never `answer`, never file contents, never the diff. `restore_local()` maps placeholders and `file#n` aliases back before anything reaches the executor.
-- Review problems, suggestions, diagnoses and lessons are produced by local models only. `ModelFactory.reviewer()` and `models.compressor()` (history compression and abstraction) stay local.
-- The audit log stores the input hash only. `outbound.jsonl` gets exactly what was certified.
-- The sandbox environment is a fixed allowlist. `os.environ` is never passed through. Credential files in the workspace are unreadable (`SANDBOX_DENY_NAMES`); `.env` is deliberately readable because build commands need it, and its keys are caught at the gate by the secret recognizer.
-- RouteLLM is loaded through `transformers` directly (`complexity.py`).
-
-## Known quirks
-
-- The Chinese spaCy model labels Latin words and JSON punctuation as PERSON. `privacy._plausible` drops NER hits without CJK characters. Extend that filter for new false-positive patterns rather than lowering `PRESIDIO_THRESHOLD`.
-- The "needs workspace" judge question is worded with concrete examples on purpose; abstract wording made a 27B judge say "no" to "build an app".
-- Ollama's OpenAI-compatible endpoint turns thinking off via `extra_body={"reasoning_effort": "none"}`; the judge uses the native `/api/chat` with `think: false`.
-- The first RouteLLM call imports torch (about 45 s). `Hermie.warm_up()` does it in the main thread before Textual starts; loading it inside a Textual worker breaks tqdm's multiprocessing lock, which is why progress bars are disabled in `config.py`. mlx-whisper has the same problem, handled by `voice.prime_tqdm_lock()`.
-- `PYDANTIC_AI_NO_BANNER=1` is set in `config.py`; the banner corrupts the TUI.
-- The sandbox allows writes to the per-user temp and cache dirs so xcrun, clang and swiftc can write caches. pytest's `tmp_path` lives there, so tests must never use it as an "outside the sandbox" target.
-- `#Preview` macros fail under the sandbox (Xcode's plugin server tries to nest its own sandbox). Not fixable without loosening Seatbelt.
-- A `RichLog` inside an inactive Textual `TabPane` buffers writes until first shown; TUI tests activate the tab before asserting.
+`hermie tail` / `stats` read the receipt, `hermie show` reads `outbound/`, `hermie allow` appends to `allowed.jsonl` (picked up by a running proxy on the next request), `hermie forget` clears `mapping.json`.

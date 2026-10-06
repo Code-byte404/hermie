@@ -15,7 +15,8 @@ classifiers = [
   "Environment :: Console",
   "Intended Audience :: Developers",
   "License :: OSI Approved :: MIT License",
-  "Operating System :: OS Independent",
+  "Operating System :: MacOS",
+  "Operating System :: POSIX :: Linux",
   "Programming Language :: Python :: 3.12",
   "Topic :: Software Development",
 ]
@@ -44,6 +45,6 @@ include = ["hermie*"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 asyncio_mode = "auto"
-markers = ["live: tests that need a real Ollama / DeepSeek (skipped by default; run with -m live)"]
+markers = ["live: real clients through a real proxy to the real upstreams (skipped by default; run with -m live)"]
 addopts = "-m 'not live'"
 filterwarnings = ["ignore:The anyio.abc.BlockingPortal alias is deprecated:DeprecationWarning"]
