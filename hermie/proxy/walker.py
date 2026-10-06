@@ -18,6 +18,9 @@ SKIP_KEYS = {
 WITHHELD_NOTE = ('[hermie withheld this tool result (id {id}): {size}, {reason}. '
                  'The user can release it with "hermie allow {id}".]')
 WITHHELD_IMAGE = "[hermie withheld an image (id {id}); release with \"hermie allow {id}\"]"
+WITHHELD_UNSCANNED = ("[hermie withheld this tool result (id {id}): {size}, {reason}. It could not be scanned, so it "
+                      "cannot be released.]")
+MIN_NUMBER_DIGITS = 6   # inside tool payloads, numbers with this many digits are scanned (card numbers, phone ids)
 
 _MESSAGE_ROOTS = ("messages", "contents", "input")
 _SYSTEM_ROOTS = ("system", "systemInstruction", "instructions")
@@ -131,23 +134,23 @@ def _image_note(node: dict, note: str) -> dict:
     return {"type": "text", "text": note}
 
 
+def _scannable_number(v) -> bool:
+    return (isinstance(v, (int, float)) and not isinstance(v, bool)
+            and sum(c.isdigit() for c in repr(v)) >= MIN_NUMBER_DIGITS)
+
+
 class _Walker:
     def __init__(self, gate, approvals, config, body: dict):
         self.gate, self.approvals, self.c = gate, approvals, config
         self.observe = config.mode == "observe"
         self.orig = body
         self.out = WalkResult(body=copy.deepcopy(body))
-        self.ids: dict[str, str] = {}   # id -> full hash
         self.images: list[tuple] = []   # handled after the text leaves, so text decisions come first
         self._names: dict[str, str] | None = None
 
     def _id(self, full: str) -> str:
-        for n in (4, 6):
-            prior = self.ids.get(full[:n])
-            if prior is None or prior == full:
-                self.ids[full[:n]] = full
-                return full[:n]
-        return full[:8]
+        """Ids come from the allow store, the same source the receipt and `hermie allow` use."""
+        return self.approvals.assign(full)
 
     def run(self) -> WalkResult:
         if self.visit(self.out.body, ()):
@@ -177,6 +180,8 @@ class _Walker:
                     continue
                 if not self.child(node, k, path + (k,), payload):
                     return False
+            if payload:
+                return self.keys(node, path)
         elif isinstance(node, list):
             for i in range(len(node)):
                 if not self.child(node, i, path + (i,), payload):
@@ -191,7 +196,29 @@ class _Walker:
             return True
         if isinstance(v, str):
             return self.leaf(parent, key, v, path)
+        if payload and _scannable_number(v):
+            return self.leaf(parent, key, repr(v), path, number=True)
         return self.visit(v, path, payload)
+
+    def keys(self, node: dict, path) -> bool:
+        """Inside a tool payload the keys are data too (`{"alice@example.com": "vip"}`): scan each one and rebuild the
+        dict with the redacted keys, in order; on a collision the first key keeps its value. Protocol dicts outside
+        payloads keep their keys untouched."""
+        renamed: dict = {}
+        for k in list(node):
+            if not isinstance(k, str):
+                continue
+            holder = {"k": k}
+            if not self.leaf(holder, "k", k, path + (k,)):
+                return False
+            if holder["k"] != k:
+                renamed[k] = holder["k"]
+        if renamed and not self.observe:
+            items = list(node.items())
+            node.clear()
+            for k, v in items:
+                node.setdefault(renamed.get(k, k), v)
+        return True
 
     def image(self, parent, key, node: dict) -> None:
         if self.c.images == "pass":
@@ -199,14 +226,15 @@ class _Walker:
         full = hashlib.sha256(_image_data(node).encode("utf-8", "surrogatepass")).hexdigest()
         did = self._id(full)
         size = len(_image_data(node).encode())
-        if self.approvals.is_allowed(full):
+        if self.approvals.is_allowed(full, "image"):
             self.out.decisions.append(Decision("pass", did, "image released", size, full, origin="binary"))
             return
         self.out.decisions.append(Decision("withhold", did, "image", size, full, origin="binary"))
         if not self.observe:
             parent[key] = _image_note(node, WITHHELD_IMAGE.format(id=did))
 
-    def leaf(self, parent, key, text: str, path) -> bool:
+    def leaf(self, parent, key, text: str, path, number: bool = False) -> bool:
+        """Scan one string (or, with `number`, the text of a number: it is replaced only by a placeholder or a note)."""
         origin = classify(path, self.orig)
         if origin is Origin.BINARY:      # never scan image data
             return True
@@ -226,7 +254,7 @@ class _Walker:
         if origin is Origin.OTHER and not res.reason.startswith("detector_error"):
             flagged = False    # a judge flag on tool descriptions / metadata is ignored
         if not res.findings and not flagged:
-            return self.apply(parent, key, res.text)
+            return True if number else self.apply(parent, key, res.text)
 
         meta = {"origin": origin.value, "entities": sorted({f.entity for f in res.findings}),
                 "new": not res.cached, "tool": self._tool_name(path)}
@@ -235,21 +263,26 @@ class _Walker:
         if not flagged:
             return self.apply(parent, key, res.text)
         did = self._id(res.hash)
+        # a detector error has no scanned form: never released (not by `hermie allow`, not by the session switch)
+        unscanned = res.reason.startswith("detector_error")
         if origin is Origin.USER:
-            if self.approvals.is_allowed(res.hash):
+            if not unscanned and self.approvals.is_allowed(res.hash, res.reason):
                 self.out.decisions.append(Decision("pass", did, res.reason, size, res.hash, **meta))
             else:
-                d = Decision("hold", did, res.reason, size, res.hash, " ".join(res.text[:400].split())[:200], **meta)
+                # a detector error's text is the raw text: no excerpt
+                excerpt = "" if unscanned else " ".join(res.text[:400].split())[:200]
+                d = Decision("hold", did, res.reason, size, res.hash, excerpt, **meta)
                 self.out.decisions.append(d)
                 if not self.observe:
                     self.out.held = d
                     return False
             return self.apply(parent, key, res.text)
-        if self.approvals.is_allowed(res.hash):
+        if not unscanned and self.approvals.is_allowed(res.hash, res.reason):
             self.out.decisions.append(Decision("pass", did, res.reason, size, res.hash, **meta))
             return self.apply(parent, key, res.text)
         self.out.decisions.append(Decision("withhold", did, res.reason, size, res.hash, **meta))
-        note = WITHHELD_NOTE.format(id=did, size=_fmt_size(size), reason=res.reason)
+        note = (WITHHELD_UNSCANNED if unscanned else WITHHELD_NOTE).format(id=did, size=_fmt_size(size),
+                                                                           reason=res.reason)
         return self.apply(parent, key, note)
 
     def _tool_names(self) -> dict[str, str]:
@@ -306,4 +339,5 @@ class _Walker:
 
 
 def walk_request(body: dict, gate, approvals, config) -> WalkResult:
+    """`approvals` provides `is_allowed(hash, reason)` and `assign(hash) -> id` (the allow store's id source)."""
     return _Walker(gate, approvals, config, body).run()

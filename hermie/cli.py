@@ -110,7 +110,14 @@ def _show(config: Config, args) -> int:
 
 
 def _allow(config: Config, args) -> int:
-    AllowStore(config.data_dir).allow(args.id)
+    store = AllowStore(config.data_dir)
+    if not store.allow(args.id):
+        item = store.pending.get(args.id)
+        if item is not None:
+            print(f"hermie: {args.id} could not be scanned and cannot be released", file=sys.stderr)
+        else:
+            print("hermie: unknown id", file=sys.stderr)
+        return 1
     print(f"allowed {args.id}")
     return 0
 
@@ -147,8 +154,9 @@ def _stats(config: Config, args) -> int:
 
 def _forget(config: Config, args) -> int:
     print("This deletes the placeholder mapping. Placeholders in old conversations will no longer\n"
-          "restore to the original values. A running `hermie serve` keeps its in-memory copy until\n"
-          "it is restarted.")
+          "restore to the original values. Placeholder numbers are never reused, so an old placeholder\n"
+          "can never restore to a different value. A running `hermie serve` notices on its next request:\n"
+          "it drops its cache, and values that reappear get new placeholders.")
     if not args.yes:
         try:
             answer = input("Clear the mapping? [y/N] ").strip().lower()

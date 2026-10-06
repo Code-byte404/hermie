@@ -13,9 +13,23 @@ def test_allow_store_prefix_and_persistence(tmp_path):
 
 def test_session_allow_all(tmp_path):
     a = Approvals(AllowStore(tmp_path), SessionAllow())
-    assert not a.is_allowed("zzzz" + "0" * 60)
+    assert not a.is_allowed("ffff" + "0" * 60, "judge")
     a.session.all = True
-    assert a.is_allowed("zzzz" + "0" * 60)
+    assert a.is_allowed("ffff" + "0" * 60, "judge")
+    assert a.is_allowed("ffff" + "0" * 60, "smuggling: possible hex data: ...")
+
+
+def test_session_allow_covers_judge_decisions_only(tmp_path):
+    """C2(c): the session switch never releases a detector error or an image; a stored allow never releases a
+    detector error either."""
+    h = "ab12" + "0" * 60
+    s = AllowStore(tmp_path)
+    s.register(PendingItem(h, "tool result", "detector_error: RuntimeError", 10, ""))
+    a = Approvals(s, SessionAllow())
+    a.session.all = True
+    assert not a.is_allowed(h, "detector_error: RuntimeError") and not a.is_allowed(h, "image")
+    assert not s.allow(s.assign(h))                               # refused, nothing written
+    assert not (tmp_path / "allowed.jsonl").exists()
 
 
 def test_allow_maps_pending_id_to_full_hash_and_rereads_other_process(tmp_path):
@@ -24,14 +38,40 @@ def test_allow_maps_pending_id_to_full_hash_and_rereads_other_process(tmp_path):
     s.register(PendingItem(hash=h, kind="hold", reason="judge", size=5, excerpt="secret words"))
     s.allow("ab12")
     assert json.loads((tmp_path / "allowed.jsonl").read_text().splitlines()[0])["id"] == h
-    # another process appends a prefix entry; the running store must notice
+    # another process appends an entry; the running store must notice. A short id never acts as a prefix wildcard.
     other = "cd34" + "1" * 60
     assert not s.is_allowed(other)
     with open(tmp_path / "allowed.jsonl", "a") as f:
         f.write(json.dumps({"id": "cd34", "at": "x"}) + "\n")
+        f.write(json.dumps({"id": other, "at": "x"}) + "\n")
     st = os.stat(tmp_path / "allowed.jsonl")
     os.utime(tmp_path / "allowed.jsonl", ns=(st.st_atime_ns, st.st_mtime_ns + 5_000_000_000))
-    assert s.is_allowed(other)
+    assert s.is_allowed(other) and not s.is_allowed("cd34" + "2" * 60)
+
+
+def test_allow_refuses_unknown_ids_and_never_stores_a_wildcard(tmp_path):
+    """I1: an unknown id is refused; allowed.jsonl only ever holds full hashes."""
+    s = AllowStore(tmp_path)
+    assert s.allow("zzzz") is False and s.allow("ab12") is False
+    assert not (tmp_path / "allowed.jsonl").exists()
+    full = "ab12" + "0" * 60
+    assert s.allow(full) is True and s.is_allowed(full) and not s.is_allowed("ab12" + "1" * 60)
+
+
+def test_assign_is_the_one_id_source_and_ids_survive_a_reload(tmp_path):
+    """I1: on a collision the id grows; the id the walker showed is the one pending.jsonl keeps, so another process
+    (the CLI) resolves exactly that id."""
+    s = AllowStore(tmp_path)
+    a, b = "ab12" + "0" * 60, "ab12" + "1" * 60
+    assert s.assign(a) == "ab12" and s.assign(a) == "ab12"        # idempotent
+    idb = s.assign(b)
+    assert idb == b[:6]
+    s.register(PendingItem(b, "tool result", "judge", 1, ""))   # only b is persisted (a was a pass)
+    assert s.register(PendingItem(b, "tool result", "judge", 1, "")) == idb
+    other = AllowStore(tmp_path)
+    assert other.pending[idb].hash == b and "ab12" not in other.pending
+    assert other.allow(idb) and AllowStore(tmp_path).is_allowed(b) and not AllowStore(tmp_path).is_allowed(a)
+    assert len((tmp_path / "pending.jsonl").read_text().splitlines()) == 1   # registered once
 
 
 def test_pending_never_stores_excerpt_and_files_are_private(tmp_path):

@@ -59,6 +59,8 @@ NO_FILES = "hermie does not proxy file uploads"
 BAD_PATH = "hermie refuses paths with '.' or '..' segments or encoded slashes"
 SEEN_IMAGES = 4096
 BLOCKED = 'hermie blocked this message (id {id}): {reason}. Run "hermie allow {id}" to send it, then retry.'
+UNSCANNED = ("hermie blocked this message (id {id}): {reason}. The text could not be scanned, so it cannot be sent "
+             "or released; shorten it or retry.")
 
 
 async def send_upstream(client: httpx.AsyncClient, method: str, url: str, headers: dict[str, str],
@@ -232,10 +234,9 @@ def create_app(config: Config, gate: Gate | None = None, upstream_client: httpx.
             pass   # a full disk must not turn a delivered reply into an error
 
     def register(d: Decision) -> str:
-        known = next((k for k, v in store.pending.items() if v.hash == d.hash), None)
-        if known is not None and d.kind != "hold":
-            return known
-        return store.register(PendingItem(d.hash, _item_kind(d), d.reason, d.size, d.excerpt))
+        """Persist a held / withheld item under the id the walker already showed (both come from `store.assign`)."""
+        return store.register(PendingItem(d.hash, _item_kind(d), d.reason, d.size, d.excerpt, d.id),
+                              again=d.kind == "hold")
 
     async def walk(body: dict, rec: _Rec):
         """Walk, asking the user about held messages; return the result or a 422 response."""
@@ -246,6 +247,9 @@ def create_app(config: Config, gate: Gate | None = None, upstream_client: httpx.
             if result.held is None or config.mode == "observe":
                 return result
             d = result.held
+            if d.reason.startswith("detector_error"):   # never offered for release: only reject
+                rec.held = rec.held or d.id
+                return _error(422, "hermie_blocked", UNSCANNED.format(id=d.id, reason=d.reason), rec.rid, d.id)
             item_id = register(d)
             rec.held = rec.held or item_id
             item = store.pending.get(item_id) or PendingItem(d.hash, "message", d.reason, d.size, d.excerpt, item_id)

@@ -5,7 +5,7 @@ from starlette.testclient import TestClient
 from hermie.config import Config
 from hermie.gate.gate import Gate
 from hermie.gate.redact import MappingStore
-from hermie.gate.types import CleanBody
+from hermie.gate.types import CleanBody, Origin
 from hermie.proxy import server
 from hermie.proxy.approvals import NoPrompter
 
@@ -297,3 +297,48 @@ async def test_client_disconnect_mid_stream_writes_receipt_and_closes_upstream(t
     except Exception:
         pass
     assert sent and body.closed and len(_receipts(tmp_path)) == 1 and _receipts(tmp_path)[0]["status"] == 200
+
+
+# --- final fix wave ---
+
+def test_known_values_resent_next_turn_map_back(tmp_path, analyzer):
+    """C1: values restored into the client's history come back as the turn-1 placeholders, in assistant text,
+    tool_use input and tool_result alike."""
+    up = Upstream(); cfg, c = _app(tmp_path, analyzer, up)
+    user1 = "password = Hunter2Secret99 for the db. I am John Smith, call me at 555-010-0199."
+    turn1 = {"model": "m", "max_tokens": 100, "messages": [{"role": "user", "content": user1}]}
+    assert c.post("/anthropic/v1/messages", json=turn1).status_code == 200
+    mapping = MappingStore(cfg.mapping_path).mapping
+    assert "Hunter2Secret99" in mapping.values() and "555-010-0199" in mapping.values()
+    turn2 = {"model": "m", "max_tokens": 100, "messages": [
+        {"role": "user", "content": user1},
+        {"role": "assistant", "content": [
+            {"type": "text", "text": "Thanks John Smith. Run mysql -pHunter2Secret99 and I will call 555-010-0199."},
+            {"type": "tool_use", "id": "t1", "name": "Bash", "input": {"command": "mysql -u root -pHunter2Secret99"}}]},
+        {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "t1", "content": "logged in with Hunter2Secret99"}]}]}
+    assert c.post("/anthropic/v1/messages", json=turn2).status_code == 200
+    sent = up.seen[1].content.decode()
+    for value in mapping.values():
+        assert value not in sent, value
+    assert MappingStore(cfg.mapping_path).mapping == mapping          # the turn-1 placeholders, nothing new
+    secret = next(k for k, v in mapping.items() if v == "Hunter2Secret99")
+    assert f"mysql -u root -p{secret}" in sent and f"logged in with {secret}" in sent
+
+
+def test_unscannable_user_message_is_rejected_without_offering_send(tmp_path):
+    """C2(b): a user message whose scan failed is rejected; the prompt is never shown, allow does not release it."""
+    class Raising:
+        def analyze(self, **kw): raise RuntimeError("down")
+    class P:
+        available = True; asked = 0
+        async def ask(self, item): self.asked += 1; return "send"
+    cfg = Config(data_dir=tmp_path)
+    gate = Gate(cfg, analyzer=Raising(), store=MappingStore(cfg.mapping_path))
+    up = Upstream(); p = P()
+    c = TestClient(server.create_app(cfg, gate=gate, upstream_client=httpx.AsyncClient(transport=httpx.MockTransport(up)), prompter=p))
+    body = {"model": "m", "messages": [{"role": "user", "content": "call 555-010-0199"}]}
+    r = c.post("/anthropic/v1/messages", json=body)
+    assert r.status_code == 422 and "could not be scanned" in r.json()["error"]["message"] and p.asked == 0
+    c.app.state.approvals.store.allow(gate.scan("call 555-010-0199", Origin.USER).hash)
+    c.app.state.approvals.session.all = True
+    assert c.post("/anthropic/v1/messages", json=body).status_code == 422 and up.seen == []

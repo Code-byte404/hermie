@@ -5,6 +5,7 @@ import asyncio
 import fcntl
 import json
 import os
+import re
 import sys
 import threading
 from dataclasses import dataclass
@@ -13,6 +14,7 @@ from pathlib import Path
 from typing import Literal
 
 KEEP = 500
+_FULL_HASH = re.compile(r"[0-9a-f]{64}")
 Choice = Literal["send", "reject", "allow_all"]
 _KEYS: dict[str, Choice] = {"s": "send", "r": "reject", "a": "allow_all"}
 
@@ -53,12 +55,20 @@ def _read_rows(path: Path) -> list[dict]:
 
 
 class AllowStore:
+    """Pending (held / withheld) items by short id, and the released content hashes.
+
+    Ids are hash prefixes (4 hex chars, longer on a collision) handed out by `assign`, the one id source for the walker,
+    the receipt and the CLI; pending.jsonl keeps each id so another process resolves the id the note showed.
+    allowed.jsonl only ever holds full hashes."""
+
     def __init__(self, data_dir: Path):
         self.dir = Path(data_dir)
         self.allowed_path = self.dir / "allowed.jsonl"
         self.pending_path = self.dir / "pending.jsonl"
         self._ids: set[str] = set()
         self._mtime: int | None = None
+        self._lock = threading.RLock()
+        self._persisted: set[str] = set()
         self.pending: dict[str, PendingItem] = self._load_pending()
 
     def _load_pending(self) -> dict[str, PendingItem]:
@@ -82,30 +92,52 @@ class AllowStore:
                 item = PendingItem(r["hash"], r["kind"], r["reason"], int(r["size"]), "")
             except (KeyError, TypeError, ValueError):
                 continue
-            self._place(out, item)
+            want = r.get("id")
+            self._place(out, item, want if isinstance(want, str) else None)
+            self._persisted.add(item.hash)
         return out
 
     @staticmethod
-    def _place(table: dict[str, PendingItem], item: PendingItem) -> str:
+    def _place(table: dict[str, PendingItem], item: PendingItem, want: str | None = None) -> str:
         for k, v in table.items():
             if v.hash == item.hash:
                 table[k] = item
                 item.id = k
                 return k
-        key = item.hash[:4]
-        if key in table:
-            key = item.hash[:6]
+        if want and len(want) >= 4 and item.hash.startswith(want) and want not in table:
+            key = want
+        else:
+            key = next((item.hash[:n] for n in range(4, len(item.hash) + 1, 2) if item.hash[:n] not in table),
+                       item.hash)
         table[key] = item
         item.id = key
         return key
 
-    def register(self, item: PendingItem) -> str:
-        key = self._place(self.pending, item)
+    def _trim(self) -> None:
         while len(self.pending) > KEEP:
             self.pending.pop(next(iter(self.pending)))
-        _append(self.pending_path, {"hash": item.hash, "kind": item.kind, "reason": item.reason,
-                                    "size": item.size, "at": _now()})
-        return key
+
+    def assign(self, h: str) -> str:
+        """The id for this content hash: the existing one, or a new prefix that names no other pending item.
+        Idempotent; the item is written to pending.jsonl by `register`."""
+        with self._lock:
+            for k, v in self.pending.items():
+                if v.hash == h:
+                    return k
+            key = self._place(self.pending, PendingItem(h, "", "", 0, ""))
+            self._trim()
+            return key
+
+    def register(self, item: PendingItem, again: bool = False) -> str:
+        """Record a held / withheld item under its id; written to pending.jsonl once (or `again`)."""
+        with self._lock:
+            key = self._place(self.pending, item)
+            self._trim()
+            if again or item.hash not in self._persisted:
+                _append(self.pending_path, {"hash": item.hash, "id": key, "kind": item.kind, "reason": item.reason,
+                                            "size": item.size, "at": _now()})
+                self._persisted.add(item.hash)
+            return key
 
     def _refresh(self) -> None:
         try:
@@ -119,24 +151,47 @@ class AllowStore:
         self._mtime = m
 
     def is_allowed(self, h: str) -> bool:
+        """Full hashes only: an id is never a prefix wildcard."""
         self._refresh()
-        return any(h == i or (len(i) >= 4 and h.startswith(i)) for i in self._ids)
+        return h in self._ids
 
-    def allow(self, id_or_hash: str) -> None:
+    def allow(self, id_or_hash: str) -> bool:
+        """Release a pending id (or a full content hash). An unknown id, or an item that could not be scanned, is
+        refused (False) and nothing is written."""
         item = self.pending.get(id_or_hash)
-        _append(self.allowed_path, {"id": item.hash if item else id_or_hash, "at": _now()})
+        if item is not None and not releasable(item.reason):
+            return False
+        if item is not None:
+            h = item.hash
+        elif _FULL_HASH.fullmatch(id_or_hash):
+            h = id_or_hash
+        else:
+            return False
+        _append(self.allowed_path, {"id": h, "at": _now()})
+        return True
 
 
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+def session_releasable(reason: str) -> bool:
+    """`[a]llow everything this session` covers judge decisions only (and the smuggling check that stands in for
+    the judge), never a detector error or an image."""
+    return reason == "judge" or reason.startswith("smuggling:")
+
+
+def releasable(reason: str) -> bool:
+    """A detector error is never released: its text could not be scanned, so it has no pattern-redacted form."""
+    return not reason.startswith("detector_error")
+
+
 class SessionAllow:
     def __init__(self) -> None:
         self.all = False
 
-    def is_allowed(self, h: str) -> bool:
-        return self.all
+    def is_allowed(self, h: str, reason: str = "") -> bool:
+        return self.all and session_releasable(reason)
 
 
 class Approvals:
@@ -144,8 +199,13 @@ class Approvals:
         self.store = store
         self.session = session
 
-    def is_allowed(self, h: str) -> bool:
-        return self.session.all or self.store.is_allowed(h)
+    def assign(self, h: str) -> str:
+        return self.store.assign(h)
+
+    def is_allowed(self, h: str, reason: str = "") -> bool:
+        if not releasable(reason):
+            return False
+        return self.session.is_allowed(h, reason) or self.store.is_allowed(h)
 
 
 class NoPrompter:
