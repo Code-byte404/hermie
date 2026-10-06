@@ -33,3 +33,15 @@ class CleanBody:
 
     def __repr__(self) -> str:
         return f"CleanBody(len={len(self.data)})"
+
+
+@dataclass
+class ScanResult:
+    text: str
+    findings: list[Finding]
+    judged: bool
+    sensitive: bool
+    reason: str
+    new_mapping: dict[str, str]
+    hash: str
+    size: int = 0   # original text length, for cache accounting
