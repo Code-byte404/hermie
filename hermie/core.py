@@ -13,7 +13,8 @@ from typing import Any, Optional, Sequence
 from pydantic_ai import Agent
 from pydantic_ai.exceptions import UsageLimitExceeded
 
-from .agents import (ExecutorOutput, ExecutorReport, ModelFactory, Review, Status, build_executor, build_reviewer,
+from .agents import (ExecutorOutput, ExecutorReport, ModelFactory, Review, Status, build_cloud_executor, build_executor,
+                     build_reviewer,
                      compress_history, restore_local, review_prompt, trim_history, usage_limits)
 from .audit import AuditLog, JsonlLog
 from .complexity import RouteLLMScorer
@@ -92,6 +93,20 @@ ABSTRACT_PROMPT = (
 )
 
 
+
+def _complete_history(messages: list) -> list:
+    """A message history the next run can continue from: every tool call must have its result. The trailing request
+    that was never sent to the cloud keeps the tool results (they are local, the local executor may see them); a
+    trailing request without tool results (a bare retry or user prompt) is dropped."""
+    from pydantic_ai.messages import ModelRequest, ModelResponse, ToolReturnPart
+    while messages and isinstance(messages[-1], ModelRequest) \
+            and not any(isinstance(p, ToolReturnPart) for p in messages[-1].parts):
+        messages.pop()
+    while messages and isinstance(messages[-1], ModelResponse) and any(getattr(p, "tool_name", None) for p in messages[-1].parts):
+        messages.pop()   # a response whose tool calls never ran cannot be continued either
+    return messages
+
+
 @dataclass
 class TaskResult:
     output: str
@@ -117,13 +132,15 @@ class Hermie:
         s = settings or Settings()
         s.ensure_dirs()
         judge = judge or OllamaJudge(s)
+        # The checks that run while the executor works (taint, stuck, command risk) share the GPU with it: fewer samples
+        quick = judge.with_samples(s.background_judge_samples) if hasattr(judge, "with_samples") else judge
         gate = PrivacyGate(s, judge=judge, analyzer=analyzer)
         if scorer is None:
             scorer = RouteLLMScorer(s.routellm_checkpoint) if s.routellm_enabled else None
         self.scorer = scorer or None
         self.models = models or ModelFactory(s)
         self.session = Session(
-            settings=s, judge=judge, gate=gate, sandbox=Sandbox(s),
+            settings=s, judge=judge, quick_judge=quick, gate=gate, sandbox=Sandbox(s),
             snapshots=SnapshotManager(s.workspace, s.snapshot_dir), bus=bus or EventBus(),
             audit=AuditLog(s.audit_log_path), outbound_log=JsonlLog(s.outbound_log_path),
             command_log=JsonlLog(s.command_log_path), review_log=JsonlLog(s.review_log_path),
@@ -530,6 +547,61 @@ class Hermie:
             self.bus.emit(ReportArrived(st.last_report))
         return out
 
+    async def _run_cloud_executor(self, st: TaskState, prompt: str) -> ExecutorOutput:
+        """cloud_exec: the cloud model drives the local tools. The prompt is certified first and the cloud executor's
+        OutboundGuard certifies every tool result before the next request (CloudToolRedactor turned Presidio findings
+        into placeholders). It gets neither the local executor's history nor lessons or skills (local only); the project
+        doc goes along without its Lessons section, like for the planner. When a result cannot be certified or the cloud
+        fails, the local executor takes over with the cloud run's tool history, so nothing done so far is lost."""
+        from pydantic_ai import capture_run_messages
+        from .capabilities import OutboundBlockedError
+        st.tool_calls, st.stuck, st.recent_calls, st.tool_seq, st.changed_paths = 0, False, [], [], []
+        cloud_prompt = prompt
+        if st.project_doc:
+            doc = project_doc.strip_lessons(st.project_doc).strip()
+            if doc:
+                cloud_prompt = f"[Project doc AGENT.md]\n{doc}\n\n{prompt}"
+        why = None
+        with capture_run_messages() as messages:
+            try:
+                st.remember(await asyncio.to_thread(st.gate.certify, cloud_prompt))
+                res = await self._watch_executor(st, asyncio.ensure_future(
+                    build_cloud_executor(self.models).run(cloud_prompt, deps=st, usage_limits=usage_limits(self.s, cloud=True))))
+                out = res.output
+            except PermissionError as e:
+                why = f"Outbound check blocked the task text; running the step locally: {e}"
+            except OutboundBlockedError:
+                st.tainted = True   # a tool result the gate would not certify: the task has touched sensitive content
+                why = "A tool result could not be certified for the cloud; the local executor continues the step"
+            except UsageLimitExceeded as e:
+                self.bus.emit(Notice("warn", f"Cloud executor hit the usage limit: {e}"))
+                out = ExecutorOutput(report=ExecutorReport(status=Status.PARTIAL,
+                                                           issues=["Step limit reached; task not finished"]))
+            except asyncio.TimeoutError:
+                self.session.sandbox.kill_all()
+                self.bus.emit(Notice("warn", self._timeout_notice(st)))
+                out = ExecutorOutput(report=ExecutorReport(status=Status.PARTIAL,
+                                                           issues=["Execution timed out; task not finished"]))
+            except Exception as e:  # network errors, missing key, model errors
+                log.exception("Cloud executor failed")
+                why = f"{self.s.cloud_label} unavailable; the local executor continues the step: {type(e).__name__}"
+        if why is not None:
+            self.bus.emit(Notice("warn", why))
+            st.flow.notes.append(why)
+            st.flow.cloud_exec_local = True
+            # The local executor inherits the tool calls and results so far (local only, so nothing to certify)
+            self.session.exec_history = _complete_history(list(messages))
+            return await self._run_executor(st, prompt)
+        await st.settle_checks()
+        st.last_report = out.report.model_dump(mode="json")
+        st.artifacts.extend(a.model_dump() for a in out.report.artifacts)
+        if out.answer:
+            st.answers.append(out.answer)
+            self.bus.emit(ChatMessage("executor", out.answer))
+        if not st.report_for_cloud:
+            self.bus.emit(ReportArrived(st.last_report))
+        return out
+
     # ------------------------------------------------------------ Self-verification loop: execute -> local review -> fix
     async def _review(self, st: TaskState, task_text: str, acceptance: list[str],
                       out: ExecutorOutput) -> Optional[Review]:
@@ -585,7 +657,7 @@ class Hermie:
             return ""
         try:
             agent = Agent(self.models.compressor(), output_type=str, name="diagnoser",
-                          model_settings=self.models.local_settings(), capabilities=self.models.tracker("diagnosis", "local"))
+                          model_settings=self.models.local_settings(), capabilities=self.models.local_caps("diagnosis"))
             text = (await asyncio.wait_for(agent.run(DIAGNOSE_PROMPT + "\n".join(material)),
                                            self.s.compress_timeout_s)).output.strip()
             await asyncio.to_thread(st.gate.certify, text)
@@ -603,7 +675,7 @@ class Hermie:
             material = "Problems raised by the review:\n" + "\n".join(f"- {x}" for x in problems) + \
                        "\nFinal approach:\n" + "\n".join(f"- {x}" for x in fixed)
             agent = Agent(self.models.compressor(), output_type=str, name="lesson",
-                          model_settings=self.models.local_settings(), capabilities=self.models.tracker("lesson", "local"))
+                          model_settings=self.models.local_settings(), capabilities=self.models.local_caps("lesson"))
             lesson = (await asyncio.wait_for(agent.run(LESSON_PROMPT + material), self.s.compress_timeout_s)).output
             lesson = lesson.strip().splitlines()[0].strip() if lesson.strip() else ""
             if lesson:
@@ -684,7 +756,7 @@ class Hermie:
                             + "\n\nReported steps:\n" + "\n".join(f"- {x}" for x in ep["steps"])
                             + "\nVerification:\n" + "\n".join(f"- {x}" for x in ep["verification"]))
                 agent = Agent(self.models.compressor(), output_type=str, name="skill",
-                              model_settings=self.models.local_settings(), capabilities=self.models.tracker("skill", "local"))
+                              model_settings=self.models.local_settings(), capabilities=self.models.local_caps("skill"))
                 out = (await asyncio.wait_for(agent.run(SKILL_PROMPT + material), self.s.compress_timeout_s)).output
                 parsed = split_playbook(out)
                 if parsed is None:
@@ -731,7 +803,7 @@ class Hermie:
                 notes.append(f"Still failed after placeholder redaction: {e}")
         try:
             rewriter = Agent(self.models.compressor(), output_type=str, name="abstractor",
-                             model_settings=self.models.local_settings(), capabilities=self.models.tracker("abstraction", "local"))
+                             model_settings=self.models.local_settings(), capabilities=self.models.local_caps("abstraction"))
             abstract = (await rewriter.run(ABSTRACT_PROMPT + source)).output.strip()
             clean = await asyncio.to_thread(gate.certify, abstract)
             notes.append("Local abstracted description passed the outbound check")

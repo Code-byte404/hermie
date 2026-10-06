@@ -451,7 +451,7 @@ async def test_slash_popup_filters_completes_and_executes(make_agent):
 
 
 async def test_model_command_switches_and_writes_env(make_agent, settings):
-    agent = make_agent(FakeJudge(task="repetitive"))
+    agent = make_agent(FakeJudge(task="repetitive"), judge_model="gemma4:12b")   # not the JUDGE_MODEL of the local .env
     agent.list_local_models = lambda: ["gemma4:12b", "qwen3.8:27b-mlx", "qwen3:8b"]
     app = HermieApp(agent=agent)
     settings.env_path.write_text("# x\nWORKER_MODEL=qwen3.8:27b-mlx\n")
@@ -515,7 +515,7 @@ async def _wait_screen(pilot, app, cls, timeout=3):
 
 
 async def test_model_dialog_saves_and_writes_env(make_agent, settings):
-    agent = make_agent(FakeJudge())
+    agent = make_agent(FakeJudge(), worker_model="qwen3.8:27b-mlx", judge_model="gemma4:12b")   # independent of the local .env
     agent.list_local_models = lambda: ["gemma4:12b", "qwen3:8b"]
     app = HermieApp(agent=agent)
     async with app.run_test(size=(160, 45)) as pilot:

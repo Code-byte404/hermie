@@ -167,7 +167,23 @@ class Settings:
     # Upper bound on delegations for a large plan (the budget is max(MAX_DELEGATIONS, 2 x steps), capped here)
     plan_delegation_cap: int = field(default_factory=lambda: _env_int("PLAN_DELEGATION_CAP", 40))
     report_retries: int = field(default_factory=lambda: _env_int("REPORT_RETRIES", 3))
+    # Extra attempts for empty or malformed final results on top of REPORT_RETRIES + 1 (small local models such as gemma4
+    # return an empty reply or a report missing fields now and then; each costs a turn, not the step)
+    extra_output_retries: int = field(default_factory=lambda: _env_int("EXTRA_OUTPUT_RETRIES", 4))
+    # cloud_exec route: for a clean task that needs the workspace, the cloud model drives the local sandbox tools and
+    # every tool result passes the privacy gate before it goes out (Presidio findings become placeholders; a result the
+    # gate cannot certify hands the step to the local executor). Off: such tasks take plan mode (cloud planner, local executor)
+    cloud_exec: bool = field(default_factory=lambda: _env_bool("CLOUD_EXEC", False))
+    # The cloud executor's budgets (MAX_TOOL_CALLS / MAX_REQUESTS guard a slow local model; a cloud turn takes seconds)
+    cloud_max_tool_calls: int = field(default_factory=lambda: _env_int("CLOUD_MAX_TOOL_CALLS", 60))
+    cloud_max_requests: int = field(default_factory=lambda: _env_int("CLOUD_MAX_REQUESTS", 80))
     stuck_check_every: int = field(default_factory=lambda: _env_int("STUCK_CHECK_EVERY", 6))
+    # Samples for the judge checks that run during execution (taint of tool outputs, stuck detection, command risk):
+    # they share the GPU with the executor, so one deterministic sample by default; routing keeps JUDGE_SAMPLES
+    background_judge_samples: int = field(default_factory=lambda: _env_int("BACKGROUND_JUDGE_SAMPLES", 1))
+    # Whole-file rewrites (write_file over an existing file) allowed per file and task; the next one is refused with a
+    # pointer to edit_file (a 2000-token rewrite costs about a minute on a laptop, an edit a few seconds)
+    write_rewrite_limit: int = field(default_factory=lambda: _env_int("WRITE_REWRITE_LIMIT", 3))
     tool_output_max_chars: int = field(default_factory=lambda: _env_int("TOOL_OUTPUT_MAX_CHARS", 8000))
     # When the executor's conversation history exceeds this many characters, compress it with the local model (never the cloud)
     history_compress_chars: int = field(default_factory=lambda: _env_int("HISTORY_COMPRESS_CHARS", 24000))

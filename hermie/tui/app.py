@@ -110,7 +110,8 @@ _ROLE_DOING = {"executor": "🔒 Local executor is writing its reply", "reviewer
                "cloud": "☁ Cloud model is answering", "diagnosis": "🩺 Local model is diagnosing a failed step",
                "abstraction": "🔒 Local model is abstracting the task before it goes to the cloud",
                "lesson": "📚 Local model is writing a lesson", "skill": "📚 Local model is distilling a skill",
-               "designer": "☁ Cloud planner is designing the plan"}
+               "designer": "☁ Cloud planner is designing the plan",
+               "cloud_executor": "☁ Cloud executor is driving the local tools"}
 
 
 class PromptInput(TextArea):

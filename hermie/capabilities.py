@@ -19,6 +19,7 @@ from typing import Any
 
 from pydantic_ai import RunContext
 from pydantic_ai.capabilities import AbstractCapability
+from pydantic_ai.exceptions import ModelHTTPError
 from pydantic_ai.messages import (ModelRequest, RetryPromptPart, SystemPromptPart, ToolReturn, ToolReturnPart,
                                   UserPromptPart)
 from pydantic_ai.tools import ToolDefinition
@@ -83,6 +84,41 @@ class OutboundGuard(AbstractCapability[TaskState]):
         st.outbound_count += 1
         st.session.outbound_total += 1
         return request_context
+
+
+# ====================================================================== cloud executor: tool results out, placeholders back
+
+@dataclass
+class CloudToolRedactor(AbstractCapability[TaskState]):
+    """For the cloud executor (cloud_exec route). Every tool result is about to be sent to the cloud model, so the rules
+    layer runs on it right here: Presidio findings are replaced by placeholders (<CN_MOBILE_1>, ...) whose mapping stays
+    in TaskState.mapping, continuing the task's numbering. Placeholders the model puts into tool arguments (an edit_file
+    `old`, a command) are restored before the tool runs. The contextual judge still runs in OutboundGuard.certify on the
+    redacted text, and a result it rejects raises OutboundBlockedError there, which hands the step to the local executor.
+    Must run before TaintTracker so the tracker sees the same text the model gets."""
+
+    async def before_tool_execute(self, ctx: RunContext[TaskState], *, call, tool_def, args):
+        st = ctx.deps
+        if st.mapping and isinstance(args, dict):
+            return {k: (_restore(st, v) if isinstance(v, str) else v) for k, v in args.items()}
+        return args
+
+    async def after_tool_execute(self, ctx: RunContext[TaskState], *, call, tool_def, args, result: Any):
+        st = ctx.deps
+        if not isinstance(result, str) or not result.strip():
+            return result
+        verdict = await asyncio.to_thread(st.gate.check, result, False)   # rules only; the judge runs at certify time
+        if not verdict.findings:
+            return result
+        redacted, mapping = st.gate.redact(result, verdict.findings, existing=st.mapping)
+        st.mapping.update(mapping)
+        return redacted
+
+
+def _restore(st: TaskState, text: str) -> str:
+    for ph, original in st.mapping.items():
+        text = text.replace(ph, original)
+    return text
 
 
 # ====================================================================== command guard
@@ -182,7 +218,7 @@ class CommandGuard(AbstractCapability[TaskState]):
         risk = rule_risk(command)
         if risk is None:
             try:
-                ans = await asyncio.to_thread(st.session.judge.score, command, RISK_QUESTION, RISK_LEVELS)
+                ans = await asyncio.to_thread(st.session.bg_judge.score, command, RISK_QUESTION, RISK_LEVELS)
                 risk = _RISK_BY_SCORE[ans.score]
             except Exception:
                 log.exception("Command risk judgment failed; treating as high risk")
@@ -201,6 +237,8 @@ class CommandGuard(AbstractCapability[TaskState]):
 
 # ====================================================================== taint tracking + progress supervision
 
+WITHDRAWN_NOTE = ("Tools are withdrawn for this step (step limit reached or no progress detected). Do not call tools "
+                  "again: submit the structured result now with what was achieved so far (status partial if unfinished).")
 STUCK_QUESTION = ("Based on the action log below, is the executor going in circles (repeating the same or "
                   "similar failing actions without real progress)?")
 # These tools return no file content (only paths / byte counts / file lists): taint detection runs the rules
@@ -222,14 +260,14 @@ async def _contextual_taint(st: TaskState, tool: str, text: str) -> None:
     """Background: judge model only. Fails closed (treated as private)."""
     if st.tainted:
         return
-    verdict = await asyncio.to_thread(st.gate.contextual, text)
+    verdict = await asyncio.to_thread(st.gate.contextual, text, st.session.bg_judge)
     if verdict.sensitive:
         mark_tainted(st, tool, verdict.reason)
 
 
 async def _stuck_check(st: TaskState, window: list[str]) -> None:
     try:
-        p = await asyncio.to_thread(st.session.judge.noul, "\n".join(window), STUCK_QUESTION)
+        p = await asyncio.to_thread(st.session.bg_judge.noul, "\n".join(window), STUCK_QUESTION)
         if p >= 0.67 and not st.stuck:
             st.stuck = True
             st.bus.emit(Notice("warn", f"The judge thinks the executor is stuck (p={p:.2f}); "
@@ -263,6 +301,8 @@ class TaintTracker(AbstractCapability[TaskState]):
             if args["path"] not in st.changed_paths:
                 st.changed_paths.append(str(args["path"]))
         st.recent_calls.append(f"{call.tool_name}({str(args)[:200]}) -> {text[:200]}")
+        if text == WITHDRAWN_NOTE:   # a refused call after withdrawal: nothing to scan
+            return result
         if not st.tainted and not st.business and call.tool_name not in _PUBLIC_TOOLS:
             verdict = await asyncio.to_thread(st.gate.check, text, False)
             if verdict.sensitive:
@@ -273,6 +313,23 @@ class TaintTracker(AbstractCapability[TaskState]):
         if every > 0 and st.tool_calls % every == 0 and not st.stuck:
             st.schedule_check(_stuck_check(st, st.recent_calls[-every * 2:]))
         return result
+
+
+# ====================================================================== local model request retry
+
+@dataclass
+class LocalRequestRetry(AbstractCapability[Any]):
+    """One immediate, identical retry when the local model server answers 5xx. Ollama's tool-call parser fails on
+    some outputs of the qwen3.x models ("XML syntax error ... element <function> closed by </parameter>", HTTP 500)
+    and the next sample is usually fine; without the retry the reviewer silently skipped its review and an executor
+    step failed. Nothing else is retried here (timeouts stay fatal: see ModelFactory._ollama)."""
+
+    async def on_model_request_error(self, ctx, *, request_context, error):
+        if isinstance(error, ModelHTTPError) and error.status_code >= 500:
+            log.warning("Local model request failed with HTTP %s; retrying once", error.status_code)
+            return await request_context.model.request(request_context.messages, request_context.model_settings,
+                                                       request_context.model_request_parameters)
+        raise error
 
 
 # ====================================================================== activity stats
@@ -319,13 +376,26 @@ class ActivityTracker(AbstractCapability[Any]):
 
 @dataclass
 class ExecutorToolBudget(AbstractCapability[TaskState]):
-    """Once the step limit is exceeded or the executor is judged stuck, withdraw all tools and only allow a report."""
+    """Once the step limit is exceeded or the executor is judged stuck, every tool call is answered with WITHDRAWN_NOTE
+    instead of running, so the model's next move is the report. The definitions stay in the request on purpose:
+    removing them made a model that still called run_command hit "Unknown tool name" retries until the step failed
+    with UnexpectedModelBehavior (measured 2026-10-06: four 60 s turns and a re-delegated step). Must come before
+    CommandGuard in the capability list so a refused command is not risk-judged or approved first."""
 
-    async def prepare_tools(self, ctx: RunContext[TaskState], tool_defs: list[ToolDefinition]):
+    cloud: bool = False   # the cloud executor's budget (CLOUD_MAX_TOOL_CALLS) instead of the local one
+
+    def withdrawn(self, st: TaskState) -> bool:
+        limit = st.s.cloud_max_tool_calls if self.cloud else st.s.max_tool_calls
+        return st.stuck or st.tool_calls >= limit
+
+    async def wrap_tool_execute(self, ctx: RunContext[TaskState], *, call, tool_def, args, handler):
         st = ctx.deps
-        if st.stuck or st.tool_calls >= st.s.max_tool_calls:
-            return []
-        return tool_defs
+        if self.withdrawn(st):
+            # visible in the command log and the UI as "withdrawn" (never the arguments), so the turns a model spends
+            # ignoring the note can be counted
+            command_finished(st, call.tool_name, "withdrawn", 1, WITHDRAWN_NOTE, 0.0)
+            return WITHDRAWN_NOTE
+        return await handler(args)
 
 
 @dataclass

@@ -129,10 +129,16 @@ class Session:
     command_log: JsonlLog
     # Local executor history kept across delegations and tasks (compressed by a local model when too long; never sent to the cloud)
     exec_history: list[Any] = field(default_factory=list)
+    # The judge used by the checks that run while the executor works (fewer samples: BACKGROUND_JUDGE_SAMPLES); None = judge
+    quick_judge: Optional["Judge"] = None
     # Commands allowed for the whole session (by the command's first word)
     session_allow: set[str] = field(default_factory=set)
     outbound_total: int = 0
     stats: Stats = field(default_factory=Stats)
+
+    @property
+    def bg_judge(self) -> "Judge":
+        return self.quick_judge if self.quick_judge is not None else self.judge
     web: Optional["WebClient"] = None
     screen: Optional["ScreenCapture"] = None   # screenshot tool (main process); None when MAC_TOOLS=false
     review_log: Optional[JsonlLog] = None   # local review records (contain local content; data_dir only)
@@ -167,6 +173,7 @@ class FlowState:
     last_step: Optional[Any] = None               # graph.StepResult of the last run_reviewed
     design_messages: Optional[list] = None        # the design run's all_messages(); the plan node continues from them
     plan_rejected: bool = False                   # the user rejected the plan: nothing was executed
+    cloud_exec_local: bool = False                # cloud_exec handed the step to the local executor (uncertifiable result or cloud failure)
 
 
 @dataclass
@@ -190,6 +197,7 @@ class TaskState:
     last_tool_at: float = 0.0                           # time.monotonic() of the last finished tool call (progress display)
     changed_paths: list[str] = field(default_factory=list)  # files written / edited in this executor run (local UI only)
     stuck: bool = False
+    rewrites: dict[str, int] = field(default_factory=dict)   # write_file over an existing file, per path (WRITE_REWRITE_LIMIT)
     snapshot_id: Optional[str] = None                   # the reviewer diffs the workspace against this (pre-task snapshot; in plan mode the pre-step snapshot)
     route: str = ""
     review_failures: int = 0                            # number of failed reviews in this task

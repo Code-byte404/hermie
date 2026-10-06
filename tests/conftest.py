@@ -190,7 +190,7 @@ def settings(tmp_path):
                     cloud_api_key="test-key", mode=RunMode.AUTO, routellm_enabled=False,
                     stuck_check_every=0, env_path=tmp_path / ".env",
                     # the self-verification loop is off by default; the relevant tests enable it explicitly
-                    verify_required=False, verify_rounds=0, recon_enabled=False, lessons_enabled=False,
+                    verify_required=False, verify_rounds=0, cloud_exec=False, recon_enabled=False, lessons_enabled=False,
                     skills_enabled=False, connectors=[],
                     plan_design=False)  # the plan design phase is off by default; tests/test_plan_design.py enables it
 

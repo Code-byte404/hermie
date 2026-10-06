@@ -19,6 +19,7 @@ model is available, write a class implementing these three methods and pass it a
 """
 from __future__ import annotations
 
+import copy
 import json
 import logging
 from collections import Counter
@@ -108,13 +109,25 @@ class OllamaJudge:
         self.s = settings
         self.http = client or httpx.Client(timeout=settings.judge_timeout_s)
         self.usage_sink = None  # (prompt_tokens, completion_tokens) -> None, for session stats
+        self.samples_override: int | None = None   # set by with_samples(); None = settings.judge_samples
+
+    def with_samples(self, n: int) -> "OllamaJudge":
+        """The same judge (same client, settings and usage sink) answering with n samples. Used for the checks that
+        run while the executor works (tool-output taint, stuck detection, command risk): they share the GPU with the
+        executor, so one deterministic sample instead of a three-way vote."""
+        quick = copy.copy(self)
+        quick.samples_override = max(1, n)
+        return quick
+
+    def _n(self) -> int:
+        return self.samples_override if self.samples_override is not None else max(1, self.s.judge_samples)
 
     def _sample(self, state: str, prompt: str, schema: dict) -> list[dict]:
         """Run the constrained request JUDGE_SAMPLES times (temperature 0 for a single sample) and return the parsed
         JSON objects; `state` is the raw material, `prompt` the questions."""
         state = state[: self.s.judge_max_chars]
         user = f"<<<DATA\n{state}\nDATA>>>\n\n{prompt}"
-        n = max(1, self.s.judge_samples)
+        n = self._n()
         temperature = 0.0 if n == 1 else 0.8
 
         def one(i: int) -> dict:
@@ -177,10 +190,10 @@ class OllamaJudge:
         return out
 
     def choice(self, state, instructions, options):
-        return to_choice(self._vote(state, instructions, options), self.s.judge_samples)
+        return to_choice(self._vote(state, instructions, options), self._n())
 
     def score(self, state, instructions, levels):
-        return to_score(self._vote(state, instructions, score_options(levels)), self.s.judge_samples)
+        return to_score(self._vote(state, instructions, score_options(levels)), self._n())
 
     def noul(self, state, statement):
         return self._vote(state, statement, {"yes": "yes", "no": "no"})["yes"]

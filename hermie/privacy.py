@@ -215,12 +215,14 @@ class PrivacyGate:
             return PrivacyVerdict(True, findings, ctx_prob, reason=f"entities: {kinds}")
         return PrivacyVerdict(False, [], ctx_prob, reason="clean")
 
-    def contextual(self, text: str) -> PrivacyVerdict:
-        """Contextual check via the judge model only (for when the rules layer already ran separately). Fails closed."""
-        if not text.strip() or self.judge is None:
+    def contextual(self, text: str, judge=None) -> PrivacyVerdict:
+        """Contextual check via the judge model only (for when the rules layer already ran separately). Fails closed.
+        `judge` overrides the gate's judge (the executor's background checks pass the one-sample judge)."""
+        judge = judge or self.judge
+        if not text.strip() or judge is None:
             return PrivacyVerdict(False, reason="empty")
         try:
-            p = self.judge.noul(text, CONTEXTUAL_PRIVACY_QUESTION)
+            p = judge.noul(text, CONTEXTUAL_PRIVACY_QUESTION)
         except Exception as e:
             log.exception("Judge model failed; treating as private")
             return PrivacyVerdict(True, reason=f"judge_error: {e}")
