@@ -74,3 +74,37 @@ async def test_tty_prompter_reprompts_on_junk_and_maps_choices():
         assert await p.ask(item) == want
     assert not NoPrompter().available
     await asyncio.sleep(0)
+
+
+async def test_concurrent_asks_are_answered_in_order():
+    mk = lambda h: PendingItem(hash=h + "0" * 60, kind="hold", reason="judge", size=1, excerpt="x")
+    p = TtyPrompter(timeout_s=5, stdin=io.StringIO("s\nr\n"), stdout=io.StringIO())
+    first = asyncio.create_task(p.ask(mk("aaaa")))
+    await asyncio.sleep(0)
+    second = asyncio.create_task(p.ask(mk("bbbb")))
+    assert await first == "send"
+    assert await second == "reject"
+
+
+async def test_timeout_with_open_pipe_rejects_and_stops_countdown():
+    r, w = os.pipe()
+    stdin = os.fdopen(r)
+    try:
+        item = PendingItem(hash="cafe" + "0" * 60, kind="hold", reason="judge", size=1, excerpt="x")
+        p = TtyPrompter(timeout_s=0.3, stdin=stdin, stdout=io.StringIO())
+        assert await p.ask(item) == "reject"
+        assert p._ticker.done()
+    finally:
+        os.close(w)
+        await asyncio.sleep(0.1)
+        stdin.close()
+
+
+def test_register_returns_assigned_id_and_sets_it_on_item(tmp_path):
+    s = AllowStore(tmp_path)
+    a = PendingItem("ab12" + "0" * 60, "hold", "r", 1, "")
+    b = PendingItem("ab12" + "1" * 60, "hold", "r", 1, "")
+    assert s.register(a) == "ab12" and a.id == "ab12"
+    idb = s.register(b)
+    assert len(idb) == 6 and b.id == idb
+    assert set(s.pending) == {"ab12", idb}

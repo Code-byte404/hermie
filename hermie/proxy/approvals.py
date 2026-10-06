@@ -6,6 +6,7 @@ import fcntl
 import json
 import os
 import sys
+import threading
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -23,6 +24,7 @@ class PendingItem:
     reason: str
     size: int
     excerpt: str
+    id: str | None = None
 
 
 def _append(path: Path, row: dict) -> None:
@@ -88,19 +90,22 @@ class AllowStore:
         for k, v in table.items():
             if v.hash == item.hash:
                 table[k] = item
+                item.id = k
                 return k
         key = item.hash[:4]
         if key in table:
             key = item.hash[:6]
         table[key] = item
+        item.id = key
         return key
 
-    def register(self, item: PendingItem) -> None:
-        self._place(self.pending, item)
+    def register(self, item: PendingItem) -> str:
+        key = self._place(self.pending, item)
         while len(self.pending) > KEEP:
             self.pending.pop(next(iter(self.pending)))
         _append(self.pending_path, {"hash": item.hash, "kind": item.kind, "reason": item.reason,
                                     "size": item.size, "at": _now()})
+        return key
 
     def _refresh(self) -> None:
         try:
@@ -157,10 +162,41 @@ class TtyPrompter:
         self.stdin = stdin if stdin is not None else sys.stdin
         self.stdout = stdout if stdout is not None else sys.stdout
         self.available = True if injected else sys.stdin.isatty()
+        self._lock = asyncio.Lock()
+        self._queue: asyncio.Queue | None = None
+        self._reader: threading.Thread | None = None
+        self._eof = False
+        self._ticker: asyncio.Task | None = None
 
     def _say(self, s: str) -> None:
         self.stdout.write(s)
         self.stdout.flush()
+
+    def _deliver(self, line: str | None) -> None:
+        if line is None:
+            self._eof = True
+        self._queue.put_nowait(line)
+
+    def _read_loop(self, loop: asyncio.AbstractEventLoop) -> None:
+        while True:
+            try:
+                line = self.stdin.readline()
+            except (OSError, ValueError):
+                line = ""
+            try:
+                loop.call_soon_threadsafe(self._deliver, line if line else None)
+            except RuntimeError:  # loop closed
+                return
+            if not line:
+                return
+
+    def _start_reader(self) -> None:
+        if self._reader is None:
+            loop = asyncio.get_running_loop()
+            self._queue = asyncio.Queue()
+            self._reader = threading.Thread(target=self._read_loop, args=(loop,), daemon=True,
+                                            name="hermie-prompt-reader")
+            self._reader.start()
 
     async def _countdown(self, deadline: float) -> None:
         loop = asyncio.get_running_loop()
@@ -170,25 +206,36 @@ class TtyPrompter:
             await asyncio.sleep(1)
 
     async def ask(self, item: PendingItem) -> Choice:
+        contended = self._lock.locked()
+        async with self._lock:
+            self._start_reader()
+            if not contended:  # keyboard input typed while no prompt was open is discarded
+                while not self._queue.empty():
+                    self._queue.get_nowait()
+            if self._eof and self._queue.empty():
+                return "reject"
+            return await self._ask(item)
+
+    async def _ask(self, item: PendingItem) -> Choice:
         excerpt = " ".join(item.excerpt[:200].split())
         self._say(f"\nHermie holds this {item.kind} ({item.size} chars): {excerpt}\n"
                   f"  reason: {item.reason}\n"
                   f"  kind: {item.kind}\n"
                   "  [s]end as is  [r]eject  [a]llow everything this session\n"
-                  f"  or later: hermie allow {item.hash[:4]}\n")
+                  f"  or later: hermie allow {item.id or item.hash[:4]}\n")
         loop = asyncio.get_running_loop()
         deadline = loop.time() + self.timeout_s
-        ticker = asyncio.create_task(self._countdown(deadline))
+        self._ticker = ticker = asyncio.create_task(self._countdown(deadline))
         try:
             while True:
                 left = deadline - loop.time()
                 if left <= 0:
                     return "reject"
                 try:
-                    line = await asyncio.wait_for(asyncio.to_thread(self.stdin.readline), left)
+                    line = await asyncio.wait_for(self._queue.get(), left)
                 except asyncio.TimeoutError:
                     return "reject"
-                if line == "":
+                if line is None:
                     return "reject"
                 choice = _KEYS.get(line.strip().lower())
                 if choice:
