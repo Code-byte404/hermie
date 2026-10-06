@@ -1,0 +1,8 @@
+data: {"candidates":[{"content":{"parts":[{"text":"Call me on <PHONE_NU"}],"role":"model"},"index":0}],"modelVersion":"gemini-2.5-pro"}
+
+data: {"candidates":[{"content":{"parts":[{"text":"MBER_1> works, with a <b> tag"}],"role":"model"},"index":0}],"modelVersion":"gemini-2.5-pro"}
+
+data: {"candidates":[{"content":{"parts":[{"functionCall":{"name":"set_key","args":{"key":"<SECRET_1>"}}}],"role":"model"},"index":0}],"modelVersion":"gemini-2.5-pro"}
+
+data: {"candidates":[{"content":{"parts":[{"text":""}],"role":"model"},"finishReason":"STOP","index":0}],"usageMetadata":{"promptTokenCount":10,"candidatesTokenCount":20},"modelVersion":"gemini-2.5-pro"}
+
