@@ -45,3 +45,10 @@
 {"text": "Run the Redis Cluster Manager tests", "sensitive": false}
 {"text": "See Project Overview in the README", "sensitive": false}
 {"text": "bind to 0.0.0.0 for the dev server", "sensitive": false, "known_fp": true, "note": "0.0.0.0 is an IP shape; harmless, flagged by the IP recognizer"}
+{"text": "token: Optional[str] = None", "sensitive": false}
+{"text": "api_key = os.environ.get(\"API_KEY\")", "sensitive": false}
+{"text": "password = request.form['password']", "sensitive": false}
+{"text": "secret_key = settings.SECRET_KEY", "sensitive": false}
+{"text": "build 123 456 7890 done", "sensitive": false}
+{"text": "Total 100 200 3000", "sensitive": false}
+{"text": "Dial 555.010.0199 for support", "sensitive": true, "layer": "rules", "entities": ["PHONE_NUMBER"]}

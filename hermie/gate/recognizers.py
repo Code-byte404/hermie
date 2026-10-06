@@ -117,8 +117,10 @@ def build_analyzer(languages: tuple[str, ...] = ("en",), deny_words: tuple[str, 
                         # which are exactly what people paste as examples; match the shape too.
                         PatternRecognizer(
                             supported_entity="PHONE_NUMBER", supported_language="en",
-                            patterns=[Pattern("us_phone_shape", r"(?<![\w-])(?:\+?1[ .-]?)?(?:\(\d{3}\)\s?|\d{3}[ .-])"
-                                                                r"\d{3}[ .-]\d{4}(?![\w-])", 0.6)]),
+                            patterns=[Pattern("us_phone_shape",
+                                              r"(?<![\w+-])(?:\+1[ .-]?(?:\(\d{3}\)\s?|\d{3}[ .-])\d{3}[ .-]\d{4}"
+                                              r"|\(\d{3}\)\s?\d{3}[ .-]\d{4}"
+                                              r"|\d{3}[-.]\d{3}[-.]\d{4})(?![\w-])", 0.6)]),
                         PatternRecognizer(
                             supported_entity="US_SSN", supported_language="en",
                             patterns=[Pattern("us_ssn_shape", r"(?<![\d-])(?!000|666|9\d\d)\d{3}-(?!00)\d{2}-(?!0000)\d{4}"
@@ -166,6 +168,11 @@ def build_analyzer(languages: tuple[str, ...] = ("en",), deny_words: tuple[str, 
 # ---------------------------------------------------------------- scanning
 
 _CJK = re.compile(r"[\u4e00-\u9fff]")
+# Credential assignments also fire on code (`token: Optional[str] = None`, `password = request.form[...]`,
+# `api_key = os.environ.get(...)`). A secret value is not a dotted identifier chain and not a bare code word.
+_IDENT_CHAIN = re.compile(r"[A-Za-z_]+(?:\.[A-Za-z_]+)+")
+_CODE_WORDS = {"optional", "none", "null", "true", "false", "string", "str", "int", "bool", "bytes", "any",
+               "self", "undefined", "required", "default", "environ"}
 _EN_PERSON = re.compile(r"[A-Z][a-z]+(?: [A-Z][a-z]+)+")
 
 
@@ -174,6 +181,8 @@ def plausible(entity: str, span: str, lang: str) -> bool:
     `zh` a person needs CJK characters. The English model labels identifiers (RequestHandler, user_name) as
     persons, so for `en` a person must be two or more capitalized words. Every entity needs an alphanumeric."""
     if not any(c.isalnum() for c in span):
+        return False
+    if entity == "SECRET" and (_IDENT_CHAIN.fullmatch(span) or span.lower() in _CODE_WORDS):
         return False
     if entity == "PERSON":
         if lang == "zh":
