@@ -33,7 +33,7 @@ Hermie sits between a coding agent and its cloud API and replaces private values
 
 If you find a way for a value Hermie should have replaced to reach the upstream, please do not open a public issue. Use GitHub's private vulnerability reporting on this repository ("Report a vulnerability" under the Security tab). Include:
 
-- the receipt line of the request (`hermie tail --json --since 1h`),
+- the receipt line of the request (`hermie tail --json --since 1h --once`),
 - the request id, which is also the name of the stored body in `~/.hermie/outbound/<id>.json` (share the body only if it contains nothing real),
 - how to reproduce it with fake data.
 
