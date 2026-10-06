@@ -99,10 +99,20 @@ def test_non_json_is_passthrough_only_on_allowlist(tmp_path, analyzer):
     r = c.post("/anthropic/v1/messages", content=b"not json", headers={"content-type": "text/plain"})
     assert r.status_code == 415 and len(up.seen) == 1
 
-def test_large_tool_result_does_not_block_the_loop(tmp_path, analyzer):
-    body = _body("anthropic"); body["messages"][2]["content"][0]["content"] = "log\n" + ("line 555-010-0199\n" * 60_000)
-    cfg, c = _app(tmp_path, analyzer, Upstream())
-    assert c.post("/anthropic/v1/messages", json=body).status_code == 200      # Review Focus 1: finishes, scanned in a thread
+async def test_large_tool_result_does_not_block_the_loop(tmp_path, analyzer):
+    import asyncio
+    body = _body("anthropic"); body["messages"][2]["content"][0]["content"] = "log\n" + ("line 555-010-0199\n" + "build output line\n" * 160) * 100
+    cfg, _ = _app(tmp_path, analyzer, Upstream())       # ~290 KB, under spaCy's 1M-char limit, so the scan really runs
+    app = _.app
+    ticks = 0
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app), base_url="http://h") as client:
+        req = asyncio.create_task(client.post("/anthropic/v1/messages", json=body))
+        while not req.done():
+            await asyncio.sleep(0.01); ticks += 1
+        r = await req
+    assert r.status_code == 200 and ticks >= 5            # Review Focus 1: the loop kept running during the scan
+    line = json.loads((tmp_path / "receipt.jsonl").read_text().splitlines()[-1])
+    assert any(p["origin"] == "tool" and "PHONE_NUMBER" in p["entities"] for p in line["new_parts"])
 
 def test_send_upstream_refuses_plain_bytes():
     with pytest.raises(TypeError):
@@ -157,3 +167,103 @@ def test_streaming_closes_the_upstream_response(tmp_path, analyzer):
     cfg, c = _app(tmp_path, analyzer, up)
     r = c.post("/anthropic/v1/messages", json=_body("anthropic") | {"stream": True})
     assert r.status_code == 200 and closed == [True]
+
+
+def _receipts(tmp_path): return [json.loads(l) for l in (tmp_path / "receipt.jsonl").read_text().splitlines()]
+
+
+def test_dot_segments_and_encoded_slashes_are_refused(tmp_path, analyzer):
+    up = Upstream(); cfg, c = _app(tmp_path, analyzer, up)
+    for p in ("/openai/v1/models/..%2Fchat%2Fcompletions", "/anthropic/v1/models/..%2Fmessages",
+              "/openai/v1/models/%2E%2E/chat/completions"):
+        r = c.post(p, json=_body("openai_chat"))
+        assert r.status_code == 400 and r.json()["error"]["type"] == "hermie_bad_path", p
+    assert up.seen == []
+
+
+def test_passthrough_is_bodyless_get_only_and_files_are_refused(tmp_path, analyzer):
+    up = Upstream(json_reply={"data": []}); cfg, c = _app(tmp_path, analyzer, up)
+    assert c.post("/openai/v1/models", json={"messages": [{"role": "user", "content": "555-010-0199"}]}).status_code == 415
+    for method in ("GET", "POST"):
+        r = c.request(method, "/openai/v1/files", content=b"" if method == "GET" else b"file bytes 555-010-0199")
+        assert r.status_code == 415 and r.json()["error"]["message"] == "hermie does not proxy file uploads"
+    assert up.seen == []
+    assert c.get("/openai/v1/models").status_code == 200 and up.seen[0].content == b""
+    assert _receipts(tmp_path)[-1]["mode"] == "passthrough"
+    assert not list((tmp_path / "outbound").glob("*.json")) if (tmp_path / "outbound").exists() else True
+
+
+def test_new_parts_only_for_leaves_not_seen_before(tmp_path, analyzer):
+    cfg, c = _app(tmp_path, analyzer, Upstream())
+    c.post("/anthropic/v1/messages", json=_body("anthropic"))
+    c.post("/anthropic/v1/messages", json=_body("anthropic"))
+    first, second = _receipts(tmp_path)
+    assert first["new_parts"] and second["new_parts"] == []
+    assert {"origin": "tool", "tool": "Read", "size": len(".env\nAWS_ACCESS_KEY_ID=AKIAIOSFODNN7EXAMPLE"),
+            "entities": ["SECRET"]} in first["new_parts"]
+
+
+def test_approved_by_session_user_and_allowed(tmp_path, analyzer):
+    class J:
+        def is_sensitive(self, t): return "<PHONE_NUMBER_" in t
+    class P:
+        available = True
+        def __init__(self, choice): self.choice = choice
+        async def ask(self, item): return self.choice
+    for choice, who in (("allow_all", "session"), ("send", "user")):
+        d = tmp_path / choice
+        cfg, c = _app(d, analyzer, Upstream(), judge=J(), prompter=P(choice))
+        assert c.post("/anthropic/v1/messages", json=_body("anthropic")).status_code == 200
+        assert _receipts(d)[-1]["approved_by"] == who and _receipts(d)[-1]["held"]
+    d = tmp_path / "stored"
+    cfg, c = _app(d, analyzer, Upstream(), judge=J())
+    c.app.state.approvals.store.allow(c.post("/anthropic/v1/messages", json=_body("anthropic")).json()["error"]["id"])
+    assert c.post("/anthropic/v1/messages", json=_body("anthropic")).status_code == 200
+    assert _receipts(d)[-1]["approved_by"] == "allowed"
+
+
+def test_custom_route_without_upstream_is_404_and_with_one_forwards(tmp_path, analyzer):
+    up = Upstream(); cfg, c = _app(tmp_path, analyzer, up)
+    assert c.post("/custom/v1/messages", json=_body("anthropic")).status_code == 404 and up.seen == []
+    cfg, c = _app(tmp_path / "b", analyzer, up, custom_upstream="https://llm.internal.test/api")
+    assert c.post("/custom/v1/messages", json=_body("anthropic")).status_code == 200
+    assert str(up.seen[0].url) == "https://llm.internal.test/api/v1/messages"
+
+
+class _ChunkedSSE(httpx.AsyncByteStream):
+    def __init__(self): self.closed = False
+    async def __aiter__(self):
+        for block in (FIX / "streams" / "anthropic.sse").read_bytes().split(b"\n\n"):
+            yield block + b"\n\n"
+    async def aclose(self): self.closed = True
+
+
+async def test_partial_stream_read_still_writes_receipt_and_closes_upstream(tmp_path, analyzer):
+    body = _ChunkedSSE()
+    cfg, c = _app(tmp_path, analyzer, lambda req: httpx.Response(200, headers={"content-type": "text/event-stream"}, stream=body))
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(c.app), base_url="http://h") as client:
+        async with client.stream("POST", "/anthropic/v1/messages", json=_body("anthropic") | {"stream": True}) as r:
+            async for _ in r.aiter_bytes():
+                break
+    assert body.closed and _receipts(tmp_path)[-1]["stream"] is True
+
+
+async def test_client_disconnect_mid_stream_writes_receipt_and_closes_upstream(tmp_path, analyzer):
+    body = _ChunkedSSE()
+    cfg, c = _app(tmp_path, analyzer, lambda req: httpx.Response(200, headers={"content-type": "text/event-stream"}, stream=body))
+    payload = json.dumps(_body("anthropic") | {"stream": True}).encode()
+    scope = {"type": "http", "asgi": {"version": "3.0", "spec_version": "2.4"}, "http_version": "1.1", "method": "POST",
+             "scheme": "http", "path": "/anthropic/v1/messages", "raw_path": b"/anthropic/v1/messages", "query_string": b"",
+             "headers": [(b"content-type", b"application/json")], "client": ("127.0.0.1", 1), "server": ("h", 80)}
+    sent = []
+    async def receive(): return {"type": "http.request", "body": payload, "more_body": False}
+    async def send(msg):
+        if msg["type"] == "http.response.body" and msg.get("body"):
+            if sent:
+                raise OSError("client went away")
+            sent.append(msg)
+    try:
+        await c.app(scope, receive, send)
+    except Exception:
+        pass
+    assert sent and body.closed and _receipts(tmp_path)[-1]["status"] == 200

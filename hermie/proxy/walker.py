@@ -34,6 +34,10 @@ class Decision:
     size: int
     hash: str = ""      # full hash of the leaf (or of the image data), for the allow store
     excerpt: str = ""   # hold only: the pattern-redacted text, single line, first 200 chars
+    origin: str = ""    # Origin value of the leaf ("user", "tool", ...; "binary" for images)
+    entities: list[str] = field(default_factory=list)   # entity names found in the leaf, sorted, unique
+    new: bool = True    # False when the gate answered from its cache (the leaf was seen before)
+    tool: str | None = None   # name of the tool call the leaf belongs to, when cheap to find
 
 
 @dataclass
@@ -135,6 +139,7 @@ class _Walker:
         self.out = WalkResult(body=copy.deepcopy(body))
         self.ids: dict[str, str] = {}   # id -> full hash
         self.images: list[tuple] = []   # handled after the text leaves, so text decisions come first
+        self._names: dict[str, str] | None = None
 
     def _id(self, full: str) -> str:
         for n in (4, 6):
@@ -195,9 +200,9 @@ class _Walker:
         did = self._id(full)
         size = len(_image_data(node).encode())
         if self.approvals.is_allowed(full):
-            self.out.decisions.append(Decision("pass", did, "image released", size, full))
+            self.out.decisions.append(Decision("pass", did, "image released", size, full, origin="binary"))
             return
-        self.out.decisions.append(Decision("withhold", did, "image", size, full))
+        self.out.decisions.append(Decision("withhold", did, "image", size, full, origin="binary"))
         if not self.observe:
             parent[key] = _image_note(node, WITHHELD_IMAGE.format(id=did))
 
@@ -216,32 +221,83 @@ class _Walker:
         self.out.scanned_bytes += size
         for f in res.findings:
             self.out.counts[f.entity] = self.out.counts.get(f.entity, 0) + 1
-        if res.findings:
-            self.out.decisions.append(Decision("placeholders", None, f"{len(res.findings)} replaced", size))
-
         flagged = res.sensitive
         # OTHER leaves are protocol content: ignore both judge and smuggling flags, but still fail closed on detector errors
         if origin is Origin.OTHER and not res.reason.startswith("detector_error"):
             flagged = False    # a judge flag on tool descriptions / metadata is ignored
-        if flagged:
-            did = self._id(res.hash)
-            if origin is Origin.USER:
-                if self.approvals.is_allowed(res.hash):
-                    self.out.decisions.append(Decision("pass", did, res.reason, size, res.hash))
-                else:
-                    d = Decision("hold", did, res.reason, size, res.hash, " ".join(res.text[:400].split())[:200])
-                    self.out.decisions.append(d)
-                    if not self.observe:
-                        self.out.held = d
-                        return False
-                return self.apply(parent, key, res.text)
+        if not res.findings and not flagged:
+            return self.apply(parent, key, res.text)
+
+        meta = {"origin": origin.value, "entities": sorted({f.entity for f in res.findings}),
+                "new": not res.cached, "tool": self._tool_name(path)}
+        if res.findings:
+            self.out.decisions.append(Decision("placeholders", None, f"{len(res.findings)} replaced", size, **meta))
+        if not flagged:
+            return self.apply(parent, key, res.text)
+        did = self._id(res.hash)
+        if origin is Origin.USER:
             if self.approvals.is_allowed(res.hash):
-                self.out.decisions.append(Decision("pass", did, res.reason, size, res.hash))
-                return self.apply(parent, key, res.text)
-            self.out.decisions.append(Decision("withhold", did, res.reason, size, res.hash))
-            note = WITHHELD_NOTE.format(id=did, size=_fmt_size(size), reason=res.reason)
-            return self.apply(parent, key, note)
-        return self.apply(parent, key, res.text)
+                self.out.decisions.append(Decision("pass", did, res.reason, size, res.hash, **meta))
+            else:
+                d = Decision("hold", did, res.reason, size, res.hash, " ".join(res.text[:400].split())[:200], **meta)
+                self.out.decisions.append(d)
+                if not self.observe:
+                    self.out.held = d
+                    return False
+            return self.apply(parent, key, res.text)
+        if self.approvals.is_allowed(res.hash):
+            self.out.decisions.append(Decision("pass", did, res.reason, size, res.hash, **meta))
+            return self.apply(parent, key, res.text)
+        self.out.decisions.append(Decision("withhold", did, res.reason, size, res.hash, **meta))
+        note = WITHHELD_NOTE.format(id=did, size=_fmt_size(size), reason=res.reason)
+        return self.apply(parent, key, note)
+
+    def _tool_names(self) -> dict[str, str]:
+        """Call id -> tool name, built once per walk from tool_use / function_call / chat tool_calls entries."""
+        if self._names is None:
+            names: dict[str, str] = {}
+
+            def collect(n):
+                if isinstance(n, dict):
+                    name = n.get("name")
+                    if isinstance(name, str):
+                        for k in ("id", "call_id"):
+                            if isinstance(n.get(k), str):
+                                names[n[k]] = name
+                    fn = n.get("function")
+                    if isinstance(fn, dict) and isinstance(fn.get("name"), str) and isinstance(n.get("id"), str):
+                        names[n["id"]] = fn["name"]
+                    for v in n.values():
+                        collect(v)
+                elif isinstance(n, list):
+                    for v in n:
+                        collect(v)
+
+            for root in _MESSAGE_ROOTS:
+                collect(self.orig.get(root))
+            self._names = names
+        return self._names
+
+    def _tool_name(self, path) -> str | None:
+        node = self.orig
+        found = None
+        for p in path[:-1]:
+            try:
+                node = node[p]
+            except (KeyError, IndexError, TypeError):
+                break
+            if not isinstance(node, dict):
+                continue
+            kind = node.get("type")
+            if kind in ("tool_use", "function_call") or "name" in node and p in ("functionCall", "functionResponse"):
+                found = node.get("name")
+            elif kind == "tool_result":
+                found = self._tool_names().get(node.get("tool_use_id"))
+            elif kind == "function_call_output":
+                found = self._tool_names().get(node.get("call_id"))
+            elif node.get("role") == "tool":
+                found = self._tool_names().get(node.get("tool_call_id"))
+        return found[:64] if isinstance(found, str) else None
 
     def apply(self, parent, key, new: str) -> bool:
         if not self.observe:

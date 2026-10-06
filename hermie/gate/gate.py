@@ -1,6 +1,7 @@
 """The gate: scan text (patterns, optional local judge), cache by hash, certify outgoing bodies."""
 from __future__ import annotations
 
+import dataclasses
 import hashlib
 import threading
 from collections import OrderedDict
@@ -15,6 +16,11 @@ from hermie.gate.types import _GATE_TOKEN, CleanBody, Origin, ScanResult
 def certify_body(data: bytes) -> CleanBody:
     """The only constructor of CleanBody; call it after redaction."""
     return CleanBody(data, _GATE_TOKEN)
+
+
+def empty_body() -> CleanBody:
+    """The only other constructor: an empty body has nothing to certify (GET / DELETE passthrough)."""
+    return CleanBody(b"", _GATE_TOKEN)
 
 
 class Gate:
@@ -55,7 +61,7 @@ class Gate:
             hit = self._cache.get(key)
             if hit is not None:
                 self._cache.move_to_end(key)
-                return hit
+                return dataclasses.replace(hit, cached=True)   # a copy: the cached object never changes
         size = len(text)
         try:
             res = self._compute(text, origin, path_hint, h, size)

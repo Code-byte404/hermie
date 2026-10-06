@@ -45,3 +45,4 @@ class ScanResult:
     new_mapping: dict[str, str]
     hash: str
     size: int = 0   # original text length, for cache accounting
+    cached: bool = False   # True on a copy returned for a cache hit

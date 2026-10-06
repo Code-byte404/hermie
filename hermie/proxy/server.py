@@ -10,19 +10,22 @@ import contextvars
 import json
 import secrets
 import time
+from collections import OrderedDict
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import AsyncIterator
 
+import anyio
 import httpx
 from starlette.applications import Starlette
+from starlette.background import BackgroundTask
 from starlette.requests import Request
 from starlette.responses import JSONResponse, Response, StreamingResponse
 from starlette.routing import Route
 
 from hermie.config import Config
-from hermie.gate.gate import Gate, certify_body
+from hermie.gate.gate import Gate, certify_body, empty_body
 from hermie.gate.redact import MappingStoreError
 from hermie.gate.types import CleanBody
 from hermie.proxy.approvals import AllowStore, Approvals, NoPrompter, PendingItem, SessionAllow
@@ -37,8 +40,10 @@ ROUTES: dict[str, str | None] = {
     "custom": None,
 }
 
-# Requests on these paths carry no conversation (model lists, file metadata) and are forwarded unchanged.
-PASSTHROUGH_PREFIXES = ("/openai/v1/files", "/openai/v1/models", "/anthropic/v1/models", "/gemini/v1beta/models")
+# Model listings carry no conversation: GET / DELETE with an empty body on these paths go out unchanged.
+PASSTHROUGH_PREFIXES = ("/openai/v1/models", "/anthropic/v1/models", "/gemini/v1beta/models")
+PASSTHROUGH_METHODS = ("GET", "DELETE")
+REFUSED_PREFIXES = ("/openai/v1/files",)
 
 FORWARD_HEADERS = {
     "authorization", "x-api-key", "x-goog-api-key", "anthropic-version", "anthropic-beta", "content-type", "accept",
@@ -51,6 +56,9 @@ _BACK_EXACT = {"request-id", "x-request-id", "retry-after"}
 _BACK_PREFIX = ("anthropic-ratelimit-", "x-ratelimit-")
 
 UNSUPPORTED = "hermie only proxies JSON requests; this path is not in its passthrough list"
+NO_FILES = "hermie does not proxy file uploads"
+BAD_PATH = "hermie refuses paths with '.' or '..' segments or encoded slashes"
+SEEN_IMAGES = 4096
 BLOCKED = 'hermie blocked this message (id {id}): {reason}. Run "hermie allow {id}" to send it, then retry.'
 
 
@@ -82,13 +90,22 @@ def _back_headers(resp: httpx.Response, rid: str) -> dict[str, str]:
     return out
 
 
+def _under(path: str, prefixes: tuple[str, ...]) -> str | None:
+    return next((p for p in prefixes if path == p or path.startswith(p + "/")), None)
+
+
 def is_passthrough(path: str) -> bool:
     """On the allowlist: a prefix itself or a path below it, but never a Gemini method call such as
     /gemini/v1beta/models/NAME:generateContent, which carries the conversation."""
-    for prefix in PASSTHROUGH_PREFIXES:
-        if path == prefix or path.startswith(prefix + "/"):
-            return ":" not in path[len(prefix):]
-    return False
+    prefix = _under(path, PASSTHROUGH_PREFIXES)
+    return prefix is not None and ":" not in path[len(prefix):]
+
+
+def path_is_safe(decoded: str, raw: str) -> bool:
+    """No dot segments (the upstream URL would collapse them onto another endpoint) and no encoded slash."""
+    if "%2f" in raw.lower() or "%5c" in raw.lower() or "\\" in decoded:
+        return False
+    return not any(seg in (".", "..") for seg in decoded.split("/"))
 
 
 def _is_json(content_type: str) -> bool:
@@ -99,6 +116,20 @@ def _is_json(content_type: str) -> bool:
 def _error(status: int, kind: str, message: str, rid: str, id_: str | None = None) -> JSONResponse:
     return JSONResponse({"error": {"type": kind, "message": message, "id": id_}}, status_code=status,
                         headers={"x-hermie-request-id": rid})
+
+
+class _RelayResponse(StreamingResponse):
+    """A StreamingResponse that always closes its relay generator, even when the client goes away mid-stream
+    (Starlette leaves a half-read async generator for the garbage collector)."""
+
+    async def __call__(self, scope, receive, send) -> None:
+        try:
+            await super().__call__(scope, receive, send)
+        finally:
+            with anyio.CancelScope(shield=True):
+                aclose = getattr(self.body_iterator, "aclose", None)
+                if aclose is not None:
+                    await aclose()
 
 
 # --- judge accounting: a per-request counter carried into the walker thread by the context ---
@@ -162,13 +193,7 @@ class _Rec:
 
 def _part(d: Decision) -> dict:
     """A data-free receipt entry for one walker decision: origin, tool, size, entities and nothing else."""
-    if d.kind == "hold":
-        origin = "user"
-    elif d.kind == "withhold":
-        origin = "binary" if d.reason == "image" else "tool"
-    else:
-        origin = "other"
-    return {"origin": origin, "tool": None, "size": d.size, "entities": []}
+    return {"origin": d.origin, "tool": d.tool, "size": d.size, "entities": list(d.entities)}
 
 
 def _item_kind(d: Decision) -> str:
@@ -189,6 +214,7 @@ def create_app(config: Config, gate: Gate | None = None, upstream_client: httpx.
     approvals = Approvals(store, SessionAllow())
     receipt = Receipt(config)
     bodies = BodyStore(config)
+    seen_images: OrderedDict[str, None] = OrderedDict()
 
     def write_receipt(rec: _Rec) -> None:
         try:
@@ -225,10 +251,10 @@ def create_app(config: Config, gate: Gate | None = None, upstream_client: httpx.
             else:
                 return _error(422, "hermie_blocked", BLOCKED.format(id=item_id, reason=d.reason), rec.rid, item_id)
 
-    async def passthrough(request: Request, url: str, rec: _Rec, raw: bytes) -> Response:
-        # Allowlisted paths carry no conversation text; they go out unchanged by design.
+    async def passthrough(request: Request, url: str, rec: _Rec) -> Response:
+        # Only body-less GET / DELETE get here: there is nothing to scan, so nothing is certified.
         resp = await send_upstream(client, request.method, url, forward_headers(request.headers),
-                                   certify_body(raw), stream=False)
+                                   empty_body(), stream=False)
         rec.status = resp.status_code
         headers = _back_headers(resp, rec.rid)
         ct = resp.headers.get("content-type")
@@ -243,9 +269,11 @@ def create_app(config: Config, gate: Gate | None = None, upstream_client: httpx.
         except httpx.HTTPError as e:
             rec.upstream_error = type(e).__name__
         finally:
+            # receipt first: a client disconnect cancels this generator, and the close below may be interrupted
             rec.unrestored = stats.unrestored
-            await resp.aclose()
             write_receipt(rec)
+            with anyio.CancelScope(shield=True):
+                await resp.aclose()
 
     async def handle(request: Request) -> Response:
         rid = secrets.token_hex(6)
@@ -261,14 +289,25 @@ def create_app(config: Config, gate: Gate | None = None, upstream_client: httpx.
                 rec.status = 404
                 return _error(404, "hermie_unknown_route", "no custom upstream configured", rid)
             path = request.url.path
-            rest = path[len(provider) + 1:]
+            raw_path = request.scope.get("raw_path", path.encode()).decode("latin-1")
+            if not path_is_safe(path, raw_path):
+                rec.status = 400
+                return _error(400, "hermie_bad_path", BAD_PATH, rid)
+            # the upstream URL keeps the client's encoding; matching above used the decoded form
+            rest = raw_path[len(provider) + 1:] if raw_path.startswith(f"/{provider}/") else path[len(provider) + 1:]
             url = base.rstrip("/") + rest + (f"?{request.url.query}" if request.url.query else "")
             raw = await request.body()
 
+            if _under(path, REFUSED_PREFIXES):
+                rec.status = 415
+                return _error(415, "hermie_unsupported", NO_FILES, rid)
             if is_passthrough(path):
+                if request.method not in PASSTHROUGH_METHODS or raw:
+                    rec.status = 415
+                    return _error(415, "hermie_unsupported", UNSUPPORTED, rid)
                 rec.mode = "passthrough"
                 try:
-                    return await passthrough(request, url, rec, raw)
+                    return await passthrough(request, url, rec)
                 except httpx.HTTPError as e:
                     rec.upstream_error = type(e).__name__
                     rec.status = 502
@@ -304,7 +343,14 @@ def create_app(config: Config, gate: Gate | None = None, upstream_client: httpx.
                     rec.withheld.append(register(d))
                 elif d.kind == "pass" and rec.approved_by is None:
                     rec.approved_by = "session" if approvals.session.all else "allowed"
-                rec.new_parts.append(_part(d))
+                if d.origin == "binary":   # images never pass through the gate cache: remember them here
+                    d.new = d.hash not in seen_images
+                    seen_images[d.hash] = None
+                    seen_images.move_to_end(d.hash)
+                    while len(seen_images) > SEEN_IMAGES:
+                        seen_images.popitem(last=False)
+                if d.new:
+                    rec.new_parts.append(_part(d))
 
             clean = certify_body(json.dumps(result.body, ensure_ascii=False).encode())
             bodies.put(rid, clean.data)
@@ -322,8 +368,9 @@ def create_app(config: Config, gate: Gate | None = None, upstream_client: httpx.
             if stream and ct.split(";", 1)[0].strip().lower() == "text/event-stream":
                 stats = StreamStats()
                 deferred = True
-                return StreamingResponse(relay(resp, stats, rec), status_code=resp.status_code, headers=headers,
-                                         media_type=ct)
+                # the background close covers a response whose body iteration never starts (aclose is idempotent)
+                return _RelayResponse(relay(resp, stats, rec), status_code=resp.status_code, headers=headers,
+                                         media_type=ct, background=BackgroundTask(resp.aclose))
             try:
                 data = await resp.aread()
             except httpx.HTTPError as e:
