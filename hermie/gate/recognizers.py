@@ -203,13 +203,17 @@ def scan(analyzer, text: str, languages: tuple[str, ...], threshold: float) -> l
 # ---------------------------------------------------------------- outbound smuggling detection
 # A URL / search query can be a channel to send data out once a task touched sensitive material (commands are
 # the other one). The gate recognizes plaintext entities; encoded data (base64, hex, long digit strings) gets
-# past it, so rules cover that here. Enable it only after "sensitive content was touched", to avoid false
-# positives on ordinary URLs.
+# past it, so rules cover that here. `smuggling_risk_url` is for URLs only (a long query string or a long digit run
+# in a URL is suspicious); ordinary text uses `smuggling_risk_text`, which looks only for long high-entropy encoded
+# tokens, because prose is long and commit SHAs and build ids are long digit / hex runs.
 
 _TOKEN = re.compile(r"[A-Za-z0-9+/=_-]{20,}")
+_LONG_TOKEN = re.compile(r"[A-Za-z0-9+/=_-]{32,}")
 _HEX = re.compile(r"^[0-9a-fA-F]{32,}$")
 _DIGITS = re.compile(r"(?<!\d)\d{10,}(?!\d)")
 MAX_QUERY_CHARS = 512
+TEXT_MIN_TOKEN = 32
+TEXT_MIN_ENTROPY = 4.0
 
 
 def _entropy(s: str) -> float:
@@ -220,7 +224,13 @@ def _entropy(s: str) -> float:
     return -sum(c / n * math.log2(c / n) for c in counts.values())
 
 
-def smuggling_risk(payload: str) -> Optional[str]:
+def _looks_b64(tok: str) -> bool:
+    core = tok.rstrip("=")
+    return tok.endswith("=") or (any(c.isdigit() for c in core) and any(c.isupper() for c in core)
+                                 and any(c.islower() for c in core))
+
+
+def smuggling_risk_url(payload: str) -> Optional[str]:
     """Data that looks encoded inside a URL or search query; returns the reason, or None when there is no risk."""
     u = urlparse(payload) if "://" in payload else None
     query = u.query if u else payload
@@ -233,10 +243,25 @@ def smuggling_risk(payload: str) -> Optional[str]:
         if _HEX.match(tok):
             return f"possible hex data: {tok[:24]}..."
         core = tok.rstrip("=")
-        looks_b64 = tok.endswith("=") or (any(c.isdigit() for c in core) and any(c.isupper() for c in core)
-                                          and any(c.islower() for c in core))
-        if len(core) >= 24 and looks_b64 and _entropy(core) >= 3.8:
+        if len(core) >= 24 and _looks_b64(tok) and _entropy(core) >= 3.8:
             return f"possible base64-encoded data: {tok[:24]}..."
     if m := _DIGITS.search(scan_text):
         return f"contains a long digit string: {m.group()}"
+    return None
+
+
+def smuggling_risk_text(text: str) -> Optional[str]:
+    """Encoded data inside ordinary text: base64 or hex tokens of TEXT_MIN_TOKEN+ characters with an entropy of at
+    least TEXT_MIN_ENTROPY bits per character. No length rule and no digit-run rule (prose is long; commit SHAs and
+    build ids are not data)."""
+    tokens = _LONG_TOKEN.findall(text)
+    tokens += [part for tok in tokens if "/" in tok for part in tok.split("/") if len(part) >= TEXT_MIN_TOKEN]
+    for tok in tokens:
+        core = tok.rstrip("=")
+        if len(core) < TEXT_MIN_TOKEN or _entropy(core) < TEXT_MIN_ENTROPY:
+            continue
+        if _HEX.match(core):
+            return f"possible hex data: {tok[:24]}..."
+        if _looks_b64(tok):
+            return f"possible base64-encoded data: {tok[:24]}..."
     return None

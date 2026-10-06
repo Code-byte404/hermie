@@ -52,3 +52,6 @@
 {"text": "build 123 456 7890 done", "sensitive": false}
 {"text": "Total 100 200 3000", "sensitive": false}
 {"text": "Dial 555.010.0199 for support", "sensitive": true, "layer": "rules", "entities": ["PHONE_NUMBER"]}
+{"text": "Our release process starts on Monday with a feature freeze, after which the team triages open issues, updates the changelog and writes upgrade notes for anything that changes behavior. On Tuesday the build pipeline produces release candidates for every supported platform and the integration suite runs against each of them overnight. Wednesday is reserved for fixing regressions found by that run and for reviewing the documentation, which has to describe every new configuration option with an example. On Thursday we tag the release, publish the packages and announce it on the project blog, and on Friday we hold a short retrospective meeting to decide what to change in the process the next time around.", "sensitive": false, "smuggling_negative": true}
+{"text": "git log: 9fceb02d0ae598e95dc970b74767f19372d61af8 Merge branch 'release'", "sensitive": false, "smuggling_negative": true}
+{"text": "build id 20261006123456 finished in 4m12s", "sensitive": false, "smuggling_negative": true}

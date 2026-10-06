@@ -4,7 +4,8 @@
     python evals/run_evals.py privacy --languages en,zh     # the default case file is the Chinese-engine one
 
 Case files are JSONL:
-    privacy_cases.jsonl: {"text", "sensitive", "layer": rules|ner|judge, "entities": [...], "known_fp"/"known_miss"}
+    privacy_cases.jsonl: {"text", "sensitive", "layer": rules|ner|judge, "entities": [...], "known_fp"/"known_miss",
+                          "smuggling_negative" (text the smuggling check must not flag)}
 
 
 """

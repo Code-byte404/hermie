@@ -74,3 +74,8 @@ def test_non_dict_mapping_file_is_a_store_error(tmp_path):
         MappingStore(p).mapping
     with pytest.raises(MappingStoreError):
         MappingStore(p).add({"<A_1>": "x"})
+
+
+def test_counters_keep_numbers_of_forgotten_values():
+    red, m = redact("x 555-010-0199", [Finding("PHONE_NUMBER", 2, 14, 0.9)], existing={}, counters={"PHONE_NUMBER": 5})
+    assert red == "x <PHONE_NUMBER_6>" and m == {"<PHONE_NUMBER_6>": "555-010-0199"}

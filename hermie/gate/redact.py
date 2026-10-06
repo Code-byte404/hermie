@@ -4,6 +4,8 @@ import fcntl
 import json
 import os
 import re
+import time
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Optional
 
@@ -24,20 +26,18 @@ def _merge_overlaps(findings: list[Finding]) -> list[Finding]:
     return merged
 
 
-def redact(text: str, findings: list[Finding],
-           existing: Optional[dict[str, str]] = None) -> tuple[str, dict[str, str]]:
+def redact(text: str, findings: list[Finding], existing: Optional[dict[str, str]] = None,
+           counters: Optional[dict[str, int]] = None) -> tuple[str, dict[str, str]]:
     """Replace sensitive spans with placeholders; returns (redacted text, new placeholder -> original).
     With `existing` (a mapping already in use for this task), an original that already has a placeholder reuses it
-    and new placeholders continue the numbering, so a second redaction never mints a colliding name.
+    and new placeholders continue the numbering, so a second redaction never mints a colliding name. `counters`
+    (the store's high-water mark per entity) keeps numbers of forgotten values from being reused.
     The mapping never leaves this machine."""
     mapping: dict[str, str] = {}
-    counters: dict[str, int] = {}
+    counters = _max_counters(dict(counters or {}), counters_of(existing or {}))
     seen: dict[str, str] = {}
     for ph, original in (existing or {}).items():
         seen.setdefault(original, ph)
-        m = PLACEHOLDER.fullmatch(ph)
-        if m:
-            counters[m.group(1)] = max(counters.get(m.group(1), 0), int(m.group(2)))
     out, last = [], 0
     for f in sorted(_merge_overlaps(findings), key=lambda f: f.start):
         original = text[f.start:f.end]
@@ -70,69 +70,119 @@ def restore(text: str, mapping: dict[str, str]) -> tuple[str, int]:
     return PLACEHOLDER.sub(sub, text), missing
 
 
+def counters_of(mapping: dict[str, str]) -> dict[str, int]:
+    """Highest number in use per entity, from the placeholder names."""
+    out: dict[str, int] = {}
+    for ph in mapping:
+        m = PLACEHOLDER.fullmatch(ph)
+        if m:
+            out[m.group(1)] = max(out.get(m.group(1), 0), int(m.group(2)))
+    return out
+
+
+def _max_counters(a: dict[str, int], b: dict[str, int]) -> dict[str, int]:
+    return {k: max(a.get(k, 0), b.get(k, 0)) for k in a.keys() | b.keys()}
+
+
 class MappingStoreError(OSError):
     pass
 
 
+@dataclass(frozen=True)
+class StoreState:
+    mapping: dict[str, str]
+    counters: dict[str, int]   # high-water mark per entity; survives clear() so numbers are never reused
+    generation: int            # bumped by clear(); a running gate drops its cache when it changes
+
+
+_EMPTY = StoreState({}, {}, 0)
+
+
 class MappingStore:
-    """placeholder -> original, persisted at `path` (mode 0600), shared between processes under flock."""
+    """placeholder -> original, persisted at `path` (mode 0600), shared between processes under flock.
+    File format: {"mapping": {...}, "counters": {...}, "generation": n}; the old flat {placeholder: value} file is
+    read as generation 0 and rewritten in the new format on the next write."""
 
     def __init__(self, path: Path):
         self.path = path
+        self._snap: tuple[tuple, StoreState] | None = None
 
-    def _read(self) -> dict[str, str]:
+    def _read(self) -> StoreState:
         if not self.path.exists():
-            return {}
+            return _EMPTY
         data = json.loads(self.path.read_text("utf-8"))
         if not isinstance(data, dict):
             raise MappingStoreError(f"{self.path.name} does not hold a mapping")
-        return data
+        if isinstance(data.get("mapping"), dict):
+            mapping = data["mapping"]
+            counters = data.get("counters") or {}
+            generation = data.get("generation", 0)
+            if not isinstance(counters, dict) or not isinstance(generation, int):
+                raise MappingStoreError(f"{self.path.name} does not hold a mapping")
+        else:   # the old flat format
+            mapping, counters, generation = data, {}, 0
+        counters = _max_counters({k: int(v) for k, v in counters.items()}, counters_of(mapping))
+        return StoreState(mapping, counters, generation)
+
+    def snapshot(self) -> StoreState:
+        """The file's state, re-read only when the file changed (stat), so it is cheap to call per scan."""
+        try:
+            try:
+                st = self.path.stat()
+            except FileNotFoundError:
+                return _EMPTY
+            key = (st.st_ino, st.st_mtime_ns, st.st_ctime_ns, st.st_size)
+            if self._snap is not None and self._snap[0] == key:
+                return self._snap[1]
+            state = self._read()
+        except MappingStoreError:
+            raise
+        except (OSError, ValueError) as e:
+            raise MappingStoreError(str(e)) from e
+        self._snap = (key, state)
+        return state
 
     @property
     def mapping(self) -> dict[str, str]:
-        try:
-            return self._read()
-        except (OSError, ValueError) as e:
-            raise MappingStoreError(str(e)) from e
+        return dict(self.snapshot().mapping)
 
-    def _write(self, d: dict[str, str], merge: bool = False) -> None:
-        """Under the lock: optionally merge `d` into the file's content, then replace the file atomically."""
+    @property
+    def counters(self) -> dict[str, int]:
+        return dict(self.snapshot().counters)
+
+    @property
+    def generation(self) -> int:
+        return self.snapshot().generation
+
+    def _replace(self, state: StoreState) -> None:
+        """Under the lock: replace the file atomically."""
+        tmp = self.path.with_suffix(".tmp")
+        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.write(json.dumps({"mapping": state.mapping, "counters": state.counters,
+                                "generation": state.generation}, ensure_ascii=False))
+        os.chmod(tmp, 0o600)
+        os.replace(tmp, self.path)
+        os.chmod(self.path, 0o600)
+
+    def update(self, fn: Callable[[dict[str, str], dict[str, int]], dict[str, str]]) -> dict[str, str]:
+        """Atomically: under the flock read the file, let `fn(current mapping, counters)` return the NEW entries,
+        refuse a key that already maps to a different value, write the merge (and the raised counters) and return
+        the merged mapping."""
         try:
             self.path.parent.mkdir(parents=True, exist_ok=True)
             with open(self.path.with_suffix(".lock"), "w") as lf:
                 fcntl.flock(lf, fcntl.LOCK_EX)
-                data = (self._read() | d) if merge else d
-                tmp = self.path.with_suffix(".tmp")
-                fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-                with os.fdopen(fd, "w", encoding="utf-8") as f:
-                    f.write(json.dumps(data, ensure_ascii=False))
-                os.chmod(tmp, 0o600)
-                os.replace(tmp, self.path)
-                os.chmod(self.path, 0o600)
-        except (OSError, ValueError) as e:
-            raise MappingStoreError(str(e)) from e
-
-    def update(self, fn: Callable[[dict[str, str]], dict[str, str]]) -> dict[str, str]:
-        """Atomically: under the flock read the file's mapping, let `fn(current)` return the NEW entries, refuse a key
-        that already maps to a different value, write the merge and return it."""
-        try:
-            self.path.parent.mkdir(parents=True, exist_ok=True)
-            with open(self.path.with_suffix(".lock"), "w") as lf:
-                fcntl.flock(lf, fcntl.LOCK_EX)
-                current = self._read()
-                new = fn(dict(current))
+                state = self._read()
+                current = state.mapping
+                new = fn(dict(current), dict(state.counters))
                 for k, v in new.items():
                     if k in current and current[k] != v:
                         raise MappingStoreError(f"placeholder {k} already maps to another value")
                 merged = current | new
                 if new:
-                    tmp = self.path.with_suffix(".tmp")
-                    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-                    with os.fdopen(fd, "w", encoding="utf-8") as f:
-                        f.write(json.dumps(merged, ensure_ascii=False))
-                    os.chmod(tmp, 0o600)
-                    os.replace(tmp, self.path)
-                    os.chmod(self.path, 0o600)
+                    self._replace(StoreState(merged, _max_counters(state.counters, counters_of(new)),
+                                             state.generation))
                 return merged
         except MappingStoreError:
             raise
@@ -141,7 +191,20 @@ class MappingStore:
 
     def add(self, new: dict[str, str]) -> None:
         if new:
-            self.update(lambda cur: new)
+            self.update(lambda cur, counters: new)
 
     def clear(self) -> None:
-        self._write({})
+        """Forget every value but keep the counters, so a placeholder name is never given to another value, and bump
+        the generation, so a running gate drops what it cached."""
+        try:
+            self.path.parent.mkdir(parents=True, exist_ok=True)
+            with open(self.path.with_suffix(".lock"), "w") as lf:
+                fcntl.flock(lf, fcntl.LOCK_EX)
+                try:
+                    state = self._read()
+                    generation = state.generation + 1
+                except (OSError, ValueError):   # an unreadable file: still clear it, with a fresh generation
+                    state, generation = _EMPTY, time.time_ns()
+                self._replace(StoreState({}, state.counters, generation))
+        except (OSError, ValueError) as e:
+            raise MappingStoreError(str(e)) from e
