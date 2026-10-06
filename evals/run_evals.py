@@ -1,15 +1,10 @@
-"""Calibration tool: measure the privacy gate and the router on labeled cases, and sweep thresholds offline.
+"""Calibration tool: measure the privacy gate on labeled cases.
 
     python evals/run_evals.py privacy                 # rules layer (Presidio): recall / false alarms, a few seconds, no Ollama needed
     python evals/run_evals.py privacy --judge         # plus the local judge's contextual check (needs Ollama)
-    python evals/run_evals.py routing                 # run the routing cases with the real judge + RouteLLM, record signals to evals/signals.jsonl
-    python evals/run_evals.py routing --no-routellm --out my_signals.jsonl
-    python evals/run_evals.py sweep evals/signals.jsonl   # sweep thresholds offline over the recorded signals (pure function, instant)
-    python evals/run_evals.py review [-v]             # stats over local review records: first-round pass rate, fixed-after-review rate, problem types
 
 Case files are JSONL:
     privacy_cases.jsonl: {"text", "sensitive", "layer": rules|ner|judge, "entities": [...], "known_fp"/"known_miss"}
-    routing_cases.jsonl: {"task", "expect": [acceptable routes...], "kind"}
 
 Real requests can be appended to both files directly (note: privacy cases go to the judge model but never leave the machine).
 """
@@ -26,9 +21,6 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from hermie.config import Settings  # noqa: E402
-from hermie.policy import Force  # noqa: E402
-# signals replay and the threshold sweep live in hermie.calibrate (also used by hermie --calibrate); re-exported here
-from hermie.calibrate import GRID, signals_from_record, sweep  # noqa: E402,F401
 
 HERE = Path(__file__).resolve().parent
 
@@ -108,150 +100,6 @@ def run_privacy(args) -> None:
             print(f"    {p:.2f}  {'sensitive' if c['sensitive'] else 'normal'}  {c['text'][:50]!r}")
 
 
-# ====================================================================== routing
-
-async def run_routing_async(args) -> None:
-    from hermie.complexity import RouteLLMScorer
-    from hermie.judge import OllamaJudge
-    from hermie.privacy import PrivacyGate
-    from hermie.router import EntryRouter
-    s = Settings()
-    judge = OllamaJudge(s)
-    gate = PrivacyGate(s, judge=judge)
-    scorer = RouteLLMScorer(s.routellm_checkpoint) if (s.routellm_enabled and not args.no_routellm) else None
-    router = EntryRouter(s, judge, gate, scorer)
-    router.ask_business = not args.no_business
-    cases = load_cases(Path(args.cases))
-    out = Path(args.out)
-    records = []
-    hits = 0
-    print(f"Routing · {len(cases)} cases · judge={s.judge_model} samples={s.judge_samples} routellm={'on' if scorer else 'off'}")
-    with open(out, "w", encoding="utf-8") as f:
-        for i, c in enumerate(cases, 1):
-            t0 = time.time()
-            r = await router.route(c["task"], c["task"], Force.NONE)
-            dt = time.time() - t0
-            route = r.decision.route.value
-            ok = route in c["expect"]
-            hits += ok
-            rec = {"task": c["task"], "expect": c["expect"], "kind": c.get("kind"), "route": route,
-                   "reasons": r.decision.reasons, "signals": r.signals_dict(), "latency_s": round(dt, 1),
-                   "business": r.signals.business if r.signals else None,
-                   "business_prob": r.signals.business_prob if r.signals else None}
-            records.append(rec)
-            f.write(json.dumps(rec, ensure_ascii=False) + "\n")
-            print(f"  {'✓' if ok else '✗'} {i:>2} {route:<12} {dt:5.1f}s  {c['task'][:44]}"
-                  + ("" if ok else f"   expected {c['expect']}"))
-    print(f"Hits {hits}/{len(cases)} = {hits / len(cases):.2f}; signals recorded to {out}, "
-          f"use the sweep subcommand to tune thresholds offline")
-    orig = [x for x in records if x["kind"] not in ("business", "business_near")]
-    print(f"original cases: {sum(1 for x in orig if x['route'] in x['expect'])}/{len(orig)}")
-    biz = [x for x in records if x["kind"] in ("business", "business_near")]
-    if biz:
-        hit = sum(1 for x in biz if x["business"] == (x["kind"] == "business"))
-        print(f"business_data: {hit}/{len(biz)} correct "
-              f"(recall {sum(1 for x in biz if x['kind'] == 'business' and x['business'])}/"
-              f"{sum(1 for x in biz if x['kind'] == 'business')})")
-    print_confusion(records)
-
-
-def print_confusion(records: list[dict]) -> None:
-    table: dict[str, Counter] = defaultdict(Counter)
-    for r in records:
-        table[r.get("kind") or "?"][r["route"]] += 1
-    routes = ["local", "local_verify", "plan", "cloud"]
-    print(f"  {'kind':<22}" + "".join(f"{x:>13}" for x in routes))
-    for kind, cnt in sorted(table.items()):
-        print(f"  {kind:<22}" + "".join(f"{cnt.get(x, 0):>13}" for x in routes))
-
-
-def run_routing(args) -> None:
-    asyncio.run(run_routing_async(args))
-
-
-# ====================================================================== sweep
-
-def run_sweep(args) -> None:
-    records = load_cases(Path(args.signals))
-    records = [r for r in records if "signals" in r and "task_type" in r["signals"]]
-    if not records:
-        sys.exit("No usable records in the signals file (records where the judge failed have no task_type)")
-    results = sweep(records, GRID)
-    s = Settings()
-    current = {"min_confidence": s.min_confidence, "routellm_threshold": s.routellm_threshold,
-               "needs_workspace_threshold": s.needs_workspace_threshold}
-    cur_acc = next((acc for acc, cfg in results if cfg == current), None)
-    print(f"Threshold sweep · {len(records)} records · {len(results)} combinations")
-    print(f"  current config {current} -> {cur_acc:.2f}" if cur_acc is not None else f"  current config {current} is not in the grid")
-    print("  top 10:")
-    for acc, cfg in results[:10]:
-        print(f"    {acc:.2f}  MIN_CONFIDENCE={cfg['min_confidence']}  ROUTELLM_THRESHOLD={cfg['routellm_threshold']}"
-              f"  needs_workspace>{cfg['needs_workspace_threshold']}")
-    print("  Note: with fewer than 100 cases the differences are mostly noise; collect real requests before tuning.")
-
-
-# ====================================================================== review: stats over review records
-
-REVIEW_CATEGORIES = [
-    ("unverified", ("verif", "test", "not run", "never ran", "did not run", "was not run")),
-    ("missing file", ("does not exist", "missing file", "not generated", "was not created", "not created", "no such file")),
-    ("content mismatch", ("mismatch", "does not match", "missing", "only", "incomplete", "wrong", "incorrect", "format")),
-    ("run failure", ("failed", "error", "exception", "exit code")),
-]
-
-
-def categorize_problem(text: str) -> str:
-    for name, keys in REVIEW_CATEGORIES:
-        if any(k in text for k in keys):
-            return name
-    return "other"
-
-
-def review_stats(records: list[dict]) -> dict:
-    """Aggregate per task: first-round pass rate, fixed-after-review rate, still failing at the end;
-    problems counted by type."""
-    by_task: dict[str, list[dict]] = defaultdict(list)
-    for r in records:
-        by_task[r.get("task", "?")].append(r)
-    first_pass = fixed = still_failing = 0
-    problems = Counter()
-    for recs in by_task.values():
-        recs.sort(key=lambda r: r.get("round", 0))
-        if recs[0]["passed"]:
-            first_pass += 1
-        elif recs[-1]["passed"]:
-            fixed += 1
-        else:
-            still_failing += 1
-        for r in recs:
-            for p in r.get("problems", []):
-                problems[categorize_problem(p)] += 1
-    return {"tasks": len(by_task), "reviews": len(records), "first_pass": first_pass, "fixed": fixed,
-            "still_failing": still_failing, "problems": dict(problems.most_common()),
-            "rounds_used": Counter(len(v) for v in by_task.values())}
-
-
-def run_review(args) -> None:
-    path = Path(args.log).expanduser()
-    if not path.exists():
-        sys.exit(f"No review records: {path}")
-    records = [r for r in load_cases(path) if "passed" in r]
-    m = review_stats(records)
-    n = m["tasks"] or 1
-    print(f"Local review · {m['reviews']} records · {m['tasks']} tasks ({path})")
-    print(f"  first-round pass {m['first_pass']}/{n} = {m['first_pass'] / n:.2f}   passed after fixes {m['fixed']}/{n}   "
-          f"still failing {m['still_failing']}/{n}")
-    print("  rounds used per task: " + "  ".join(f"{k} round(s)×{v}" for k, v in sorted(m["rounds_used"].items())))
-    if m["problems"]:
-        print("  problem types: " + "  ".join(f"{k} {v}" for k, v in m["problems"].items()))
-    if args.verbose:
-        for r in records:
-            if not r["passed"]:
-                print(f"    ✗ [{r.get('task', '?')} r{r.get('round')}] " + "; ".join(r.get("problems", []))[:120])
-    print("  How to read this: a high first-round pass rate means the executor prompt is doing its job; many passes "
-          "after fixes mean VERIFY_ROUNDS pays off; many still failing with concentrated problem types means the "
-          "executor prompt or the reviewer's criteria should change.")
-
 
 # ====================================================================== entry point
 
@@ -262,19 +110,6 @@ def main(argv=None) -> None:
     a.add_argument("--judge", action="store_true", help="also run the local judge model (needs Ollama)")
     a.add_argument("--cases", default=str(HERE / "privacy_cases.jsonl"))
     a.set_defaults(fn=run_privacy)
-    b = sub.add_parser("routing")
-    b.add_argument("--cases", default=str(HERE / "routing_cases.jsonl"))
-    b.add_argument("--out", default=str(HERE / "signals.jsonl"))
-    b.add_argument("--no-routellm", action="store_true")
-    b.add_argument("--no-business", action="store_true", help="do not ask the business-data question (baseline run)")
-    b.set_defaults(fn=run_routing)
-    c = sub.add_parser("sweep")
-    c.add_argument("signals")
-    c.set_defaults(fn=run_sweep)
-    d = sub.add_parser("review", help="stats over local review records (reviews.jsonl)")
-    d.add_argument("--log", default="~/.hermie/reviews.jsonl")
-    d.add_argument("-v", "--verbose", action="store_true")
-    d.set_defaults(fn=run_review)
     args = p.parse_args(argv)
     args.fn(args)
 

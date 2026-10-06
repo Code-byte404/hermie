@@ -1,1 +1,0 @@
-"""Textual full-screen UI."""
