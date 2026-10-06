@@ -1,0 +1,23 @@
+# Hermie config. Copy to ~/.hermie/config.toml.
+# Env HERMIE_<FIELD> (e.g. HERMIE_PORT) overrides this file; CLI flags override both.
+# There is no key field: API keys are forwarded from the client, Hermie never stores them.
+
+host = "127.0.0.1"                    # interface to listen on (keep it local)
+port = 8787                           # port to listen on
+mode = "enforce"                      # "enforce" replaces/withholds, "observe" only records
+languages = ["en"]                    # Presidio languages to scan
+# judge = "ollama:gemma4:12b"         # optional local judge for contextual sensitivity (off by default)
+ollama_url = "http://localhost:11434" # Ollama endpoint used by the judge
+judge_threshold = 0.5                 # judge score at or above which text is sensitive (0-1)
+judge_timeout_s = 20.0                # seconds before a judge call counts as failed
+presidio_threshold = 0.5              # Presidio confidence floor (0-1)
+images = "withhold"                   # "withhold" images until allowed, or "pass" them through
+deny_words = []                       # words that are always treated as sensitive
+allow_values = []                     # exact values that are never replaced
+allow_paths = []                      # file paths whose content is never scanned
+# custom_upstream = "https://llm.example.com"  # upstream for the /custom route (off by default)
+bodies_keep_mb = 500                  # size cap of the stored outbound bodies, in MB
+bodies = true                         # store outbound bodies for `hermie show`
+hold_timeout_s = 60                   # seconds a held message waits for approval
+cache_mb = 256                        # in-memory cache size, in MB
+# data_dir = "~/.hermie"              # where receipts, mapping and bodies live
