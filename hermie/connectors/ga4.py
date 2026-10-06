@@ -63,7 +63,13 @@ def ga4_status(uvx: Optional[Path], adc_path: Path, mcp_available: bool) -> tupl
         data = json.loads(Path(adc_path).read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return Status("not_authenticated", f"no Google credentials at {adc_path}: run `{LOGIN_CMD}`"), ""
-    project = str(data.get("quota_project_id") or "") if isinstance(data, dict) else ""
+    project = ""
+    if isinstance(data, dict):
+        # ADC from `gcloud auth application-default login` carry quota_project_id; a service-account key (the way around
+        # Google blocking gcloud's OAuth client for the Analytics scope) carries project_id, which serves as the quota project
+        project = str(data.get("quota_project_id") or "")
+        if not project and data.get("type") == "service_account":
+            project = str(data.get("project_id") or "")
     if not project:
         return Status("not_authenticated", "the Google credentials have no quota project: run "
                       "`gcloud auth application-default set-quota-project <project with the Analytics APIs enabled>`"), ""

@@ -290,3 +290,16 @@ def test_spec_repr_hides_env_values(tmp_path, monkeypatch):
                         mcp_available=True).spec
     assert spec.env["HTTPS_PROXY"].endswith("@proxy:3128")
     assert "hunter2" not in repr(spec) and "my-proj" not in repr(spec)
+
+
+def test_status_accepts_a_service_account_key(tmp_path):
+    """Google blocks gcloud's own OAuth client for the Analytics scope on some accounts ("This app is blocked"); a
+    service-account key (GA4_ADC_PATH pointing at it, the account added as Viewer on the property) needs no consent
+    screen. Its project_id is the quota project."""
+    uvx = tmp_path / "uvx"
+    uvx.write_text("")
+    key = tmp_path / "sa.json"
+    key.write_text(json.dumps({"type": "service_account", "project_id": "my-quota-project",
+                               "client_email": "hermie@my-quota-project.iam.gserviceaccount.com", "private_key": "x"}))
+    st, project = ga4_status(uvx, key, True)
+    assert st.state == "ready" and project == "my-quota-project"
