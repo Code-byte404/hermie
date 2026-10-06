@@ -1,0 +1,13 @@
+id,name,phone,email,card
+1,Ada Lovelace,555-010-0101,ada.lovelace@example.com,4242424242424242
+2,Grace Hopper,555-010-0102,grace.hopper@example.com,4000056655665556
+3,Alan Turing,555-010-0103,alan.turing@example.com,4242424242424242
+4,Linus Torvalds,555-010-0104,linus.torvalds@example.com,4000056655665556
+5,Margaret Hamilton,555-010-0105,margaret.hamilton@example.com,4242424242424242
+6,Dennis Ritchie,555-010-0106,dennis.ritchie@example.com,4000056655665556
+7,Barbara Liskov,555-010-0107,barbara.liskov@example.com,4242424242424242
+8,Ken Thompson,555-010-0108,ken.thompson@example.com,4000056655665556
+9,Radia Perlman,555-010-0109,radia.perlman@example.com,4242424242424242
+10,Donald Knuth,555-010-0110,donald.knuth@example.com,4000056655665556
+11,Frances Allen,555-010-0111,frances.allen@example.com,4242424242424242
+12,Guido Rossum,555-010-0112,guido.rossum@example.com,4000056655665556
