@@ -59,8 +59,13 @@ class FakeRunner:
         return reply
 
 
+# Any existing file serves as the binary (status() only checks that it exists; the runner is fake): the test file
+# itself, so the suite does not depend on asc being installed (CI runners have none at /opt/homebrew/bin/asc)
+BIN = str(Path(__file__))
+
+
 def make(runner=None, **kw):
-    return AscConnector(Path("/opt/homebrew/bin/asc"), timeout=5, preview_chars=kw.pop("preview_chars", 4000),
+    return AscConnector(Path(BIN), timeout=5, preview_chars=kw.pop("preview_chars", 4000),
                         runner=runner or FakeRunner(), **kw)
 
 
@@ -98,7 +103,7 @@ async def test_json_command_saved_and_previewed(tmp_path):
     conn = make(runner)
     r = await tool(conn, "asc").call({"args": ["finance", "regions"]}, Ctx(tmp_path))
     argv, env = runner.calls[-1]
-    assert argv == ["/opt/homebrew/bin/asc", "finance", "regions", "--output", "json"]
+    assert argv == [BIN, "finance", "regions", "--output", "json"]
     assert r.ok and r.label == "finance regions" and r.preview.startswith("2 rows")
     assert json.loads(r.files[0].read_text()) == [{"code": "US"}, {"code": "ZZ"}]
 
