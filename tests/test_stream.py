@@ -51,3 +51,75 @@ async def test_relay_eof_flush_lands_in_last_event_and_done_passes():
     async def done():
         yield b"data: [DONE]\n\n"
     assert b"".join([c async for c in relay_sse(done(), R, StreamStats())]) == b"data: [DONE]\n\n"
+
+
+async def _relay(raw, stats=None):
+    async def chunks():
+        for i in range(0, len(raw), 5): yield raw[i:i + 5]
+    return b"".join([c async for c in relay_sse(chunks(), R, stats or StreamStats())]).decode()
+
+
+def _ev(**d):
+    return "data: " + json.dumps(d, separators=(",", ":")) + "\n\n"
+
+
+async def test_held_tail_does_not_spill_into_next_block():
+    raw = ("event: content_block_delta\n" + _ev(type="content_block_delta", delta={"type": "text_delta", "text": "a <"})
+           + "event: content_block_stop\n" + _ev(type="content_block_stop", index=0)
+           + "event: content_block_delta\n" + _ev(type="content_block_delta", delta={"type": "input_json_delta", "partial_json": '{"k":1}'}))
+    out = await _relay(raw.encode())
+    datas = [json.loads(l[6:]) for l in out.splitlines() if l.startswith("data: ")]
+    assert datas[0]["delta"]["text"] == "a <"
+    assert datas[2]["delta"]["partial_json"] == '{"k":1}'
+    assert [d["type"] for d in datas] == ["content_block_delta", "content_block_stop", "content_block_delta"]
+
+
+async def test_responses_done_events_are_not_corrupted_by_held_tails():
+    full = "call <PHONE_NUMBER_1> works"
+    raw = ("event: response.output_text.delta\n" + _ev(type="response.output_text.delta", delta="call <PHONE_NUMBER_1> works <PHONE_NUM")
+           + "event: response.output_text.done\n" + _ev(type="response.output_text.done", text=full + " <")
+           + "event: response.completed\n" + _ev(type="response.completed", response={"status": "completed"}))
+    out = await _relay(raw.encode())
+    datas = [json.loads(l[6:]) for l in out.splitlines() if l.startswith("data: ")]
+    assert datas[0]["delta"] == "call 555-010-0199 works <PHONE_NUM"      # incomplete tail flushed raw into its own event
+    assert datas[1]["text"] == "call 555-010-0199 works <"                # done text unchanged, own tail flushed back
+    assert datas[2]["response"] == {"status": "completed"}
+
+
+async def test_ping_inside_a_split_placeholder_does_not_flush():
+    raw = ("event: content_block_delta\n" + _ev(type="content_block_delta", delta={"text": "x <PHONE_NU"})
+           + "event: ping\n" + _ev(type="ping")
+           + "event: content_block_delta\n" + _ev(type="content_block_delta", delta={"text": "MBER_1> y"}))
+    out = await _relay(raw.encode())
+    assert "555-010-0199 y" in out and "<PHONE" not in out and out.count("event:") == 3
+
+
+async def test_crlf_framing_relays_like_lf():
+    raw = (FIX / "anthropic.sse").read_bytes()
+    lf = await _relay(raw)
+    crlf = await _relay(raw.replace(b"\n", b"\r\n"))
+    assert crlf == lf.replace("\n", "\r\n")
+
+
+async def test_multiline_data_event_keeps_both_lines_of_content():
+    raw = b'event: x\ndata: {"a":\ndata: "<PHONE_NUMBER_1>"}\n\n'
+    out = await _relay(raw)
+    assert out == 'event: x\ndata: {"a":"555-010-0199"}\n\n'
+    out2 = await _relay(b"data: line <PHONE_NUMBER_1>\ndata: two\n\n")
+    assert out2 == "data: line 555-010-0199\ndata: two\n\n"
+
+
+async def test_unterminated_final_event_is_restored_and_terminated():
+    out = await _relay(b'data: {"text":"hi"}\n\ndata: {"text":"<PHONE_NUMBER_1>"}')
+    assert out == 'data: {"text":"hi"}\n\ndata: {"text":"555-010-0199"}\n\n'
+
+
+async def test_synthetic_flush_event_when_tail_cannot_be_appended(monkeypatch):
+    # With the holder rule the tail always has an event to land in; force the last resort by refusing the append.
+    from hermie.proxy import stream
+    monkeypatch.setattr(stream._Event, "append_text", lambda self, text: False)
+    stats = StreamStats()
+    out = await _relay(_ev(text="x <PHONE_NUMBER_1>").encode() + _ev(text="y <PHONE_NUMBER_1>").encode()[:0]
+                       + b'data: {"text":"z <PHONE_NUMBER_1"}\n\n', stats)
+    assert stats.synthetic == 1
+    assert out.endswith('data: {"hermie_flush":"<PHONE_NUMBER_1"}\n\n')

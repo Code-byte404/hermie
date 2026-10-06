@@ -40,6 +40,10 @@ class PlaceholderBuffer:
             text = text[:m.start()]
         return self._emit(text) if text else ""
 
+    @property
+    def held(self) -> str:
+        return self._held
+
     def flush(self) -> str:
         text, self._held = self._held, ""
         return self._emit(text) if text else ""
@@ -65,47 +69,76 @@ def restore_json(obj: Any, restore: Restore) -> "tuple[Any, int]":
 
 
 def _walk_buffered(o: Any, key: Optional[str], buffer: PlaceholderBuffer, restore: Restore,
-                   last: list) -> Any:
-    """Restores in place order; `last` collects (container, key) of the final buffered string leaf."""
+                   last: list, path: tuple = ()) -> Any:
+    """Restores in place order; `last` collects (container, key, path) of the final buffered string leaf."""
     if isinstance(o, dict):
         for k, v in list(o.items()):
             if isinstance(v, str):
                 if k in BUFFERED_KEYS:
                     o[k] = buffer.feed(v)
-                    last[:] = [(o, k)]
+                    last[:] = [(o, k, path + (k,))]
                 else:
                     o[k], n = restore(v)
                     buffer.unrestored += n
             else:
-                o[k] = _walk_buffered(v, k, buffer, restore, last)
+                o[k] = _walk_buffered(v, k, buffer, restore, last, path + (k,))
         return o
     if isinstance(o, list):
         for i, v in enumerate(list(o)):
             if isinstance(v, str):
                 if key in BUFFERED_KEYS:
                     o[i] = buffer.feed(v)
-                    last[:] = [(o, i)]
+                    last[:] = [(o, i, path + (i,))]
                 else:
                     o[i], n = restore(v)
                     buffer.unrestored += n
             else:
-                o[i] = _walk_buffered(v, key, buffer, restore, last)
+                o[i] = _walk_buffered(v, key, buffer, restore, last, path + (i,))
         return o
     return o
+
+
+def _first_leaf_path(o: Any, key: Optional[str] = None, path: tuple = ()) -> Optional[tuple]:
+    """Path of the first buffered string leaf, in the same order `_walk_buffered` visits them."""
+    if isinstance(o, dict):
+        for k, v in o.items():
+            if isinstance(v, str):
+                if k in BUFFERED_KEYS:
+                    return path + (k,)
+            else:
+                r = _first_leaf_path(v, k, path + (k,))
+                if r is not None:
+                    return r
+    elif isinstance(o, list):
+        for i, v in enumerate(o):
+            if isinstance(v, str):
+                if key in BUFFERED_KEYS:
+                    return path + (i,)
+            else:
+                r = _first_leaf_path(v, key, path + (i,))
+                if r is not None:
+                    return r
+    return None
 
 
 def _dumps(obj: Any) -> str:
     return json.dumps(obj, ensure_ascii=False, separators=(",", ":"))
 
 
-def _process(data: str, buffer: PlaceholderBuffer, restore: Restore):
-    """Returns (output data, parsed object or None, last buffered leaf or None)."""
+def _process(data: str, buffer: PlaceholderBuffer, restore: Restore,
+             before: Optional[Callable[[Any], None]] = None):
+    """Returns (output data, parsed object or None, last buffered leaf or None).
+    `before(obj)` runs once the payload is parsed and before anything is fed to the buffer."""
     try:
         obj = json.loads(data)
     except ValueError:
-        return data, None, None
+        obj = None
     if not isinstance(obj, (dict, list)):
+        if before:
+            before(None)
         return data, None, None
+    if before:
+        before(obj)
     last: list = []
     obj = _walk_buffered(obj, None, buffer, restore, last)
     return _dumps(obj), obj, (last[0] if last else None)
@@ -129,7 +162,8 @@ class _Event:
         self.data_index: Optional[int] = None
         self.prefix = "data: "
         self.obj: Any = None
-        self.leaf = None
+        self.leaf = None            # (container, key) of the last buffered leaf
+        self.leaf_path: Optional[tuple] = None
 
     def render(self) -> bytes:
         return (self.eol.join(self.lines) + self.eol + self.eol).encode("utf-8")
@@ -143,7 +177,20 @@ class _Event:
         return True
 
 
-def _parse_event(block: str, eol: str, buffer: PlaceholderBuffer, restore: Restore) -> _Event:
+class _Raw(_Event):
+    """A block that is not valid UTF-8: passed through untouched."""
+
+    def __init__(self, block: bytes, eol: str):
+        super().__init__([], eol)
+        self.block = block
+
+    def render(self) -> bytes:
+        e = self.eol.encode()
+        return self.block + e + e
+
+
+def _parse_event(block: str, eol: str, buffer: PlaceholderBuffer, restore: Restore,
+                 before: Optional[Callable[[Any], None]] = None) -> _Event:
     lines = block.split(eol)
     ev = _Event(lines, eol)
     idxs = [i for i, ln in enumerate(lines) if ln.startswith("data:")]
@@ -155,7 +202,7 @@ def _parse_event(block: str, eol: str, buffer: PlaceholderBuffer, restore: Resto
         if i == idxs[0]:
             ev.prefix = "data: " if v.startswith(" ") else "data:"
         parts.append(v[1:] if v.startswith(" ") else v)
-    out, obj, leaf = _process("\n".join(parts), buffer, restore)
+    out, obj, leaf = _process("\n".join(parts), buffer, restore, before)
     if obj is None and len(idxs) > 1:
         # multi-line non-JSON data: still restore text, keep the line structure
         for i in idxs:
@@ -166,7 +213,9 @@ def _parse_event(block: str, eol: str, buffer: PlaceholderBuffer, restore: Resto
             lines[i] = "data:" + sp + r
         return ev
     ev.data_index = idxs[0]
-    ev.obj, ev.leaf = obj, leaf
+    ev.obj = obj
+    if leaf is not None:
+        ev.leaf, ev.leaf_path = (leaf[0], leaf[1]), leaf[2]
     lines[idxs[0]] = ev.prefix + out
     for i in reversed(idxs[1:]):
         del lines[i]
@@ -188,10 +237,37 @@ def _next_block(buf: bytes):
 
 async def relay_sse(upstream: AsyncIterator[bytes], restore: Restore,
                     stats: Optional[StreamStats] = None) -> AsyncIterator[bytes]:
+    """Events are held back while the buffer holds a tail (and always for the last one), so that the tail can be
+    flushed into the event that carried it: when the next event feeds a different JSON path, has no buffered leaf,
+    or the stream ends. Keep-alive events (no data, or type "ping") do not flush."""
     stats = stats if stats is not None else StreamStats()
     buffer = PlaceholderBuffer(restore)
-    pending: Optional[_Event] = None
+    pending: "list[_Event]" = []
     acc = b""
+
+    def holder() -> Optional[_Event]:
+        return next((e for e in reversed(pending) if e.leaf is not None), None)
+
+    def flush_into_holder() -> None:
+        text = buffer.flush()
+        if not text:
+            return
+        h = holder()
+        if h is not None and h.append_text(text):
+            return
+        syn = _Event(["data: " + _dumps({"hermie_flush": text})], "\n")
+        pending.append(syn)
+        stats.synthetic += 1
+
+    def before(obj: Any) -> None:
+        if not buffer.held:
+            return
+        if isinstance(obj, dict) and obj.get("type") == "ping":
+            return
+        h = holder()
+        if obj is not None and h is not None and _first_leaf_path(obj) == h.leaf_path:
+            return
+        flush_into_holder()
 
     def take(block: bytes, eol: str) -> Optional[_Event]:
         if not block.strip():
@@ -199,11 +275,17 @@ async def relay_sse(upstream: AsyncIterator[bytes], restore: Restore,
         try:
             text = block.decode("utf-8")
         except UnicodeDecodeError:
-            ev = _Event([], eol)
-            ev.render = lambda b=block, e=eol.encode(): b + e + e  # type: ignore[method-assign]
-            return ev
+            return _Raw(block, eol)
         stats.events += 1
-        return _parse_event(text, eol, buffer, restore)
+        return _parse_event(text, eol, buffer, restore, before)
+
+    def push(ev: _Event) -> "list[bytes]":
+        pending.append(ev)
+        h = holder() if buffer.held else None
+        keep = pending.index(h) if h is not None else len(pending) - 1
+        out = [e.render() for e in pending[:keep]]
+        del pending[:keep]
+        return out
 
     async for chunk in upstream:
         acc += chunk
@@ -213,26 +295,16 @@ async def relay_sse(upstream: AsyncIterator[bytes], restore: Restore,
                 break
             block, eol, acc = found
             ev = take(block, eol)
-            if ev is None:
-                continue
-            if pending is not None:
-                yield pending.render()
-            pending = ev
-    tail = acc
-    if tail.strip():
-        # an unterminated final event: restore it like the others
-        ev = take(tail.rstrip(b"\r\n"), "\r\n" if b"\r\n" in tail else "\n")
+            if ev is not None:
+                for b in push(ev):
+                    yield b
+    if acc.strip():
+        # an unterminated final event: restore it like the others, emitted with a terminator
+        ev = take(acc.rstrip(b"\r\n"), "\r\n" if b"\r\n" in acc else "\n")
         if ev is not None:
-            if pending is not None:
-                yield pending.render()
-            pending = ev
-    flushed = buffer.flush()
-    if flushed:
-        if pending is None or not pending.append_text(flushed):
-            if pending is not None:
-                yield pending.render()
-            pending = _Event(["data: " + _dumps({"hermie_flush": flushed})], "\n")
-            stats.synthetic += 1
-    if pending is not None:
-        yield pending.render()
+            for b in push(ev):
+                yield b
+    flush_into_holder()
+    for e in pending:
+        yield e.render()
     stats.unrestored = buffer.unrestored
