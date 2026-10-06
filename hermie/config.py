@@ -72,7 +72,7 @@ class Config:
 
     @property
     def receipt_path(self) -> Path | None:
-        return self._under("receipts.jsonl")
+        return self._under("receipt.jsonl")
 
     @property
     def outbound_dir(self) -> Path | None:
