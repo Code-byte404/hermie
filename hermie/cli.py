@@ -149,9 +149,14 @@ def _forget(config: Config, args) -> int:
     print("This deletes the placeholder mapping. Placeholders in old conversations will no longer\n"
           "restore to the original values. A running `hermie serve` keeps its in-memory copy until\n"
           "it is restarted.")
-    if not args.yes and input("Clear the mapping? [y/N] ").strip().lower() != "y":
-        print("kept")
-        return 0
+    if not args.yes:
+        try:
+            answer = input("Clear the mapping? [y/N] ").strip().lower()
+        except EOFError:
+            answer = ""
+        if answer != "y":
+            print("kept")
+            return 0
     MappingStore(config.mapping_path).clear()
     print("mapping cleared")
     return 0

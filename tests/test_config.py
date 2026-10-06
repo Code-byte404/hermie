@@ -10,6 +10,7 @@ def test_config_precedence(tmp_path, monkeypatch):
 def test_paths_live_under_data_dir(tmp_path):
     cfg = Config(data_dir=tmp_path)
     assert cfg.mapping_path == tmp_path / "mapping.json" and cfg.outbound_dir == tmp_path / "outbound"
+    assert cfg.allowed_path == tmp_path / "allowed.jsonl"
 
 
 import pytest

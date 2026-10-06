@@ -1,4 +1,5 @@
 import json
+from datetime import datetime, timezone
 from hermie import cli
 from hermie.config import Config
 from hermie.proxy.receipt import Receipt, ReceiptLine, BodyStore
@@ -6,7 +7,7 @@ from hermie.gate.redact import MappingStore
 
 def _seed(tmp_path):
     cfg = Config(data_dir=tmp_path)
-    Receipt(cfg).write(ReceiptLine(at="2026-10-06T14:02:17Z", id="a" * 12, client="claude-code", upstream="anthropic", model="m", stream=True,
+    Receipt(cfg).write(ReceiptLine(at=datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"), id="a" * 12, client="claude-code", upstream="anthropic", model="m", stream=True,
         scanned_bytes=1800, replaced={"PHONE_NUMBER": 1, "SECRET": 2}, withheld=["9c21"], held=None, approved_by=None, unrestored=0,
         judge_calls=1, judge_ms=900, status=200, upstream_error=None, mode="enforce",
         new_parts=[{"origin": "user", "tool": None, "size": 80, "entities": ["PHONE_NUMBER"]}, {"origin": "tool", "tool": "Read", "size": 812, "entities": []}]))
@@ -36,3 +37,10 @@ def test_serve_prints_base_urls(monkeypatch, capsys, tmp_path):
     cli.main(["serve", "--port", "8799", "--data-dir", str(tmp_path)])
     out = capsys.readouterr().out
     assert "ANTHROPIC_BASE_URL=http://127.0.0.1:8799/anthropic" in out and "GOOGLE_GEMINI_BASE_URL" in out
+
+def test_forget_eof_keeps_mapping(tmp_path, capsys, monkeypatch):
+    cfg = _seed(tmp_path); MappingStore(cfg.mapping_path).add({"<X_1>": "y"})
+    def eof(*_): raise EOFError
+    monkeypatch.setattr("builtins.input", eof)
+    assert cli.main(["forget", "--data-dir", str(tmp_path)]) == 0
+    assert "kept" in capsys.readouterr().out and MappingStore(cfg.mapping_path).mapping == {"<X_1>": "y"}

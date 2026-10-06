@@ -68,7 +68,7 @@ class Config:
 
     @property
     def allowed_path(self) -> Path | None:
-        return self._under("allowed.json")
+        return self._under("allowed.jsonl")
 
     @property
     def receipt_path(self) -> Path | None:
