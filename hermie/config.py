@@ -40,6 +40,24 @@ class Config:
             setattr(self, name, tuple(value))
         if self.data_dir is not None:
             self.data_dir = Path(self.data_dir).expanduser()
+        self._validate()
+
+    def _validate(self) -> None:
+        def bad(name: str):
+            raise ValueError(f"invalid config: {name}={getattr(self, name)!r}")
+
+        if self.mode not in ("enforce", "observe"):
+            bad("mode")
+        if self.images not in ("withhold", "pass"):
+            bad("images")
+        for name in ("judge_threshold", "presidio_threshold"):
+            if not 0.0 <= getattr(self, name) <= 1.0:
+                bad(name)
+        if not 1 <= self.port <= 65535:
+            bad("port")
+        for name in ("cache_mb", "bodies_keep_mb", "hold_timeout_s", "judge_timeout_s"):
+            if getattr(self, name) < 0:
+                bad(name)
 
     def _under(self, name: str) -> Path | None:
         return None if self.data_dir is None else self.data_dir / name
@@ -76,7 +94,7 @@ class Config:
                 values.update(tomllib.load(f))
         for f in fields(cls):
             raw = os.environ.get("HERMIE_" + f.name.upper())
-            if raw is not None:
+            if raw is not None and not (f.name == "data_dir" and not raw.strip()):
                 values[f.name] = _parse_env(f.name, raw, getattr(cls(), f.name))
         values.update(overrides)
         known = {f.name for f in fields(cls)}
@@ -95,10 +113,19 @@ def _parse_env(name: str, raw: str, default):
         return tuple(_split(raw))
     if name == "judge" or name == "custom_upstream":
         return raw or None
-    if isinstance(default, bool):
-        return raw.strip().lower() in ("1", "true", "yes", "on")
-    if isinstance(default, int):
-        return int(raw)
-    if isinstance(default, float):
-        return float(raw)
+    var = "HERMIE_" + name.upper()
+    try:
+        if isinstance(default, bool):
+            low = raw.strip().lower()
+            if low in ("true", "1", "yes"):
+                return True
+            if low in ("false", "0", "no"):
+                return False
+            raise ValueError("expected true/false/1/0/yes/no")
+        if isinstance(default, int):
+            return int(raw)
+        if isinstance(default, float):
+            return float(raw)
+    except ValueError as e:
+        raise ValueError(f"invalid {var}={raw!r}: {e}") from e
     return raw
