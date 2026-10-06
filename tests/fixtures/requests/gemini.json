@@ -1,0 +1,74 @@
+{
+  "model": "gemini-2.5-pro",
+  "systemInstruction": {
+    "parts": [
+      {
+        "text": "You are a coding agent. Contact the maintainer at me@example.com if blocked."
+      }
+    ]
+  },
+  "contents": [
+    {
+      "role": "user",
+      "parts": [
+        {
+          "text": "Please read the config; call me on 555-010-0199 when done."
+        },
+        {
+          "inlineData": {
+            "mimeType": "image/png",
+            "data": "AAECAwQFBgcICQoLDA0ODxAREhM="
+          }
+        }
+      ]
+    },
+    {
+      "role": "model",
+      "parts": [
+        {
+          "functionCall": {
+            "name": "Read",
+            "args": {
+              "path": ".env"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "role": "user",
+      "parts": [
+        {
+          "functionResponse": {
+            "name": "Read",
+            "response": {
+              "output": ".env\nAWS_ACCESS_KEY_ID=AKIAIOSFODNN7EXAMPLE"
+            }
+          }
+        }
+      ]
+    }
+  ],
+  "tools": [
+    {
+      "functionDeclarations": [
+        {
+          "name": "Read",
+          "description": "Read a file from disk.",
+          "parameters": {
+            "type": "OBJECT",
+            "properties": {
+              "mode": {
+                "type": "STRING",
+                "enum": [
+                  "r",
+                  "w"
+                ]
+              }
+            }
+          }
+        }
+      ]
+    }
+  ]
+}

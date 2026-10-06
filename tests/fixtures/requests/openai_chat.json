@@ -1,0 +1,53 @@
+{
+  "model": "gpt-5",
+  "messages": [
+    {
+      "role": "system",
+      "content": "You are a coding agent. Contact the maintainer at me@example.com if blocked."
+    },
+    {
+      "role": "user",
+      "content": "Please read the config; call me on 555-010-0199 when done."
+    },
+    {
+      "role": "assistant",
+      "content": "Reading the file.",
+      "tool_calls": [
+        {
+          "id": "c1",
+          "type": "function",
+          "function": {
+            "name": "Read",
+            "arguments": "{\"path\": \".env\"}"
+          }
+        }
+      ]
+    },
+    {
+      "role": "tool",
+      "tool_call_id": "c1",
+      "content": ".env\nAWS_ACCESS_KEY_ID=AKIAIOSFODNN7EXAMPLE"
+    }
+  ],
+  "tools": [
+    {
+      "type": "function",
+      "function": {
+        "name": "Read",
+        "description": "Read a file from disk.",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "mode": {
+              "type": "string",
+              "enum": [
+                "r",
+                "w"
+              ]
+            }
+          }
+        }
+      }
+    }
+  ]
+}

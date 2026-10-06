@@ -1,0 +1,59 @@
+{
+  "model": "gpt-5-codex",
+  "instructions": "You are a coding agent. Contact the maintainer at me@example.com if blocked.",
+  "input": [
+    {
+      "role": "user",
+      "content": [
+        {
+          "type": "input_text",
+          "text": "Please read the config; call me on 555-010-0199 when done."
+        },
+        {
+          "type": "input_image",
+          "image_url": "data:image/png;base64,AAECAwQFBgcICQoLDA0ODxAREhM="
+        }
+      ]
+    },
+    {
+      "type": "message",
+      "role": "assistant",
+      "content": [
+        {
+          "type": "output_text",
+          "text": "Reading the file."
+        }
+      ]
+    },
+    {
+      "type": "function_call",
+      "call_id": "c1",
+      "name": "Read",
+      "arguments": "{\"path\": \".env\"}"
+    },
+    {
+      "type": "function_call_output",
+      "call_id": "c1",
+      "output": ".env\nAWS_ACCESS_KEY_ID=AKIAIOSFODNN7EXAMPLE"
+    }
+  ],
+  "tools": [
+    {
+      "type": "function",
+      "name": "Read",
+      "description": "Read a file from disk.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "mode": {
+            "type": "string",
+            "enum": [
+              "r",
+              "w"
+            ]
+          }
+        }
+      }
+    }
+  ]
+}

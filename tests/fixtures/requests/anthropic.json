@@ -1,0 +1,73 @@
+{
+  "model": "claude-sonnet-4-5",
+  "max_tokens": 1024,
+  "system": [
+    {
+      "type": "text",
+      "text": "You are a coding agent. Contact the maintainer at me@example.com if blocked."
+    }
+  ],
+  "messages": [
+    {
+      "role": "user",
+      "content": [
+        {
+          "type": "text",
+          "text": "Please read the config; call me on 555-010-0199 when done."
+        },
+        {
+          "type": "image",
+          "source": {
+            "type": "base64",
+            "media_type": "image/png",
+            "data": "AAECAwQFBgcICQoLDA0ODxAREhM="
+          }
+        }
+      ]
+    },
+    {
+      "role": "assistant",
+      "content": [
+        {
+          "type": "tool_use",
+          "id": "tu1",
+          "name": "Read",
+          "input": {
+            "path": ".env"
+          }
+        }
+      ]
+    },
+    {
+      "role": "user",
+      "content": [
+        {
+          "type": "tool_result",
+          "tool_use_id": "tu1",
+          "content": ".env\nAWS_ACCESS_KEY_ID=AKIAIOSFODNN7EXAMPLE"
+        }
+      ]
+    }
+  ],
+  "tools": [
+    {
+      "name": "Read",
+      "description": "Read a file from disk.",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "mode": {
+            "type": "string",
+            "enum": [
+              "r",
+              "w"
+            ]
+          }
+        }
+      }
+    }
+  ],
+  "metadata": {
+    "user_id": "abc"
+  }
+}
