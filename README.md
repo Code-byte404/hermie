@@ -51,13 +51,13 @@ Other commands: `hermie show ID` (the stored outbound body of a request), `hermi
 
 ## What leaves your machine
 
-Every string in the JSON request body is scanned before the request is sent:
+Every string in the JSON request body is scanned before the request is sent (inside tool payloads also dict keys and long numbers; long texts in 48 KB chunks):
 
 1. **Rules.** Regex recognizers for API keys and credentials (OpenAI, Anthropic, AWS, GitHub, Slack, Google, Stripe, Hugging Face, npm, PyPI, private-key blocks, JWTs, database URLs, `password=...` assignments), phone numbers, emails, cards, IBANs, IP addresses and US SSN / passport / driver-license numbers. Matches become placeholders such as `<PHONE_NUMBER_1>`.
 2. **NER.** Presidio with spaCy finds person names (two or more capitalized words), also replaced by placeholders. Optional Chinese engine (`languages = ["en", "zh"]`) adds mainland mobile, ID-card and bank-card numbers.
-3. **Judge (optional, `--judge ollama:MODEL`).** A local Ollama model answers "is this sensitive?" for user messages and tool results that the first two layers left alone, and flags encoded data (base64, hex, long digit runs). A flagged user message is held for you; a flagged tool result is withheld and replaced by a short note.
+3. **Judge (optional, `--judge ollama:MODEL`).** A local Ollama model answers "is this sensitive?" for user messages and tool results that the first two layers left alone, and flags encoded data (high-entropy base64 or hex tokens; in URLs also long query strings and digit runs). It sees the first 8000 characters of a text. A flagged user message is held for you; a flagged tool result is withheld and replaced by a short note.
 
-Images are withheld by default (`images = "pass"` sends them). The same value always gets the same placeholder, and replies are restored from a local mapping before the agent sees them, in JSON replies and in streams (a placeholder split across two stream events is reassembled).
+Images are withheld by default (`images = "pass"` sends them). The same value always gets the same placeholder, also where it comes back in the agent's own history (assistant text, tool calls, tool results), and replies are restored from a local mapping before the agent sees them, in JSON replies and in streams (a placeholder split across two stream events is reassembled). `hermie forget` deletes the stored values; placeholder numbers are never reused, so an old placeholder never restores to a different value.
 
 ## Verified clients
 
@@ -87,7 +87,7 @@ Hermie holds this message (412 chars): ...
   or later: hermie allow 3fa2
 ```
 
-Type `s`, `r` or `a` and Enter. No answer within `hold_timeout_s` (60 s) rejects. Without a terminal (for example under a process manager) held messages are rejected right away. A rejected request returns HTTP 422 to the agent with a message that names the id; run `hermie allow ID` in any terminal and retry. Withheld tool results and images show up in `hermie tail` with the same `hermie allow ID` line; once allowed, the next request sends them.
+Type `s`, `r` or `a` and Enter. No answer within `hold_timeout_s` (60 s) rejects. Without a terminal (for example under a process manager) held messages are rejected right away. A rejected request returns HTTP 422 to the agent with a message that names the id; run `hermie allow ID` in any terminal and retry. Withheld tool results and images show up in `hermie tail` with the same `hermie allow ID` line; once allowed, the next request sends them. `[a]llow everything this session` covers judge decisions only. A text the detectors failed on cannot be released at all, and `hermie allow` refuses an id it does not know.
 
 ## What this does not protect
 
@@ -96,6 +96,7 @@ Type `s`, `r` or `a` and Enter. No answer within `hold_timeout_s` (60 s) rejects
 - The upstream still sees your code. Hermie protects data in the code and the conversation, not the code itself.
 - Requests that do not go through the base URL are invisible to Hermie: telemetry, OAuth login flows, Gemini's Code Assist endpoint, or any client that ignores the variable.
 - `observe` mode blocks nothing.
+- Placeholders in replies are restored before the agent runs its tools, so a prompt-injected model can make the agent use a real value locally (for example in a URL it fetches).
 
 [SECURITY.md](SECURITY.md) has the full list, including the query string, passthrough paths and the mapping file.
 
