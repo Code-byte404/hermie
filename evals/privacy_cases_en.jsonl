@@ -1,0 +1,47 @@
+{"text": "Call me on (555) 010-0199 after lunch", "sensitive": true, "layer": "rules", "entities": ["PHONE_NUMBER"]}
+{"text": "Customer phone 555-010-0199, follow up tomorrow", "sensitive": true, "layer": "rules", "entities": ["PHONE_NUMBER"]}
+{"text": "Reach her at +1 555 010 0199", "sensitive": true, "layer": "rules", "entities": ["PHONE_NUMBER"]}
+{"text": "SSN 123-45-6789 is on the form", "sensitive": true, "layer": "rules", "entities": ["US_SSN"]}
+{"text": "Charge card 4242 4242 4242 4242 for the renewal", "sensitive": true, "layer": "rules", "entities": ["CREDIT_CARD"]}
+{"text": "Send the invoice to maria.gonzalez@example.com", "sensitive": true, "layer": "rules", "entities": ["EMAIL_ADDRESS"]}
+{"text": "The staging box is at 10.20.30.40", "sensitive": true, "layer": "rules", "entities": ["IP_ADDRESS"]}
+{"text": "aws_key AKIAIOSFODNN7EXAMPLE was committed", "sensitive": true, "layer": "rules", "entities": ["SECRET"]}
+{"text": "ANTHROPIC key: sk-ant-api03-EXAMPLEexampleEXAMPLEexample0123456789AB", "sensitive": true, "layer": "rules", "entities": ["SECRET"]}
+{"text": "token ghp_EXAMPLEexampleEXAMPLEexample012345", "sensitive": true, "layer": "rules", "entities": ["SECRET"]}
+{"text": "stripe sk_live_EXAMPLEexample01234567", "sensitive": true, "layer": "rules", "entities": ["SECRET"]}
+{"text": "DATABASE_URL=postgres://app:hunter2secret@db.internal:5432/prod", "sensitive": true, "layer": "rules", "entities": ["SECRET"]}
+{"text": "DATABASE_PASSWORD=Tr0ub4dor&3xyz\nAPI_KEY=\"abcd1234efgh5678\"\nDEBUG=true", "sensitive": true, "layer": "rules", "entities": ["SECRET"]}
+{"text": "-----BEGIN RSA PRIVATE KEY-----\nMIIEowIBAAKCAQEAexample\nZm9vYmFyYmF6\n-----END RSA PRIVATE KEY-----", "sensitive": true, "layer": "rules", "entities": ["SECRET"]}
+{"text": "Authorization: Bearer eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJleGFtcGxlIn0.c2lnbmF0dXJlZXhhbXBsZQ", "sensitive": true, "layer": "rules", "entities": ["SECRET"]}
+{"text": "HF_TOKEN=hf_EXAMPLEexampleEXAMPLEexample012345", "sensitive": true, "layer": "rules", "entities": ["SECRET"]}
+{"text": "//registry.npmjs.org/:_authToken=npm_EXAMPLEexampleEXAMPLEexample0123456", "sensitive": true, "layer": "rules", "entities": ["SECRET"]}
+{"text": "password: correcthorsebattery", "sensitive": true, "layer": "rules", "entities": ["SECRET"]}
+{"text": "Call Maria Gonzalez about the invoice", "sensitive": true, "layer": "rules", "entities": ["PERSON"]}
+{"text": "Please email Robert Johnson the build logs", "sensitive": true, "layer": "rules", "entities": ["PERSON"]}
+{"text": "Ask Priya Raman and Tom Becker to review", "sensitive": true, "layer": "rules", "entities": ["PERSON"]}
+{"text": "Rotate the key sk-test-not-a-real-key before release", "sensitive": true, "layer": "rules", "entities": ["SECRET"], "note": "openai_style_key shape"}
+{"text": "Wire to IBAN GB82WEST12345698765432", "sensitive": true, "layer": "rules", "entities": ["IBAN_CODE"]}
+{"text": "Contact: +1 (555) 010-0199 or maria@corp-mail.io", "sensitive": true, "layer": "rules", "entities": ["PHONE_NUMBER", "EMAIL_ADDRESS"]}
+{"text": "class RequestHandler(BaseHandler):", "sensitive": false}
+{"text": "const userName = getUser();", "sensitive": false}
+{"text": "version 2.14.0 released", "sensitive": false}
+{"text": "request id 3f2b8c1e-9d4a-4e7b-8a21-5c6d7e8f9a0b", "sensitive": false}
+{"text": "commit 9fceb02d0ae598e95dc970b74767f19372d61af8", "sensitive": false}
+{"text": "ISO 8601 timestamp 2026-10-06T14:02:17Z", "sensitive": false}
+{"text": "pytest tests/test_signup.py -q", "sensitive": false}
+{"text": "import numpy as np", "sensitive": false}
+{"text": "the Settings dataclass", "sensitive": false}
+{"text": "Order total: 1234567", "sensitive": false}
+{"text": "localhost:8787", "sensitive": false}
+{"text": "Explain how quicksort works", "sensitive": false}
+{"text": "The difference between git rebase and merge", "sensitive": false}
+{"text": "Write a SQL query that counts orders per month", "sensitive": false}
+{"text": "MAX_TOKENS=4096 SESSION_TIMEOUT=30", "sensitive": false}
+{"text": "This code validates using the password field", "sensitive": false}
+{"text": "def get_user_name(self): return self.user_name", "sensitive": false}
+{"text": "We met Microsoft in Seattle last week", "sensitive": false}
+{"text": "John", "sensitive": false}
+{"text": "Mr Smith", "sensitive": false, "note": "single capitalized surname: documents the two-word rule"}
+{"text": "Run the Redis Cluster Manager tests", "sensitive": false}
+{"text": "See Project Overview in the README", "sensitive": false}
+{"text": "bind to 0.0.0.0 for the dev server", "sensitive": false, "known_fp": true, "note": "0.0.0.0 is an IP shape; harmless, flagged by the IP recognizer"}

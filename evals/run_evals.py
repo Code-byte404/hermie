@@ -1,26 +1,23 @@
 """Calibration tool: measure the privacy gate on labeled cases.
 
-    python evals/run_evals.py privacy                 # rules layer (Presidio): recall / false alarms, a few seconds, no Ollama needed
-    python evals/run_evals.py privacy --judge         # plus the local judge's contextual check (needs Ollama)
+    python evals/run_evals.py privacy --languages en --cases evals/privacy_cases_en.jsonl
+    python evals/run_evals.py privacy --languages en,zh     # the default case file is the Chinese-engine one
 
 Case files are JSONL:
     privacy_cases.jsonl: {"text", "sensitive", "layer": rules|ner|judge, "entities": [...], "known_fp"/"known_miss"}
 
-Real requests can be appended to both files directly (note: privacy cases go to the judge model but never leave the machine).
+
 """
 from __future__ import annotations
 
 import argparse
-import asyncio
 import json
 import sys
 import time
-from collections import Counter, defaultdict
+from collections import defaultdict
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-
-from hermie.config import Settings  # noqa: E402
 
 HERE = Path(__file__).resolve().parent
 
@@ -68,46 +65,38 @@ def privacy_metrics(cases: list[dict], verdicts: list, *, with_judge: bool) -> d
 
 
 def run_privacy(args) -> None:
-    from hermie.privacy import PrivacyGate
-    s = Settings()
-    judge = None
-    if args.judge:
-        from hermie.judge import OllamaJudge
-        judge = OllamaJudge(s)
-    gate = PrivacyGate(s, judge=judge)
+    from hermie.gate.recognizers import build_analyzer, scan
+    from types import SimpleNamespace
+    langs = tuple(args.languages.split(","))
+    analyzer = build_analyzer(langs)
     cases = load_cases(Path(args.cases))
     t0 = time.time()
-    verdicts = [gate.check(c["text"], use_judge=args.judge) for c in cases]
-    m = privacy_metrics(cases, verdicts, with_judge=args.judge)
-    print(f"Privacy gate · {'rules layer + judge' if args.judge else 'rules layer only'} · {len(cases)} cases · {time.time() - t0:.1f}s")
+    verdicts = []
+    for c in cases:
+        fs = scan(analyzer, c["text"], langs, args.threshold)
+        verdicts.append(SimpleNamespace(sensitive=bool(fs), findings=fs,
+                                        reason=f"entities: {sorted({f.entity for f in fs})}"))
+    m = privacy_metrics(cases, verdicts, with_judge=False)
+    print(f"Privacy gate rules layer ({','.join(langs)}) - {len(cases)} cases - {time.time() - t0:.1f}s")
     print(f"  precision={m['precision']:.2f}  recall={m['recall']:.2f}  "
           f"tp={m['tp']} fp={m['fp']} fn={m['fn']} tn={m['tn']}")
     print("  recall per entity: " + "  ".join(f"{k} {hit}/{n}" for k, (hit, n) in sorted(m["per_entity"].items())))
-    if m["misses"]:
-        print("  misses:")
-        for c in m["misses"]:
-            print(f"    - [{c.get('layer')}] {c['text'][:60]!r}")
-    if m["false_alarms"]:
-        print("  false alarms:")
-        for c, reason in m["false_alarms"]:
-            print(f"    - {c['text'][:60]!r} -> {reason}")
+    for c in m["misses"]:
+        print(f"  miss: [{c.get('layer')}] {c['text'][:60]!r}")
+    for c, reason in m["false_alarms"]:
+        print(f"  false alarm: {c['text'][:60]!r} -> {reason}")
     if m["known"]:
         print(f"  known trade-offs (excluded from the metrics): {len(m['known'])}")
-    if args.judge:
-        probs = [(c, v.contextual_prob) for c, v in zip(cases, verdicts) if v.contextual_prob is not None]
-        print("  contextual probability distribution (for tuning CONTEXT_PRIVACY_THRESHOLD):")
-        for c, p in sorted(probs, key=lambda x: -x[1]):
-            print(f"    {p:.2f}  {'sensitive' if c['sensitive'] else 'normal'}  {c['text'][:50]!r}")
-
 
 
 # ====================================================================== entry point
 
 def main(argv=None) -> None:
-    p = argparse.ArgumentParser(description="Calibration tool for the privacy gate and the router")
+    p = argparse.ArgumentParser(description="Calibration tool for the privacy gate")
     sub = p.add_subparsers(dest="cmd", required=True)
     a = sub.add_parser("privacy")
-    a.add_argument("--judge", action="store_true", help="also run the local judge model (needs Ollama)")
+    a.add_argument("--languages", default="en,zh")
+    a.add_argument("--threshold", type=float, default=0.5)
     a.add_argument("--cases", default=str(HERE / "privacy_cases.jsonl"))
     a.set_defaults(fn=run_privacy)
     args = p.parse_args(argv)

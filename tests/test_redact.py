@@ -63,3 +63,14 @@ def test_mapping_store_unwritable_raises(tmp_path):
 def test_cleanbody_cannot_be_built_outside_the_gate():
     with pytest.raises(PermissionError):
         CleanBody(b"{}")
+
+
+def test_non_dict_mapping_file_is_a_store_error(tmp_path):
+    import pytest
+    from hermie.gate.redact import MappingStore, MappingStoreError
+    p = tmp_path / "m.json"
+    p.write_text("[1, 2]")
+    with pytest.raises(MappingStoreError):
+        MappingStore(p).mapping
+    with pytest.raises(MappingStoreError):
+        MappingStore(p).add({"<A_1>": "x"})

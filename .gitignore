@@ -1,5 +1,6 @@
 # secrets and local config
 .env
+.hypothesis/
 
 # python
 __pycache__/
