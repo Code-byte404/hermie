@@ -80,3 +80,31 @@ def _string_paths(node, path=()):
     elif isinstance(node, list):
         for i, v in enumerate(node): yield from _string_paths(v, path + (i,))
     elif isinstance(node, str): yield path
+
+
+def test_payload_subtrees_ignore_skip_keys(tmp_path, analyzer):
+    cfg, gate = _gate(tmp_path, analyzer)
+    gem = json.loads((FIX / "gemini.json").read_text())
+    gem["contents"][2]["parts"][0]["functionResponse"]["response"] = {"name": "Maria Gonzalez", "phone": "555-010-0199"}
+    out = walk_request(gem, gate, Allow(), cfg)
+    resp = out.body["contents"][2]["parts"][0]["functionResponse"]["response"]
+    assert "Maria" not in resp["name"] and "555-010-0199" not in resp["phone"]
+    assert out.body["model"] == gem["model"]
+
+    ant = json.loads((FIX / "anthropic.json").read_text())
+    ant["model"] = "claude-opus-5-5"
+    ant["messages"][1]["content"][0]["input"] = {"name": "555-010-0199"}
+    out = walk_request(ant, gate, Allow(), cfg)
+    assert "555-010-0199" not in json.dumps(out.body["messages"][1])
+    assert out.body["model"] == "claude-opus-5-5" and out.body["messages"][1]["content"][0]["name"] == "Read"
+
+def test_system_role_message_is_user_and_held_when_flagged(tmp_path, analyzer):
+    body = json.loads((FIX / "openai_chat.json").read_text())
+    assert classify(("messages", 0, "content"), body) is Origin.USER
+    body["input"] = [{"role": "developer", "content": [{"type": "input_text", "text": "x"}]}]
+    assert classify(("input", 0, "content", 0, "text"), body) is Origin.USER
+    class J:
+        def is_sensitive(self, text): return "me@example.com" in text or "<EMAIL_ADDRESS_" in text
+    cfg, gate = _gate(tmp_path, analyzer, judge=J())
+    out = walk_request(json.loads((FIX / "openai_chat.json").read_text()), gate, Allow(), cfg)
+    assert out.held is not None and out.held.kind == "hold"

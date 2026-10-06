@@ -75,7 +75,7 @@ def classify(path: tuple[str | int, ...], body: dict) -> Origin:
         return Origin.TOOL
     if any(a.get("role") in ("assistant", "model") or a.get("type") == "function_call" for a in ancestors):
         return Origin.ASSISTANT
-    if any(a.get("role") == "user" for a in ancestors):
+    if any(a.get("role") in ("user", "system", "developer") for a in ancestors):
         return Origin.USER
     return Origin.OTHER
 
@@ -148,28 +148,43 @@ class _Walker:
                 self.image(parent, key, node)
         return self.out
 
-    def visit(self, node, path) -> bool:
+    @staticmethod
+    def _enters_payload(parent, key, v, path) -> bool:
+        """True when v is a tool-produced or model-authored payload subtree (SKIP_KEYS do not apply inside)."""
+        if not isinstance(key, str) or not isinstance(v, (dict, list)):
+            return False
+        parent_key = path[-2] if len(path) >= 2 else None
+        kind = parent.get("type")
+        return ((key == "response" and parent_key == "functionResponse")
+                or (key == "args" and parent_key == "functionCall")
+                or (key == "content" and kind == "tool_result")
+                or (key == "input" and kind == "tool_use")
+                or (key == "output" and kind == "function_call_output")
+                or (key == "arguments" and kind == "function_call"))
+
+    def visit(self, node, path, payload=False) -> bool:
         """Return False to stop the walk (a held leaf)."""
         if isinstance(node, dict):
             for k in list(node):
-                if k in SKIP_KEYS:
+                if k in SKIP_KEYS and not payload:
                     continue
-                if not self.child(node, k, path + (k,)):
+                if not self.child(node, k, path + (k,), payload):
                     return False
         elif isinstance(node, list):
             for i in range(len(node)):
-                if not self.child(node, i, path + (i,)):
+                if not self.child(node, i, path + (i,), payload):
                     return False
         return True
 
-    def child(self, parent, key, path) -> bool:
+    def child(self, parent, key, path, payload=False) -> bool:
         v = parent[key]
+        payload = payload or (isinstance(parent, dict) and self._enters_payload(parent, key, v, path))
         if isinstance(v, dict) and _is_image(v):
             self.images.append((parent, key, v))
             return True
         if isinstance(v, str):
             return self.leaf(parent, key, v, path)
-        return self.visit(v, path)
+        return self.visit(v, path, payload)
 
     def image(self, parent, key, node: dict) -> None:
         if self.c.images == "pass":
@@ -203,6 +218,7 @@ class _Walker:
             self.out.decisions.append(Decision("placeholders", None, f"{len(res.findings)} replaced", size))
 
         flagged = res.sensitive
+        # OTHER leaves are protocol content: ignore both judge and smuggling flags, but still fail closed on detector errors
         if origin is Origin.OTHER and not res.reason.startswith("detector_error"):
             flagged = False    # a judge flag on tool descriptions / metadata is ignored
         if flagged:
