@@ -10,7 +10,7 @@ from hermie.privacy import CleanText, PrivacyGate
 
 from .conftest import FakeJudge
 
-S = Settings(routellm_enabled=False)
+S = Settings(routellm_enabled=False, cloud_exec=False)   # threshold policy; the cloud_exec toggle has its own tests
 
 
 def sig(task="simple", conf=0.9, cx=0, cx_conf=0.9, sensitive=False, win=None, ws=True):

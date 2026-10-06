@@ -46,7 +46,7 @@ log = logging.getLogger(__name__)
 # Every decision value a node can return. traced() records these, and only these, as the node status; anything else
 # a node returns is recorded as "ok" so that no text ever lands in the trajectory.
 DECISIONS = frozenset({"again", "done", "diagnose",                       # step graph
-                       "local", "local_verify", "cloud", "plan",           # route
+                       "local", "local_verify", "cloud", "plan", "cloud_exec",   # route
                        "execute", "finish", "self_check", "passed", "escalate_plan", "escalate_cloud",
                        "certified", "fallback", "midway",
                        "approved", "auto", "rejected"})                     # design
@@ -90,6 +90,7 @@ class StepInput:
     acceptance: list[str] = field(default_factory=list)
     diagnose: bool = False                        # plan mode: on failure, a data-free diagnosis for the planner
     label: str = ""                               # short name of the step for skills (the task line, not the material)
+    cloud: bool = False                           # cloud_exec: the cloud model drives the tools (falls back to the local executor)
 
 
 @dataclass
@@ -160,10 +161,13 @@ async def _recall_skills(ctx: StepCtx) -> None:
 async def _execute(ctx: StepCtx) -> ExecutorOutput:
     st, agent = ctx.state, ctx.deps
     run: _StepRun = st.step
-    run.out = await agent._run_executor(st, run.prompt)
+    if run.inp.cloud:
+        run.out = await agent._run_cloud_executor(st, run.prompt)
+    else:
+        run.out = await agent._run_executor(st, run.prompt)
     st.tools_used.update(st.tool_seq)
     st.trace_note(report_status=run.out.report.status.value, issues=len(run.out.report.issues),
-                  tool_calls=st.tool_calls, stuck=st.stuck)
+                  tool_calls=st.tool_calls, stuck=st.stuck, cloud=run.inp.cloud and not st.flow.cloud_exec_local)
     return run.out
 
 
@@ -282,7 +286,7 @@ def _fallback(st: TaskState, why: str, notify: bool = True) -> Literal["fallback
 
 
 @traced("route")
-async def _route(ctx: TaskCtx) -> Literal["local", "local_verify", "cloud", "plan"]:
+async def _route(ctx: TaskCtx) -> Literal["local", "local_verify", "cloud", "plan", "cloud_exec"]:
     st, agent = ctx.state, ctx.deps
     routing = await agent.router.route(st.flow.task, st.text, st.flow.force, business=st.business)
     st.flow.routing = routing
@@ -311,7 +315,9 @@ async def _snapshot(ctx: TaskCtx) -> Literal["execute", "plan"]:
 @traced("run_reviewed")
 async def _run_reviewed(ctx: TaskCtx) -> Literal["finish", "self_check"]:
     st, agent = ctx.state, ctx.deps
-    st.flow.last_step = await run_step(agent, st, StepInput(prompt=st.text, task_text=st.text, label=st.flow.task))
+    cloud = st.route == Route.CLOUD_EXEC.value and not st.flow.fallback
+    st.flow.last_step = await run_step(agent, st, StepInput(prompt=st.text, task_text=st.text, label=st.flow.task,
+                                                            cloud=cloud))
     if st.route == Route.LOCAL_VERIFY.value and not st.flow.fallback:
         return "self_check"
     return "finish"
@@ -460,7 +466,7 @@ def _result(st: TaskState, output: str, route: Route, backend: str, snapshot_id:
             local_work: bool = True) -> "TaskResult":
     """local_work=False for a cloud answer: the report and artifacts of a rejected local run do not describe it."""
     from .core import TaskResult
-    route_value = Route.LOCAL_VERIFY.value if st.route == Route.LOCAL_VERIFY.value else route.value
+    route_value = st.route if st.route in (Route.LOCAL_VERIFY.value, Route.CLOUD_EXEC.value) else route.value
     return TaskResult(output, route_value, backend, list(st.flow.notes), snapshot_id=snapshot_id,
                       report=st.last_report if local_work else None, artifacts=st.artifacts if local_work else [])
 
@@ -468,7 +474,10 @@ def _result(st: TaskState, output: str, route: Route, backend: str, snapshot_id:
 @traced("finish_local")
 async def _finish_local(ctx: TaskCtx) -> "TaskResult":
     st, agent = ctx.state, ctx.deps
-    return _result(st, agent._local_output(st), Route.LOCAL, "ollama", st.flow.task_snapshot_id)
+    backend = "ollama"
+    if st.route == Route.CLOUD_EXEC.value and not st.flow.fallback and not st.flow.cloud_exec_local:
+        backend = f"{agent.s.cloud_provider}-exec+ollama"
+    return _result(st, agent._local_output(st), Route.LOCAL, backend, st.flow.task_snapshot_id)
 
 
 @traced("finish_cloud")
@@ -512,7 +521,7 @@ def build_task_graph(agent: "Hermie"):
         g.edge_from(g.start_node).to(route),
         g.edge_from(route).to(
             g.decision(node_id="by_route")
-            .branch(lit("local", "local_verify", "plan").label("local / local_verify / plan").to(snapshot))
+            .branch(lit("local", "local_verify", "plan", "cloud_exec").label("local / local_verify / plan / cloud_exec").to(snapshot))
             .branch(lit("cloud").label("cloud").to(cloud_direct))),
         g.edge_from(snapshot).to(
             g.decision(node_id="after_snapshot")

@@ -14,11 +14,12 @@ class Route(str, Enum):
     LOCAL_VERIFY = "local_verify"  # local + self-check: escalate if the self-check fails (no private data only)
     PLAN = "plan"                  # plan mode: cloud planner + local executor; only redacted text and reports go out
     CLOUD = "cloud"                # no private data, no local files needed: the cloud model answers directly
+    CLOUD_EXEC = "cloud_exec"      # no private data, local files needed: the cloud model drives the local tools; every tool result is certified first
 
     @property
     def label(self) -> str:
         return {"local": "local only", "local_verify": "local + self-check",
-                "plan": "plan mode", "cloud": "cloud direct"}[self.value]
+                "plan": "plan mode", "cloud": "cloud direct", "cloud_exec": "cloud-driven execution"}[self.value]
 
 
 class Force(str, Enum):
@@ -128,6 +129,9 @@ def decide(sig: Signals, s: Settings, force: Force = Force.NONE) -> Decision:
         return Decision(Route.LOCAL, reasons + ["private data: fully local"])
 
     if wants_cloud is True:
+        if sig.needs_workspace and s.cloud_exec:
+            return Decision(Route.CLOUD_EXEC, reasons + ["needs local file operations: the cloud model drives the local "
+                                                         "tools, every tool result is checked before it goes out"])
         if sig.needs_workspace:
             return Decision(Route.PLAN, reasons + ["needs local file operations: planner + local executor"])
         return Decision(Route.CLOUD, reasons + ["no local operations needed: the cloud model completes it directly"])

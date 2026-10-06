@@ -49,6 +49,12 @@ def _settings_for(cfg: dict, base: Optional[Settings]) -> Settings:
     return s
 
 
+def _threshold_route(route: str) -> str:
+    """cloud_exec and plan are the same threshold decision ("cloud brains, local hands"); which one runs is the
+    CLOUD_EXEC setting, not a threshold, so the curated cases and the labels speak of plan."""
+    return "plan" if route == "cloud_exec" else route
+
+
 def _hits(records: list[dict], cfg: dict, base: Optional[Settings]) -> tuple[float, float]:
     """(hit rate, share routed local or local_verify) of cfg on the labelled records."""
     if not records:
@@ -57,6 +63,7 @@ def _hits(records: list[dict], cfg: dict, base: Optional[Settings]) -> tuple[flo
     hits = local = 0
     for rec in records:
         route = decide(signals_from_record(rec, cfg["needs_workspace_threshold"]), s).route.value
+        route = _threshold_route(route)
         hits += route in rec["expect"]
         local += route in LOCALISH
     return hits / len(records), local / len(records)
@@ -109,6 +116,8 @@ def label(rec: dict, later: list[dict]) -> Optional[list[str]]:
         if any(l.get("input_sha256") == rec["input_sha256"] and l.get("force") == "local" for l in later):
             return list(LOCALISH)
         return ["cloud"]
+    if route == "cloud_exec":
+        return ["plan"]   # the same threshold decision as plan (see _threshold_route)
     return None
 
 
