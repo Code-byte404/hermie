@@ -123,3 +123,35 @@ async def test_synthetic_flush_event_when_tail_cannot_be_appended(monkeypatch):
                        + b'data: {"text":"z <PHONE_NUMBER_1"}\n\n', stats)
     assert stats.synthetic == 1
     assert out.endswith('data: {"hermie_flush":"<PHONE_NUMBER_1"}\n\n')
+
+
+async def test_several_buffered_leaves_in_one_event_keep_their_own_tails():
+    """I4: a message text ending in a held tail must not prefix the function call arguments of the same event."""
+    completed = {"type": "response.completed", "response": {"output": [
+        {"type": "message", "content": [{"type": "output_text", "text": "see <PHONE_NUMBER_1> or <B"}]},
+        {"type": "function_call", "name": "run", "arguments": '{"x":1}'},
+        {"type": "function_call", "name": "dial", "arguments": '{"to":"<PHONE_NUMBER_1>"}'}]}}
+    raw = "event: response.completed\n" + _ev(**completed)
+    out = await _relay(raw.encode())
+    data = json.loads(out.splitlines()[1][6:])["response"]["output"]
+    assert data[0]["content"][0]["text"] == "see 555-010-0199 or <B"
+    assert data[1]["arguments"] == '{"x":1}'
+    assert data[2]["arguments"] == '{"to":"555-010-0199"}'
+
+
+async def test_tail_from_an_earlier_event_returns_there_when_the_next_leaf_differs():
+    raw = (_ev(type="d", delta={"text": "x <PHONE_NUM"})
+           + _ev(type="d", item={"text": "other"}, delta={"text": "BER_1> y"}))
+    out = await _relay(raw.encode())
+    datas = [json.loads(l[6:]) for l in out.splitlines() if l.startswith("data: ")]
+    assert datas[0]["delta"]["text"] == "x <PHONE_NUM" and datas[1]["item"]["text"] == "other"
+
+
+def test_restore_json_restores_keys():
+    obj, n = restore_json({"args": {"<PHONE_NUMBER_1>": {"<SECRET_1>": "<PHONE_NUMBER_1>"}}, "n": 4096}, R)
+    assert obj == {"args": {"555-010-0199": {"sk-test-abc123": "555-010-0199"}}, "n": 4096} and n == 0
+
+
+async def test_stream_restores_keys():
+    out = await _relay(_ev(functionCall={"name": "f", "args": {"<PHONE_NUMBER_1>": "to"}}).encode())
+    assert json.loads(out[6:])["functionCall"]["args"] == {"555-010-0199": "to"}

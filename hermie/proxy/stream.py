@@ -25,6 +25,7 @@ class PlaceholderBuffer:
         self._restore = restore
         self._held = ""
         self.unrestored = 0
+        self.path: Optional[tuple] = None   # JSON path of the leaf the held tail came from
 
     def _emit(self, text: str) -> str:
         out, n = self._restore(text)
@@ -46,6 +47,7 @@ class PlaceholderBuffer:
 
     def flush(self) -> str:
         text, self._held = self._held, ""
+        self.path = None
         return self._emit(text) if text else ""
 
 
@@ -62,38 +64,61 @@ def restore_json(obj: Any, restore: Restore) -> "tuple[Any, int]":
         if isinstance(o, list):
             return [walk(x) for x in o]
         if isinstance(o, dict):
-            return {k: walk(v) for k, v in o.items()}
+            return {walk(k) if isinstance(k, str) else k: walk(v) for k, v in o.items()}   # keys can carry data
         return o
 
     return walk(obj), total
 
 
 def _walk_buffered(o: Any, key: Optional[str], buffer: PlaceholderBuffer, restore: Restore,
-                   last: list, path: tuple = ()) -> Any:
-    """Restores in place order; `last` collects (container, key, path) of the final buffered string leaf."""
+                   last: list, path: tuple = (), cross: Optional[Callable[[], None]] = None) -> Any:
+    """Restores in place order; `last` collects (container, key, path) of the final buffered string leaf.
+    Before a buffered leaf is fed, a tail held from a leaf at another path is flushed back into that leaf: into the
+    previous leaf of this event when there is one, else through `cross` (the leaf sits in an earlier event)."""
+
+    def feed(container, k, v: str, p: tuple) -> None:
+        if buffer.held and buffer.path != p:
+            if last:
+                c, ck, _ = last[0]
+                c[ck] += buffer.flush()
+            elif cross is not None:
+                cross()
+        container[k] = buffer.feed(v)
+        buffer.path = p if buffer.held else None
+        last[:] = [(container, k, p)]
+
     if isinstance(o, dict):
+        renamed = False
         for k, v in list(o.items()):
             if isinstance(v, str):
                 if k in BUFFERED_KEYS:
-                    o[k] = buffer.feed(v)
-                    last[:] = [(o, k, path + (k,))]
+                    feed(o, k, v, path + (k,))
                 else:
                     o[k], n = restore(v)
                     buffer.unrestored += n
             else:
-                o[k] = _walk_buffered(v, k, buffer, restore, last, path + (k,))
+                o[k] = _walk_buffered(v, k, buffer, restore, last, path + (k,), cross)
+            renamed = renamed or (isinstance(k, str) and "<" in k)
+        if renamed:   # keys can carry placeholders (tool arguments whose keys were data)
+            items = list(o.items())
+            o.clear()
+            for k, v in items:
+                nk = k
+                if isinstance(k, str):
+                    nk, n = restore(k)
+                    buffer.unrestored += n
+                o.setdefault(nk, v)
         return o
     if isinstance(o, list):
         for i, v in enumerate(list(o)):
             if isinstance(v, str):
                 if key in BUFFERED_KEYS:
-                    o[i] = buffer.feed(v)
-                    last[:] = [(o, i, path + (i,))]
+                    feed(o, i, v, path + (i,))
                 else:
                     o[i], n = restore(v)
                     buffer.unrestored += n
             else:
-                o[i] = _walk_buffered(v, key, buffer, restore, last, path + (i,))
+                o[i] = _walk_buffered(v, key, buffer, restore, last, path + (i,), cross)
         return o
     return o
 
@@ -126,9 +151,10 @@ def _dumps(obj: Any) -> str:
 
 
 def _process(data: str, buffer: PlaceholderBuffer, restore: Restore,
-             before: Optional[Callable[[Any], None]] = None):
+             before: Optional[Callable[[Any], None]] = None, cross: Optional[Callable[[], None]] = None):
     """Returns (output data, parsed object or None, last buffered leaf or None).
-    `before(obj)` runs once the payload is parsed and before anything is fed to the buffer."""
+    `before(obj)` runs once the payload is parsed and before anything is fed to the buffer; `cross()` flushes a held
+    tail into the earlier event it came from."""
     try:
         obj = json.loads(data)
     except ValueError:
@@ -140,7 +166,7 @@ def _process(data: str, buffer: PlaceholderBuffer, restore: Restore,
     if before:
         before(obj)
     last: list = []
-    obj = _walk_buffered(obj, None, buffer, restore, last)
+    obj = _walk_buffered(obj, None, buffer, restore, last, cross=cross)
     return _dumps(obj), obj, (last[0] if last else None)
 
 
@@ -190,7 +216,7 @@ class _Raw(_Event):
 
 
 def _parse_event(block: str, eol: str, buffer: PlaceholderBuffer, restore: Restore,
-                 before: Optional[Callable[[Any], None]] = None) -> _Event:
+                 before: Optional[Callable[[Any], None]] = None, cross: Optional[Callable[[], None]] = None) -> _Event:
     lines = block.split(eol)
     ev = _Event(lines, eol)
     idxs = [i for i, ln in enumerate(lines) if ln.startswith("data:")]
@@ -202,7 +228,7 @@ def _parse_event(block: str, eol: str, buffer: PlaceholderBuffer, restore: Resto
         if i == idxs[0]:
             ev.prefix = "data: " if v.startswith(" ") else "data:"
         parts.append(v[1:] if v.startswith(" ") else v)
-    out, obj, leaf = _process("\n".join(parts), buffer, restore, before)
+    out, obj, leaf = _process("\n".join(parts), buffer, restore, before, cross)
     if obj is None and len(idxs) > 1:
         # multi-line non-JSON data: still restore text, keep the line structure
         for i in idxs:
@@ -238,8 +264,9 @@ def _next_block(buf: bytes):
 async def relay_sse(upstream: AsyncIterator[bytes], restore: Restore,
                     stats: Optional[StreamStats] = None) -> AsyncIterator[bytes]:
     """Events are held back while the buffer holds a tail (and always for the last one), so that the tail can be
-    flushed into the event that carried it: when the next event feeds a different JSON path, has no buffered leaf,
-    or the stream ends. Keep-alive events (no data, or type "ping") do not flush."""
+    flushed into the leaf that carried it: when a later leaf (in this event or a later one) has a different JSON
+    path, when an event has no buffered leaf, or when the stream ends. Keep-alive events (no data, or type "ping")
+    do not flush."""
     stats = stats if stats is not None else StreamStats()
     buffer = PlaceholderBuffer(restore)
     pending: "list[_Event]" = []
@@ -260,12 +287,12 @@ async def relay_sse(upstream: AsyncIterator[bytes], restore: Restore,
         stats.synthetic += 1
 
     def before(obj: Any) -> None:
+        # an event with buffered leaves is handled leaf by leaf (`cross`); one without any flushes here
         if not buffer.held:
             return
         if isinstance(obj, dict) and obj.get("type") == "ping":
             return
-        h = holder()
-        if obj is not None and h is not None and _first_leaf_path(obj) == h.leaf_path:
+        if obj is not None and _first_leaf_path(obj) is not None:
             return
         flush_into_holder()
 
@@ -277,7 +304,7 @@ async def relay_sse(upstream: AsyncIterator[bytes], restore: Restore,
         except UnicodeDecodeError:
             return _Raw(block, eol)
         stats.events += 1
-        return _parse_event(text, eol, buffer, restore, before)
+        return _parse_event(text, eol, buffer, restore, before, flush_into_holder)
 
     def push(ev: _Event) -> "list[bytes]":
         pending.append(ev)
