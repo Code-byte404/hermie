@@ -14,25 +14,30 @@
 
 ## What it looks like
 
-Claude Code reads `demo/customers.csv` and `demo/.env` through Hermie. `hermie tail` in a second terminal prints one entry per request, with the entities replaced in the parts that were new in that request (times and sizes vary):
+![Claude Code reads a CSV of fake customers and a fake .env through Hermie; hermie tail shows the tool result reached the model with CREDIT_CARD, EMAIL_ADDRESS, PHONE_NUMBER and SECRET replaced](assets/demo.gif)
+
+A real run (2026-10-07, Claude Code 2.1.291 through `hermie serve`): the agent reads `demo/customers.csv` and `demo/.env`, answers the question, and `hermie tail` prints one entry per request with the entities replaced in the parts that were new in that request:
 
 ```text
-$ hermie tail
-12:14:02  claude-code -> anthropic/claude-sonnet-4-5  stream  +0 parts, 0 bytes new
-12:14:09  claude-code -> anthropic/claude-sonnet-4-5  stream  +1 parts, 1622 bytes new
-  [tool]  Read  1622  CREDIT_CARD, EMAIL_ADDRESS, PHONE_NUMBER
-12:14:15  claude-code -> anthropic/claude-sonnet-4-5  stream  +1 parts, 214 bytes new
-  [tool]  Read  214  SECRET
+$ hermie tail --once
+00:16:10  claude-code -> anthropic/claude-fable-5-1  stream  +5 parts, 58403 bytes new
+  [user]  -  565  EMAIL_ADDRESS
+  [user]  -  584  EMAIL_ADDRESS, PERSON
+  [user]  -  40877  PERSON
+  [user]  -  12092  PERSON
+  [other]  -  4285  PERSON
+00:16:14  claude-code -> anthropic/claude-fable-5-1  stream  +1 parts, 1419 bytes new
+  [tool]  Bash  1419  CREDIT_CARD, EMAIL_ADDRESS, PHONE_NUMBER, SECRET
 ```
 
-`hermie show ID` prints the stored body exactly as it was sent, with the placeholders highlighted (the request id is in `hermie tail --json` and in the `x-hermie-request-id` response header). The two tool results above reached the model like this (excerpt):
+The first entry is Claude Code's own system prompt and project files (your `CLAUDE.md`, git status, your email in the git identity): Hermie scans those too. The second is the tool result with the CSV and the `.env`. `hermie show ID` prints the stored body exactly as it was sent, with the placeholders highlighted (the request id is in `hermie tail --json` and in the `x-hermie-request-id` response header); the tool result above reached the model like this (excerpt):
 
 ```text
-1,...,<PHONE_NUMBER_1>,<EMAIL_ADDRESS_1>,<CREDIT_CARD_1>
+1,Ada Lovelace,<PHONE_NUMBER_1>,<EMAIL_ADDRESS_1>,<CREDIT_CARD_1>
 STRIPE_KEY=<SECRET_1>
 ```
 
-The reply comes back with `<PHONE_NUMBER_1>` turned into the real number again, so the agent edits the real file. To record your own run, `demo/record.sh` opens the agent and `hermie tail` side by side in tmux.
+The reply comes back with `<PHONE_NUMBER_1>` turned into the real number again, so the agent edits the real file. The recording was made with `asciinema` + `agg`; `demo/record.sh` opens the agent and `hermie tail` side by side in tmux for your own run.
 
 ## Quickstart
 
