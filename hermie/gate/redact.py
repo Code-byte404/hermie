@@ -5,7 +5,7 @@ import json
 import os
 import re
 from pathlib import Path
-from typing import Optional
+from typing import Callable, Optional
 
 from .types import Finding
 
@@ -112,9 +112,36 @@ class MappingStore:
         except (OSError, ValueError) as e:
             raise MappingStoreError(str(e)) from e
 
+    def update(self, fn: Callable[[dict[str, str]], dict[str, str]]) -> dict[str, str]:
+        """Atomically: under the flock read the file's mapping, let `fn(current)` return the NEW entries, refuse a key
+        that already maps to a different value, write the merge and return it."""
+        try:
+            self.path.parent.mkdir(parents=True, exist_ok=True)
+            with open(self.path.with_suffix(".lock"), "w") as lf:
+                fcntl.flock(lf, fcntl.LOCK_EX)
+                current = self._read()
+                new = fn(dict(current))
+                for k, v in new.items():
+                    if k in current and current[k] != v:
+                        raise MappingStoreError(f"placeholder {k} already maps to another value")
+                merged = current | new
+                if new:
+                    tmp = self.path.with_suffix(".tmp")
+                    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+                    with os.fdopen(fd, "w", encoding="utf-8") as f:
+                        f.write(json.dumps(merged, ensure_ascii=False))
+                    os.chmod(tmp, 0o600)
+                    os.replace(tmp, self.path)
+                    os.chmod(self.path, 0o600)
+                return merged
+        except MappingStoreError:
+            raise
+        except (OSError, ValueError) as e:
+            raise MappingStoreError(str(e)) from e
+
     def add(self, new: dict[str, str]) -> None:
         if new:
-            self._write(new, merge=True)
+            self.update(lambda cur: new)
 
     def clear(self) -> None:
         self._write({})

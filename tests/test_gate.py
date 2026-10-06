@@ -1,5 +1,6 @@
 # tests/test_gate.py
 import pytest
+from concurrent.futures import ThreadPoolExecutor
 from hermie.config import Config
 from hermie.gate.gate import Gate, certify_body
 from hermie.gate.types import Origin, CleanBody
@@ -52,7 +53,7 @@ def test_cache_is_bounded(tmp_path, analyzer):
 
 def test_unwritable_store_propagates(tmp_path, analyzer, monkeypatch):
     store = MappingStore(tmp_path / "m.json")
-    monkeypatch.setattr(store, "add", lambda new: (_ for _ in ()).throw(MappingStoreError("disk full")))
+    monkeypatch.setattr(store, "update", lambda fn: (_ for _ in ()).throw(MappingStoreError("disk full")))
     with pytest.raises(MappingStoreError):
         Gate(Config(data_dir=tmp_path), analyzer=analyzer, store=store).scan("555-010-0199", Origin.TOOL)
 
@@ -67,3 +68,46 @@ def test_smuggling_only_with_judge(tmp_path, analyzer):
 def test_certify_body_is_the_only_constructor():
     assert isinstance(certify_body(b"{}"), CleanBody)
     with pytest.raises(PermissionError): CleanBody(b"{}")
+
+
+def test_two_gates_share_placeholders(tmp_path, analyzer):
+    path = tmp_path / "m.json"
+    a = Gate(Config(data_dir=tmp_path), analyzer=analyzer, store=MappingStore(path))
+    b = Gate(Config(data_dir=tmp_path), analyzer=analyzer, store=MappingStore(path))
+    ra = a.scan("call 555-010-0199", Origin.TOOL)
+    rb = b.scan("again 555-010-0199 and 555-010-0142", Origin.TOOL)   # b's in-memory view is stale
+    assert ra.text == "call <PHONE_NUMBER_1>"
+    assert rb.text == "again <PHONE_NUMBER_1> and <PHONE_NUMBER_2>"
+    assert MappingStore(path).mapping == {"<PHONE_NUMBER_1>": "555-010-0199", "<PHONE_NUMBER_2>": "555-010-0142"}
+
+
+def test_concurrent_scans_mint_distinct_placeholders(tmp_path, analyzer):
+    g = Gate(Config(data_dir=tmp_path), analyzer=analyzer, store=MappingStore(tmp_path / "m.json"))
+    phones = [f"555-010-01{i:02d}" for i in range(8)]
+    with ThreadPoolExecutor(8) as ex:
+        results = list(ex.map(lambda p: g.scan(f"call {p}", Origin.TOOL), phones))
+    assert len({r.text for r in results}) == 8
+    stored = MappingStore(tmp_path / "m.json").mapping
+    for p, r in zip(phones, results):
+        assert g.restore(r.text)[0] == f"call {p}"
+        assert stored[r.text.removeprefix("call ")] == p
+
+
+def test_store_update_refuses_conflicting_key(tmp_path):
+    s = MappingStore(tmp_path / "m.json")
+    s.add({"<X_1>": "a"})
+    with pytest.raises(MappingStoreError):
+        s.update(lambda cur: {"<X_1>": "b"})
+    assert s.mapping == {"<X_1>": "a"}
+
+
+def test_detector_error_is_not_cached(tmp_path, analyzer):
+    class Flaky:
+        n = 0
+        def is_sensitive(self, text):
+            self.n += 1
+            if self.n == 1: raise RuntimeError("down")
+            return False
+    g = Gate(Config(data_dir=tmp_path, judge="ollama:x"), analyzer=analyzer, judge=Flaky(), store=MappingStore(tmp_path / "m.json"))
+    assert g.scan("hello", Origin.USER).sensitive
+    assert not g.scan("hello", Origin.USER).sensitive

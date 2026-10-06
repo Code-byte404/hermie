@@ -8,7 +8,7 @@ from fnmatch import fnmatch
 
 from hermie.gate.judge import ContextualJudge
 from hermie.gate.recognizers import build_analyzer, scan as pattern_scan, smuggling_risk
-from hermie.gate.redact import MappingStore, redact, restore
+from hermie.gate.redact import MappingStore, MappingStoreError, redact, restore
 from hermie.gate.types import _GATE_TOKEN, CleanBody, Origin, ScanResult
 
 
@@ -27,6 +27,7 @@ class Gate:
         self._cache: OrderedDict[str, ScanResult] = OrderedDict()
         self.cache_bytes = 0
         self._lock = threading.Lock()
+        self._mint_lock = threading.Lock()
         self._analyzer_lock = threading.Lock()
 
     @property
@@ -38,10 +39,13 @@ class Gate:
 
     @property
     def mapping(self) -> dict[str, str]:
-        return dict(self._mapping)
+        with self._lock:
+            return dict(self._mapping)
 
     def restore(self, text: str) -> tuple[str, int]:
-        return restore(text, self._mapping)
+        with self._lock:
+            mapping = self._mapping
+        return restore(text, mapping)
 
     def scan(self, text: str, origin: Origin, path_hint: str | None = None) -> ScanResult:
         h = hashlib.sha256(text.encode("utf-8", "surrogatepass")).hexdigest()
@@ -55,12 +59,11 @@ class Gate:
         size = len(text)
         try:
             res = self._compute(text, origin, path_hint, h, size)
+        except MappingStoreError:
+            raise
         except Exception as e:  # fail closed; class name only, a message could carry the text
-            res = ScanResult(text, [], True, True, f"detector_error: {type(e).__name__}", {}, h, size)
-        if res.new_mapping:
-            self.store.add(res.new_mapping)   # MappingStoreError propagates on purpose
-            with self._lock:
-                self._mapping.update(res.new_mapping)
+            # fail closed, but never cache: a transient outage must not block this text afterwards
+            return ScanResult(text, [], True, True, f"detector_error: {type(e).__name__}", {}, h, size)
         self._remember(key, res)
         return res
 
@@ -75,9 +78,18 @@ class Gate:
             return ScanResult(text, [], False, False, "allow_path", {}, h, size)
         findings = [f for f in pattern_scan(self.analyzer, text, self.c.languages, self.c.presidio_threshold)
                     if text[f.start:f.end] not in self.c.allow_values]
+        out: dict = {}
+
+        def mint(current: dict[str, str]) -> dict[str, str]:
+            out["red"], out["new"] = redact(text, findings, existing=current)
+            return out["new"]
+
+        # mint and persist in one critical section (flock across processes, lock across threads)
+        with self._mint_lock:
+            merged = self.store.update(mint)   # MappingStoreError propagates on purpose
         with self._lock:
-            existing = dict(self._mapping)
-        red, new = redact(text, findings, existing=existing)
+            self._mapping = merged
+        red, new = out["red"], out["new"]
         judged = sensitive = False
         reason = "clean"
         if self._judged_origin(origin):
