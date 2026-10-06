@@ -4,6 +4,7 @@ Run one at a time with `pytest -m live tests/test_live.py::test_claude_code -s`.
 """
 import json
 import os
+import re
 import shutil
 import socket
 import subprocess
@@ -15,7 +16,7 @@ import pytest
 
 pytestmark = pytest.mark.live
 DEMO = Path(__file__).parent.parent / "demo"
-REAL = ["555-010-0101", "sk_test_hermieDemoNotARealKey000000", "demo-password-not-real", "demo-session-secret-0000"]
+REAL = ["555-010-0101", "sk-test-hermie-demo-not-a-real-key-0000", "demo-password-not-real", "demo-session-secret-0000"]
 PLACEHOLDERS = ["<PHONE_NUMBER_", "<CREDIT_CARD_", "<EMAIL_ADDRESS_", "<SECRET_"]
 TASK = "Read customers.csv and .env, then tell me how many customers there are. Do not modify files."
 
@@ -69,6 +70,10 @@ def _assert_clean(data_dir, label):
     text = "".join(b.read_text() for b in bodies)
     for v in REAL:
         assert v not in text, v
+    assert not re.search(r"555-010-01\d\d", text), "phone number leaked"
+    for card in ("4242424242424242", "4000056655665556"):
+        assert card not in text, card
+    assert "@example.com" not in text, "email leaked"
     assert any(ph in text for ph in PLACEHOLDERS), "no placeholder found in any stored body"
     lines = [json.loads(x) for x in (data_dir / "receipt.jsonl").read_text().splitlines() if x.strip()]
     clients = {x.get("client") for x in lines}
