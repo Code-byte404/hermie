@@ -5,7 +5,7 @@ import json
 import os
 import re
 import time
-from dataclasses import asdict, dataclass, fields
+from dataclasses import dataclass, fields
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Iterator
@@ -59,6 +59,38 @@ def _stamp(when: datetime) -> str:
     return when.strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
+def _int(value) -> int | None:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _sanitized(line: ReceiptLine) -> dict:
+    """Serialize only what the receipt may hold, whatever the caller put in the containers."""
+    data = {f.name: getattr(line, f.name) for f in fields(ReceiptLine)}
+    replaced = {}
+    for k, v in (data["replaced"] or {}).items():
+        n = _int(v)
+        if n is not None:
+            replaced[str(k)] = n
+    data["replaced"] = replaced
+    data["withheld"] = [str(x) for x in (data["withheld"] or [])]
+    parts = []
+    for p in data["new_parts"] or []:
+        if not isinstance(p, dict):
+            continue
+        tool = p.get("tool")
+        parts.append({
+            "origin": str(p.get("origin", "")),
+            "tool": None if tool is None else str(tool),
+            "size": _int(p.get("size")) or 0,
+            "entities": [str(e) for e in (p.get("entities") or [])],
+        })
+    data["new_parts"] = parts
+    return data
+
+
 def _write_private(path: Path, data: bytes, flags: int) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     fd = os.open(path, os.O_WRONLY | os.O_CREAT | flags, 0o600)
@@ -74,7 +106,7 @@ class Receipt:
         self.path = config.receipt_path
 
     def write(self, line: ReceiptLine) -> None:
-        text = json.dumps(asdict(line), ensure_ascii=False, separators=(",", ":")) + "\n"
+        text = json.dumps(_sanitized(line), ensure_ascii=False, separators=(",", ":")) + "\n"
         _write_private(self.path, text.encode("utf-8"), os.O_APPEND)
 
     def iter(self, since: datetime | None = None) -> Iterator[ReceiptLine]:

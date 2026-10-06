@@ -83,3 +83,15 @@ def test_client_label():
     assert client_label("curl/8.1 extra") == "curl/8.1"
     assert client_label(None) == "unknown"
     assert client_label("") == "unknown"
+
+
+def test_receipt_write_strips_stray_keys_and_coerces(tmp_path):
+    r = Receipt(Config(data_dir=tmp_path))
+    r.write(_line(new_parts=[{"origin": "user", "tool": None, "size": "42", "entities": ["PHONE_NUMBER"],
+                              "text": "call 555-0100"}],
+                  replaced={"PHONE_NUMBER": "2", "EMAIL": "bob@example.com"}, withheld=["h1", 7]))
+    raw = (tmp_path / "receipt.jsonl").read_text()
+    assert "555-0100" not in raw and "bob@example.com" not in raw
+    [got] = list(r.iter())
+    assert got.new_parts == [{"origin": "user", "tool": None, "size": 42, "entities": ["PHONE_NUMBER"]}]
+    assert got.replaced == {"PHONE_NUMBER": 2} and got.withheld == ["h1", "7"]
