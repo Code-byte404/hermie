@@ -14,30 +14,29 @@
 
 ## What it looks like
 
-![Claude Code reads a CSV of fake customers and a fake .env through Hermie; hermie tail shows the tool result reached the model with CREDIT_CARD, EMAIL_ADDRESS, PHONE_NUMBER and SECRET replaced](assets/demo.gif)
+![A Claude Code prompt containing a customer's name, phone, email and a key. Claude answers normally. hermie show prints the user message Anthropic actually received: the four values are placeholders](assets/demo.gif)
 
-A real run (2026-10-07, Claude Code 2.1.291 through `hermie serve`): the agent reads `demo/customers.csv` and `demo/.env`, answers the question, and `hermie tail` prints one entry per request with the entities replaced in the parts that were new in that request:
-
-```text
-$ hermie tail --once
-00:16:10  claude-code -> anthropic/claude-fable-5-1  stream  +5 parts, 58403 bytes new
-  [user]  -  565  EMAIL_ADDRESS
-  [user]  -  584  EMAIL_ADDRESS, PERSON
-  [user]  -  40877  PERSON
-  [user]  -  12092  PERSON
-  [other]  -  4285  PERSON
-00:16:14  claude-code -> anthropic/claude-fable-5-1  stream  +1 parts, 1419 bytes new
-  [tool]  Bash  1419  CREDIT_CARD, EMAIL_ADDRESS, PHONE_NUMBER, SECRET
-```
-
-The first entry is Claude Code's own system prompt and project files (your `CLAUDE.md`, git status, your email in the git identity): Hermie scans those too. The second is the tool result with the CSV and the `.env`. `hermie show ID` prints the stored body exactly as it was sent, with the placeholders highlighted (the request id is in `hermie tail --json` and in the `x-hermie-request-id` response header); the tool result above reached the model like this (excerpt):
+A real run (Claude Code 2.1.291 through `hermie serve`, 2026-10-07). You type a normal prompt with a customer's details in it:
 
 ```text
-1,Ada Lovelace,<PHONE_NUMBER_1>,<EMAIL_ADDRESS_1>,<CREDIT_CARD_1>
-STRIPE_KEY=<SECRET_1>
+$ claude -p "Our customer Maria Gonzalez (555-010-0199, maria.gonzalez@example.com) says her
+  Stripe key sk-test-hermie-demo-not-a-real-key-0000 stopped working. What should I check first?"
 ```
 
-The reply comes back with `<PHONE_NUMBER_1>` turned into the real number again, so the agent edits the real file. The recording was made with `asciinema` + `agg`; `demo/record.sh` opens the agent and `hermie tail` side by side in tmux for your own run.
+Claude answers as usual. `hermie show ID` prints the stored request body exactly as it was sent; the user message in it reads:
+
+```text
+Our customer <PERSON_2> (<PHONE_NUMBER_1>, <EMAIL_ADDRESS_3>) says her Stripe key <SECRET_1>
+stopped working. What should I check first?
+```
+
+and the receipt line for that request (`hermie tail`) shows what was replaced, never the values:
+
+```text
+  [user]  -  189  EMAIL_ADDRESS, PERSON, PHONE_NUMBER, SECRET
+```
+
+The numbering continues from earlier placeholders in the same request (Claude Code's system prompt carries your `CLAUDE.md`, git status and the email in your git config, which Hermie scans too). The reply comes back with the real values restored, so a tool call like `grep <PHONE_NUMBER_1> customers.csv` runs with the actual number while the model only ever saw the placeholder. `demo/record-prompt.sh` is the script behind the recording (`asciinema` + `agg`); `demo/record.sh` opens the agent and `hermie tail` side by side in tmux for a longer session.
 
 ## Quickstart
 
