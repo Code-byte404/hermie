@@ -1,0 +1,11 @@
+raw/
+label/
+scores/
+plan/groups/
+data/all.jsonl
+data/train*.jsonl
+data/*.laya.jsonl
+data/merge_report.json
+data/label_report.json
+__pycache__/
+plan/prompts/
