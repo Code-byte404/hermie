@@ -95,3 +95,14 @@ def test_receipt_write_strips_stray_keys_and_coerces(tmp_path):
     [got] = list(r.iter())
     assert got.new_parts == [{"origin": "user", "tool": None, "size": 42, "entities": ["PHONE_NUMBER"]}]
     assert got.replaced == {"PHONE_NUMBER": 2} and got.withheld == ["h1", "7"]
+
+
+def test_receipt_line_without_restored_field_still_parses(tmp_path):
+    """Older lines have no `restored`; they read back with 0."""
+    r = Receipt(Config(data_dir=tmp_path))
+    old = {f.name: getattr(_line(), f.name) for f in dataclasses.fields(ReceiptLine) if f.name != "restored"}
+    with open(tmp_path / "receipt.jsonl", "a") as f:
+        f.write(json.dumps(old) + "\n")
+    r.write(_line(restored=3))
+    lines = list(r.iter())
+    assert [l.restored for l in lines] == [0, 3]

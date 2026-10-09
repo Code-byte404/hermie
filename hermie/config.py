@@ -82,6 +82,16 @@ class Config:
     def config_path(self) -> Path | None:
         return self._under("config.toml")
 
+    @property
+    def serve_path(self) -> Path | None:
+        """Written by a running `hermie serve` (pid, host, port, start time); read by `hermie status`."""
+        return self._under("serve.json")
+
+    @property
+    def turns_dir(self) -> Path | None:
+        """Per-session turn markers for the Claude Code hooks (a timestamp per session id, nothing else)."""
+        return self._under("turns")
+
     @classmethod
     def load(cls, path: Path | None = None, **overrides) -> "Config":
         values: dict = {}

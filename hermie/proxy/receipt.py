@@ -40,6 +40,7 @@ class ReceiptLine:
     upstream_error: str | None
     mode: str
     new_parts: list[dict]
+    restored: int = 0   # placeholders put back into the reply; lines written before the field exist read as 0
 
 
 _FIELDS = {f.name for f in fields(ReceiptLine)}
@@ -88,6 +89,8 @@ def _sanitized(line: ReceiptLine) -> dict:
             "entities": [str(e) for e in (p.get("entities") or [])],
         })
     data["new_parts"] = parts
+    data["restored"] = _int(data["restored"]) or 0
+    data["unrestored"] = _int(data["unrestored"]) or 0
     return data
 
 

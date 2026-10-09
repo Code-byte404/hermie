@@ -8,9 +8,23 @@ import json
 import re
 from typing import Any, AsyncIterator, Callable, Optional
 
-from ..gate.redact import MAX_PLACEHOLDER_LEN
+from ..gate.redact import MAX_PLACEHOLDER_LEN, PLACEHOLDER
 
 Restore = Callable[[str], "tuple[str, int]"]
+
+
+class _Counting:
+    """Wraps a Restore and counts the placeholders it put back (placeholder-shaped tokens found minus unknown)."""
+
+    def __init__(self, restore: Restore):
+        self._restore = restore
+        self.restored = 0
+
+    def __call__(self, text: str) -> "tuple[str, int]":
+        out, missing = self._restore(text)
+        found = len(PLACEHOLDER.findall(text)) if "<" in text else 0
+        self.restored += max(found - missing, 0)
+        return out, missing
 
 # Leaf keys whose string values are streamed text and therefore pass through the buffer.
 BUFFERED_KEYS = {"text", "partial_json", "content", "arguments", "delta"}
@@ -51,9 +65,12 @@ class PlaceholderBuffer:
         return self._emit(text) if text else ""
 
 
-def restore_json(obj: Any, restore: Restore) -> "tuple[Any, int]":
-    """Every string leaf restored (no buffering); returns the new object and the summed unrestored count."""
+def restore_json(obj: Any, restore: Restore, stats: "Optional[StreamStats]" = None) -> "tuple[Any, int]":
+    """Every string leaf restored (no buffering); returns the new object and the summed unrestored count.
+    With `stats`, its `restored` / `unrestored` are filled too."""
     total = 0
+    counting = _Counting(restore)
+    restore = counting
 
     def walk(o: Any) -> Any:
         nonlocal total
@@ -67,7 +84,10 @@ def restore_json(obj: Any, restore: Restore) -> "tuple[Any, int]":
             return {walk(k) if isinstance(k, str) else k: walk(v) for k, v in o.items()}   # keys can carry data
         return o
 
-    return walk(obj), total
+    out = walk(obj)
+    if stats is not None:
+        stats.restored, stats.unrestored = counting.restored, total
+    return out, total
 
 
 def _walk_buffered(o: Any, key: Optional[str], buffer: PlaceholderBuffer, restore: Restore,
@@ -177,6 +197,7 @@ def restore_event(data: str, buffer: PlaceholderBuffer, restore: Restore) -> str
 class StreamStats:
     def __init__(self) -> None:
         self.unrestored: int = 0
+        self.restored: int = 0
         self.events: int = 0
         self.synthetic: int = 0
 
@@ -268,6 +289,7 @@ async def relay_sse(upstream: AsyncIterator[bytes], restore: Restore,
     path, when an event has no buffered leaf, or when the stream ends. Keep-alive events (no data, or type "ping")
     do not flush."""
     stats = stats if stats is not None else StreamStats()
+    restore = _Counting(restore)
     buffer = PlaceholderBuffer(restore)
     pending: "list[_Event]" = []
     acc = b""
@@ -335,3 +357,4 @@ async def relay_sse(upstream: AsyncIterator[bytes], restore: Restore,
     for e in pending:
         yield e.render()
     stats.unrestored = buffer.unrestored
+    stats.restored = restore.restored

@@ -51,7 +51,41 @@ After 0.3.0 is published on PyPI, the first line becomes `pip install hermie && 
 
 `hermie serve` listens on `127.0.0.1:8787` and prints one base URL per upstream: `/anthropic` (api.anthropic.com), `/openai/v1` (api.openai.com), `/gemini` (generativelanguage.googleapis.com) and `/custom` (any upstream you name with `--upstream`). Your API key or login token is forwarded to the upstream as the client sends it; Hermie never stores it.
 
-Other commands: `hermie show ID` (the stored outbound body of a request), `hermie allow ID` (release a held or withheld item), `hermie stats [--days N]` (totals from the receipt), `hermie forget` (clear the placeholder mapping). `hermie COMMAND --help` lists the options.
+Other commands: `hermie show ID` (the stored outbound body of a request), `hermie allow ID` (release a held or withheld item), `hermie hide VALUE` (put a value in the mapping by hand), `hermie stats [--days N]` (totals from the receipt), `hermie status` (one line: proxy up, values kept local, last request), `hermie install-hooks` (Claude Code status line and hooks), `hermie forget` (clear the placeholder mapping). `hermie COMMAND --help` lists the options.
+
+## Keys the model never sees
+
+![Claude Code with Hermie's hooks: the user pastes a key and asks for a .env file. Claude writes the file. Under the Write tool Claude Code prints Hermie's line that one placeholder was restored before the write ran, and at the end of the turn a summary of what was replaced. The status line at the bottom shows the proxy is up and how many values stay local](assets/demo-env.gif)
+
+Paste a key into the prompt the way you would paste it to a colleague:
+
+```text
+> Create a .env file with one line: OPENAI_API_KEY=sk-test-hermie-live-not-a-real-key-0123456789abcdef
+```
+
+Hermie replaces the key with `<SECRET_1>` before the request leaves. The model, which never sees a key and so never warns you about one, writes `OPENAI_API_KEY=<SECRET_1>` into its Write call. On the way back Hermie restores the value inside the tool arguments, so Claude Code writes the real key to disk. When the agent reads the file later, the key becomes `<SECRET_1>` again. The three stored request bodies of that run contain `OPENAI_API_KEY=<SECRET_1>` and nothing else (`hermie show ID`).
+
+Keys with a known shape (`sk-`, `ghp_`, `AKIA`, `xox`, `AIza`, JWTs, private-key blocks, and any `NAME=value` or `password: value` assignment of 8+ characters) are found by the rules. A bare token without a recognizable shape is not; register it first with `hermie hide VALUE` (or `hermie hide` alone to type it without echo), and from then on it is replaced wherever it appears, in every request.
+
+### Inside Claude Code
+
+```bash
+hermie install-hooks          # this project: .claude/settings.local.json; --user: ~/.claude/settings.json
+```
+
+This adds a status line and three hooks to Claude Code. The status line reads `hermie ● :8787 · 13 values kept local · last: 2 SECRET replaced, 1 restored`. The hooks print one line under a file write whose reply carried restored placeholders, and one line at the end of each turn:
+
+```text
+⏺ Write(.env)
+  ⎿  Wrote 1 line to .env
+  ⎿  PostToolUse:Write says: Hermie: 1 placeholder restored before this Write (.env) ran. The real value
+     never left this machine.
+⏺ Done. .env written with the single line.
+  ⎿  Stop says: Hermie: 16 PERSON, 4 EMAIL_ADDRESS, 2 SECRET replaced; 1 restored in 3 requests this
+     turn. Only placeholders left this machine.
+```
+
+These lines are shown to you and are not added to the model's context. The counts come from the receipt, so they name entity types, never values (the PERSON and EMAIL_ADDRESS counts above are Claude Code's own system prompt: your git identity, `CLAUDE.md`, and so on). `hermie install-hooks --uninstall` removes the entries again; other hooks and a status line of your own are left alone.
 
 ## What leaves your machine
 
@@ -67,7 +101,7 @@ Images are withheld by default (`images = "pass"` sends them). The same value al
 
 | Client | How to point it at Hermie | Status |
 |---|---|---|
-| Claude Code 2.1.291 | `ANTHROPIC_BASE_URL=http://127.0.0.1:8787/anthropic` | Verified with a subscription login (2026-10-06): no real value reached the stored outbound bodies, placeholders were restored, receipt labelled `claude-code`. |
+| Claude Code 2.1.291 | `ANTHROPIC_BASE_URL=http://127.0.0.1:8787/anthropic` | Verified with a subscription login (2026-10-06): no real value reached the stored outbound bodies, placeholders were restored, receipt labelled `claude-code`. Hooks and status line (`hermie install-hooks`) verified with 2.1.295 (2026-10-09). |
 | Codex CLI 0.147.0 | a `model_providers` entry in `~/.codex/config.toml` with `base_url = "http://127.0.0.1:8787/openai/v1"`, `wire_api = "responses"`, `env_key = "OPENAI_API_KEY"` | Not verified. The ChatGPT login does not go through a custom `base_url`; only API-key use through the provider entry can work. |
 | Gemini CLI 0.44.1 | `GEMINI_API_KEY=...` and `GOOGLE_GEMINI_BASE_URL=http://127.0.0.1:8787/gemini` | Not verified. Google login (`oauth-personal`) talks to the Code Assist endpoint and bypasses `GOOGLE_GEMINI_BASE_URL`; only API-key auth can work. |
 | aider | `ANTHROPIC_BASE_URL=http://127.0.0.1:8787/anthropic` or `OPENAI_BASE_URL=http://127.0.0.1:8787/openai/v1` | Not tested (not installed during the live run). Expected to work through either variable. |

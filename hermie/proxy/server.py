@@ -188,6 +188,7 @@ class _Rec:
     held: str | None = None
     approved_by: str | None = None
     unrestored: int = 0
+    restored: int = 0
     status: int | None = None
     upstream_error: str | None = None
     new_parts: list[dict] = field(default_factory=list)
@@ -199,7 +200,8 @@ class _Rec:
             upstream=self.upstream, model=self.model, stream=self.stream, scanned_bytes=self.scanned_bytes,
             replaced=dict(self.replaced), withheld=list(self.withheld), held=self.held, approved_by=self.approved_by,
             unrestored=self.unrestored, judge_calls=self.tally.calls, judge_ms=int(self.tally.ms),
-            status=self.status, upstream_error=self.upstream_error, mode=self.mode, new_parts=list(self.new_parts))
+            status=self.status, upstream_error=self.upstream_error, mode=self.mode, new_parts=list(self.new_parts),
+            restored=self.restored)
 
 
 def _part(d: Decision) -> dict:
@@ -286,7 +288,7 @@ def create_app(config: Config, gate: Gate | None = None, upstream_client: httpx.
         """Receipt then upstream close, once; called from _RelayResponse in every outcome (unrestored is 0
         when the relay never started)."""
         async def finish() -> None:
-            rec.unrestored = stats.unrestored
+            rec.unrestored, rec.restored = stats.unrestored, stats.restored
             try:
                 write_receipt(rec)
             finally:
@@ -398,8 +400,10 @@ def create_app(config: Config, gate: Gate | None = None, upstream_client: httpx.
                 await resp.aclose()
             if _is_json(ct):
                 try:
-                    obj, _ = restore_json(json.loads(data), gate.restore)
+                    stats = StreamStats()
+                    obj, _ = restore_json(json.loads(data), gate.restore, stats)
                     data = json.dumps(obj, ensure_ascii=False).encode()
+                    rec.unrestored, rec.restored = stats.unrestored, stats.restored
                 except ValueError:
                     pass
             if ct:

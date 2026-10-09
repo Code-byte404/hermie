@@ -155,3 +155,26 @@ def test_restore_json_restores_keys():
 async def test_stream_restores_keys():
     out = await _relay(_ev(functionCall={"name": "f", "args": {"<PHONE_NUMBER_1>": "to"}}).encode())
     assert json.loads(out[6:])["functionCall"]["args"] == {"555-010-0199": "to"}
+
+
+# the phone in the text and the key in the tool args; the Responses API repeats the final text in its `done` event
+@pytest.mark.parametrize("fmt,n", [("anthropic", 2), ("openai_chat", 2), ("openai_responses", 3), ("gemini", 2)])
+async def test_relay_counts_restored_placeholders(fmt, n):
+    raw = (FIX / f"{fmt}.sse").read_bytes()
+    async def chunks():
+        for i in range(0, len(raw), 37): yield raw[i:i + 37]
+    stats = StreamStats()
+    b"".join([c async for c in relay_sse(chunks(), R, stats)])
+    assert stats.restored == n and stats.unrestored == 0
+
+
+async def test_relay_restored_excludes_unknown_placeholders():
+    stats = StreamStats()
+    await _relay(b'data: {"delta":{"text":"<PHONE_NUMBER_1> and <FOO_9> and <SEC"}}\n\ndata: {"delta":{"text":"RET_1>"}}\n\n', stats)
+    assert stats.restored == 2 and stats.unrestored == 1
+
+
+def test_restore_json_counts_restored():
+    stats = StreamStats()
+    obj, n = restore_json({"a": ["<PHONE_NUMBER_1>", {"b": "<FOO_9>", "<SECRET_1>": "<SECRET_1>"}]}, R, stats)
+    assert n == 1 and stats.unrestored == 1 and stats.restored == 3

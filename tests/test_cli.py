@@ -60,3 +60,28 @@ def test_forget_warning_says_numbers_are_not_reused(tmp_path, capsys):
     cli.main(["forget", "--yes", "--data-dir", str(tmp_path)])
     out = capsys.readouterr().out
     assert "never reused" in out and "until\nit is restarted" not in out
+
+
+def test_hide_adds_values_to_the_mapping_and_reuses_placeholders(tmp_path, capsys):
+    cfg = Config(data_dir=tmp_path)
+    assert cli.main(["hide", "my-plain-token-value-123", "--data-dir", str(tmp_path)]) == 0
+    assert capsys.readouterr().out.strip() == "<SECRET_1>"
+    assert MappingStore(cfg.mapping_path).mapping == {"<SECRET_1>": "my-plain-token-value-123"}
+    assert cli.main(["hide", "my-plain-token-value-123", "second-value", "--as", "TOKEN", "--data-dir", str(tmp_path)]) == 0
+    assert capsys.readouterr().out.split() == ["<SECRET_1>", "<TOKEN_1>"]
+    assert MappingStore(cfg.mapping_path).mapping == {"<SECRET_1>": "my-plain-token-value-123", "<TOKEN_1>": "second-value"}
+
+
+def test_hide_rejects_short_values_and_bad_entities(tmp_path, capsys):
+    assert cli.main(["hide", "abc", "--data-dir", str(tmp_path)]) == 2
+    assert "4 characters" in capsys.readouterr().err
+    assert cli.main(["hide", "long-enough", "--as", "bad entity", "--data-dir", str(tmp_path)]) == 2
+    assert not (tmp_path / "mapping.json").exists()
+
+
+def test_hide_reads_stdin_when_no_value_is_given(tmp_path, capsys, monkeypatch):
+    import io
+    monkeypatch.setattr("sys.stdin", io.StringIO("from-stdin-value\n\nanother-one\n"))
+    assert cli.main(["hide", "--data-dir", str(tmp_path)]) == 0
+    assert capsys.readouterr().out.split() == ["<SECRET_1>", "<SECRET_2>"]
+    assert set(MappingStore(Config(data_dir=tmp_path).mapping_path).mapping.values()) == {"from-stdin-value", "another-one"}

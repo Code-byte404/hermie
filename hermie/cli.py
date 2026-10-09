@@ -1,9 +1,11 @@
-"""Command line: hermie serve | tail | show | allow | stats | forget."""
+"""Command line: hermie serve | tail | show | allow | stats | forget | hide | status | hook | install-hooks."""
 from __future__ import annotations
 
 import argparse
+import getpass
 import json
 import re
+import shutil
 import sys
 from collections import Counter
 from datetime import datetime, timedelta, timezone
@@ -13,7 +15,8 @@ import uvicorn
 
 from hermie import __version__
 from hermie.config import Config
-from hermie.gate.redact import PLACEHOLDER, MappingStore
+from hermie import claude_code
+from hermie.gate.redact import PLACEHOLDER, MappingStore, MappingStoreError
 from hermie.proxy.approvals import AllowStore, NoPrompter, TtyPrompter
 from hermie.proxy.receipt import BodyStore, Receipt, ReceiptLine
 
@@ -71,7 +74,11 @@ def _serve(config: Config, args) -> int:
     print("TTY: prompts enabled (held messages ask here)" if tty else
           "no TTY: held messages are rejected, use `hermie allow ID`")
     sys.stdout.flush()
-    uvicorn.run(app, host=config.host, port=config.port, log_level="warning")
+    claude_code.write_serve_file(config)
+    try:
+        uvicorn.run(app, host=config.host, port=config.port, log_level="warning")
+    finally:
+        claude_code.remove_serve_file(config)
     return 0
 
 
@@ -170,6 +177,101 @@ def _forget(config: Config, args) -> int:
     return 0
 
 
+_ENTITY = re.compile(r"[A-Z][A-Z_]*")
+MIN_HIDE_LEN = 4   # the known-values pass matches literally from four characters
+
+
+def _hide(config: Config, args) -> int:
+    """Put values into the mapping by hand, so they are replaced wherever they appear from now on."""
+    if not _ENTITY.fullmatch(args.entity):
+        print("hermie: --as must be upper-case letters and underscores, e.g. SECRET or TOKEN", file=sys.stderr)
+        return 2
+    values = list(args.value)
+    if not values:
+        if sys.stdin is not None and sys.stdin.isatty():
+            values = [getpass.getpass("value to hide (not echoed): ")]
+        else:
+            values = [ln.rstrip("\r\n") for ln in sys.stdin]
+    values = [v for v in values if v.strip()]
+    if not values:
+        print("hermie: nothing to hide", file=sys.stderr)
+        return 2
+    if any(len(v) < MIN_HIDE_LEN for v in values):
+        print(f"hermie: a value must be at least {MIN_HIDE_LEN} characters", file=sys.stderr)
+        return 2
+    names: list[str] = []
+
+    def mint(mapping: dict, counters: dict) -> dict:
+        names.clear()
+        by_value = {v: k for k, v in mapping.items()}
+        new: dict[str, str] = {}
+        for v in values:
+            if v in by_value:
+                names.append(by_value[v])
+                continue
+            counters[args.entity] = counters.get(args.entity, 0) + 1
+            ph = f"<{args.entity}_{counters[args.entity]}>"
+            new[ph] = v
+            by_value[v] = ph
+            names.append(ph)
+        return new
+
+    try:
+        MappingStore(config.mapping_path).update(mint)
+    except MappingStoreError as e:
+        print(f"hermie: {e}", file=sys.stderr)
+        return 1
+    for ph in names:
+        print(ph)
+    return 0
+
+
+def _status(config: Config, args) -> int:
+    if args.json:
+        print(json.dumps(claude_code.status_json(config), ensure_ascii=False))
+    else:
+        print(claude_code.status_text(config))
+    return 0
+
+
+def _hook(config: Config, args) -> int:
+    """Claude Code hook entry point: one JSON event on stdin, an optional JSON reply on stdout, always exit 0."""
+    try:
+        event = json.loads(sys.stdin.read())
+    except (ValueError, OSError):
+        return 0
+    out = claude_code.handle_hook(event, config)
+    if out:
+        print(json.dumps(out, ensure_ascii=False))
+    return 0
+
+
+def _hermie_command() -> str:
+    found = shutil.which("hermie")
+    return found if found else f"{sys.executable} -m hermie.cli"
+
+
+def _install_hooks(config: Config, args) -> int:
+    path = (Path.home() / ".claude" / "settings.json") if args.user else Path.cwd() / ".claude" / "settings.local.json"
+    try:
+        if args.uninstall:
+            claude_code.uninstall(path)
+            print(f"removed Hermie's hooks and status line from {path}")
+            return 0
+        notes = claude_code.install(path, _hermie_command(), args.data_dir)
+    except (OSError, ValueError) as e:
+        print(f"hermie: {e}", file=sys.stderr)
+        return 1
+    print(f"wrote {path}")
+    print("  hooks: UserPromptSubmit, PostToolUse (file writes), Stop -> `hermie hook`")
+    for n in notes:
+        print(f"  {n}")
+    if not notes:
+        print("  status line -> `hermie status`")
+    print("Takes effect in a new Claude Code session. Start it with ANTHROPIC_BASE_URL pointed at `hermie serve`.")
+    return 0
+
+
 def _parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="hermie", description="Local privacy proxy for coding agents.")
     sub = p.add_subparsers(dest="cmd", required=True)
@@ -200,6 +302,15 @@ def _parser() -> argparse.ArgumentParser:
     sp.add_argument("--days", type=float, default=1)
     sp = add("forget", _forget, "clear the placeholder mapping")
     sp.add_argument("--yes", action="store_true", help="do not ask")
+    sp = add("hide", _hide, "add values to the mapping by hand (replaced wherever they appear from now on)")
+    sp.add_argument("value", nargs="*", help="values to hide; none: read from stdin (a TTY prompts without echo)")
+    sp.add_argument("--as", dest="entity", default="SECRET", help="placeholder entity (default SECRET)")
+    sp = add("status", _status, "one line for a status bar: proxy up, values kept local, last request")
+    sp.add_argument("--json", action="store_true")
+    add("hook", _hook, "Claude Code hook entry point (reads the event JSON from stdin)")
+    sp = add("install-hooks", _install_hooks, "add Hermie's hooks and status line to Claude Code's settings")
+    sp.add_argument("--user", action="store_true", help="~/.claude/settings.json instead of ./.claude/settings.local.json")
+    sp.add_argument("--uninstall", action="store_true", help="remove them again")
     return p
 
 

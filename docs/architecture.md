@@ -15,7 +15,7 @@ Hermie is one Starlette app (`hermie/proxy/server.py`) with a single route, `/{p
 
 - **JSON replies:** every string leaf goes through `Gate.restore`, which swaps placeholders back from the mapping (`stream.restore_json`).
 - **Streams (`text/event-stream`):** `stream.relay_sse` parses each event and restores its data. Text under the streamed keys (`BUFFERED_KEYS`: `text`, `partial_json`, `content`, `arguments`, `delta`) passes through a `PlaceholderBuffer`, which holds back a tail that may be the start of a placeholder until the next event completes it. A held tail is flushed back into the leaf that carried it as soon as a leaf at another path is fed (in the same event or a later one), so the client sees the same events; only when no such event is left does Hermie add one (`hermie_flush`).
-- Placeholder-shaped tokens that are not in the mapping are left as they are and counted as `unrestored` in the receipt.
+- Placeholders put back are counted as `restored` in the receipt; placeholder-shaped tokens that are not in the mapping are left as they are and counted as `unrestored`.
 - Response headers passed back: request ids, `retry-after`, rate-limit headers, plus `x-hermie-request-id`.
 
 Every request, refused or not, ends with one line in `receipt.jsonl` (`receipt.ReceiptLine`), written when the response is complete (for streams: when the stream ends or the client leaves).
@@ -32,5 +32,11 @@ All under `data_dir` (default `~/.hermie`), created 0600:
 | `outbound/<id>.json` | each request body exactly as sent | `receipt.BodyStore` |
 | `pending.jsonl` | held / withheld items (hash, id, kind, reason, size; no text), last 500 | `approvals.AllowStore` |
 | `allowed.jsonl` | hashes released with `hermie allow` or the prompt | `approvals.AllowStore` |
+| `serve.json` | pid, host, port and start time of the running `hermie serve`; removed on exit | `cli._serve` via `claude_code` |
+| `turns/<session>.json` | the time the current Claude Code turn started, per session id (hooks only) | `claude_code` |
 
-`hermie tail` / `stats` read the receipt, `hermie show` reads `outbound/`, `hermie allow` appends to `allowed.jsonl` (picked up by a running proxy on the next request), `hermie forget` clears the values in `mapping.json` (counters kept, generation bumped).
+`hermie tail` / `stats` read the receipt, `hermie show` reads `outbound/`, `hermie allow` appends to `allowed.jsonl` (picked up by a running proxy on the next request), `hermie forget` clears the values in `mapping.json` (counters kept, generation bumped). `hermie hide` adds entries to `mapping.json` under the same lock (a running proxy picks them up on its next scan, also for cached texts).
+
+## Claude Code integration (`hermie/claude_code.py`)
+
+`hermie install-hooks` writes a `statusLine` (`hermie status`) and three hooks (`hermie hook`) into `.claude/settings.local.json` (or `~/.claude/settings.json` with `--user`), merged with what is there and idempotent; `--uninstall` removes only Hermie's entries. `hermie status` prints one line from `serve.json` (is the pid alive, does the port accept a connection; no HTTP probe, which would leave a receipt line per refresh), the size of the mapping and a summary of the last receipt line. `hermie hook` reads one Claude Code event from stdin: `UserPromptSubmit` writes the turn marker, `Stop` summarizes the receipt lines since the marker (replaced counts are the largest single request's, since every request resends the context; restored / held / withheld are summed) into a `systemMessage`, `PostToolUse` for `Write` / `Edit` / `MultiEdit` / `NotebookEdit` reports the `restored` count of the latest such line. A `systemMessage` is shown to the user and not added to the model's context. Everything the hooks print comes from the receipt and the mapping size, never from request text; any failure prints nothing and exits 0.

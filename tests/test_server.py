@@ -342,3 +342,13 @@ def test_unscannable_user_message_is_rejected_without_offering_send(tmp_path):
     c.app.state.approvals.store.allow(gate.scan("call 555-010-0199", Origin.USER).hash)
     c.app.state.approvals.session.all = True
     assert c.post("/anthropic/v1/messages", json=body).status_code == 422 and up.seen == []
+
+
+def test_receipt_counts_restored_placeholders_on_both_paths(tmp_path, analyzer):
+    cfg, c = _app(tmp_path, analyzer, Upstream(stream_file="anthropic.sse"))
+    MappingStore(cfg.mapping_path).add({"<PHONE_NUMBER_1>": "555-010-0199", "<SECRET_1>": "sk-test-abc123"})
+    assert c.post("/anthropic/v1/messages", json=_body("anthropic") | {"stream": True}).status_code == 200
+    assert _receipts(tmp_path)[-1]["restored"] == 2
+    cfg, c = _app(tmp_path, analyzer, Upstream())    # JSON reply: "dial <PHONE_NUMBER_1>"
+    assert c.post("/anthropic/v1/messages", json=_body("anthropic")).status_code == 200
+    assert _receipts(tmp_path)[-1]["restored"] == 1 and _receipts(tmp_path)[-1]["unrestored"] == 0
