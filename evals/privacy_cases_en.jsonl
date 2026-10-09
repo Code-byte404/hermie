@@ -55,3 +55,16 @@
 {"text": "Our release process starts on Monday with a feature freeze, after which the team triages open issues, updates the changelog and writes upgrade notes for anything that changes behavior. On Tuesday the build pipeline produces release candidates for every supported platform and the integration suite runs against each of them overnight. Wednesday is reserved for fixing regressions found by that run and for reviewing the documentation, which has to describe every new configuration option with an example. On Thursday we tag the release, publish the packages and announce it on the project blog, and on Friday we hold a short retrospective meeting to decide what to change in the process the next time around.", "sensitive": false, "smuggling_negative": true}
 {"text": "git log: 9fceb02d0ae598e95dc970b74767f19372d61af8 Merge branch 'release'", "sensitive": false, "smuggling_negative": true}
 {"text": "build id 20261006123456 finished in 4m12s", "sensitive": false, "smuggling_negative": true}
+{"text": "{\"aws_secret_access_key\": \"wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY\"}", "sensitive": true, "layer": "rules", "entities": ["SECRET"]}
+{"text": "AWS_SECRET_ACCESS_KEY=wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY", "sensitive": true, "layer": "rules", "entities": ["SECRET"]}
+{"text": "curl -H 'Authorization: Bearer fakeBearer0123456789abcdefABCDEF' https://api.example.com/v1/me", "sensitive": true, "layer": "rules", "entities": ["SECRET"]}
+{"text": "REDIS_URL=redis://:fakepass9word1@cache.internal:6379/0", "sensitive": true, "layer": "rules", "entities": ["SECRET"]}
+{"text": "{\"stripe_webhook_secret\": \"whsec_fake0000000000000000000000000\"}", "sensitive": true, "layer": "rules", "entities": ["SECRET"]}
+{"text": "Party A: Elena Vasquez\nAddress: 4521 Oak Ridge Drive, Austin, TX 78745", "sensitive": true, "layer": "rules", "entities": ["PERSON", "ADDRESS"]}
+{"text": "Tenant: Tom Becker, passport no. X1234567, signed on the first of March", "sensitive": true, "layer": "rules", "entities": ["PERSON", "NATIONAL_ID"]}
+{"text": "The parcel goes to Flat 3, 12 High Street, Leeds LS1 4AP before Friday", "sensitive": true, "layer": "rules", "entities": ["ADDRESS"]}
+{"text": "Signed: ______ Raj Patel   PAN: ABCDE1234F", "sensitive": true, "layer": "rules", "entities": ["PERSON", "NATIONAL_ID"]}
+{"text": "Client: Acme Corp", "sensitive": false}
+{"text": "primary_key = True  # the key column", "sensitive": false}
+{"text": "Address: Optional[str] = None", "sensitive": false}
+{"text": "api_key = os.environ.get('OPENAI_API_KEY')", "sensitive": false}

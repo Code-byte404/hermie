@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import argparse
 import getpass
+import importlib.util
 import json
 import re
 import shutil
@@ -71,6 +72,8 @@ def _serve(config: Config, args) -> int:
     print(f"  OPENAI_BASE_URL={base}/openai/v1         (aider, Codex CLI: base_url in config.toml)")
     print(f"  GOOGLE_GEMINI_BASE_URL={base}/gemini     (Gemini CLI)")
     print(f"  custom upstream: {base}/custom -> {config.custom_upstream or 'off'}")
+    if "zh" not in config.languages and importlib.util.find_spec("zh_core_web_sm") is not None:
+        print('Chinese model installed but off: add languages = ["en", "zh"] to config.toml to find Chinese names in running text')
     print("TTY: prompts enabled (held messages ask here)" if tty else
           "no TTY: held messages are rejected, use `hermie allow ID`")
     sys.stdout.flush()

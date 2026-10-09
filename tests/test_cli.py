@@ -85,3 +85,12 @@ def test_hide_reads_stdin_when_no_value_is_given(tmp_path, capsys, monkeypatch):
     assert cli.main(["hide", "--data-dir", str(tmp_path)]) == 0
     assert capsys.readouterr().out.split() == ["<SECRET_1>", "<SECRET_2>"]
     assert set(MappingStore(Config(data_dir=tmp_path).mapping_path).mapping.values()) == {"from-stdin-value", "another-one"}
+
+
+def test_serve_hints_when_the_chinese_model_is_installed_but_off(monkeypatch, capsys, tmp_path):
+    import importlib.util
+    monkeypatch.setattr("uvicorn.run", lambda *a, **k: None)
+    real = importlib.util.find_spec
+    monkeypatch.setattr(importlib.util, "find_spec", lambda name, *a, **k: object() if name == "zh_core_web_sm" else real(name, *a, **k))
+    cli.main(["serve", "--port", "8797", "--data-dir", str(tmp_path)])
+    assert 'languages = ["en", "zh"]' in capsys.readouterr().out

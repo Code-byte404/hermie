@@ -62,3 +62,10 @@
 {"text": "Rename these 50 files to lowercase", "sensitive": false}
 {"text": "Write a SQL query that counts orders per month", "sensitive": false}
 {"text": "What does a typical company's annual leave policy look like", "sensitive": false, "note": "General question, no specific individual involved"}
+{"text": "房屋租赁合同\n甲方（出租人）：张伟\n身份证号：11010519491231002X\n住址：北京市朝阳区建国路88号院3号楼1201室", "sensitive": true, "layer": "rules", "entities": ["CN_ID_CARD", "ADDRESS", "PERSON"]}
+{"text": "本人周杰，现住湖北省武汉市洪山区珞喻路1037号，自愿签署本协议。", "sensitive": true, "layer": "rules", "entities": ["ADDRESS", "PERSON"]}
+{"text": "收货地址：北京市海淀区中关村大街1号海龙大厦2层", "sensitive": true, "layer": "rules", "entities": ["ADDRESS"]}
+{"text": "数据库密码：Qx7vP2mLr9", "sensitive": true, "layer": "rules", "entities": ["SECRET"]}
+{"text": "甲方：北京某某科技有限公司", "sensitive": false}
+{"text": "住址：见附件", "sensitive": false}
+{"text": "地址：待定", "sensitive": false}

@@ -36,10 +36,10 @@ def test_english_cases(analyzer):
     cases = load_cases(EVALS / "privacy_cases_en.jsonl")
     assert len(cases) >= 40
     m = privacy_metrics(cases, verdicts(analyzer, cases, ("en",)), with_judge=False)
-    check(m, ("PHONE_NUMBER", "US_SSN", "CREDIT_CARD", "EMAIL_ADDRESS", "SECRET", "PERSON"))
+    check(m, ("PHONE_NUMBER", "US_SSN", "CREDIT_CARD", "EMAIL_ADDRESS", "SECRET", "PERSON", "ADDRESS", "NATIONAL_ID"))
 
 
 def test_chinese_cases(analyzer_zh):
     cases = load_cases(EVALS / "privacy_cases.jsonl")
     m = privacy_metrics(cases, verdicts(analyzer_zh, cases, ("en", "zh")), with_judge=False)
-    check(m, ("CN_MOBILE", "CN_ID_CARD", "BANK_CARD", "EMAIL_ADDRESS", "IP_ADDRESS", "SECRET"))
+    check(m, ("CN_MOBILE", "CN_ID_CARD", "BANK_CARD", "EMAIL_ADDRESS", "IP_ADDRESS", "SECRET", "ADDRESS"))

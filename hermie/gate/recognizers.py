@@ -7,12 +7,15 @@ import re
 from typing import Optional
 from urllib.parse import urlparse
 
+from . import rules
 from .redact import _merge_overlaps
+from .rules import SECRET_PATTERNS, VALUE_ONLY
 from .types import Finding
 
 SENSITIVE_ENTITIES = {
     "PHONE_NUMBER", "US_SSN", "CREDIT_CARD", "EMAIL_ADDRESS", "IBAN_CODE", "IP_ADDRESS", "US_PASSPORT",
     "US_DRIVER_LICENSE", "PERSON", "SECRET", "CUSTOM_KEYWORD", "CN_MOBILE", "CN_ID_CARD", "BANK_CARD",
+    "ADDRESS", "NATIONAL_ID",
 }
 
 _SPACY_MODELS = {"en": "en_core_web_lg", "zh": "zh_core_web_sm"}
@@ -33,33 +36,7 @@ def _luhn_ok(s: str) -> bool:
     return total % 10 == 0
 
 
-# Keys / credentials: Presidio's generic recognizers don't know these, and once they reach the cloud
-# they are leaked. All deterministic regexes. Patterns with a capture group (VALUE_ONLY) report only group 1,
-# so `.env` key names and URL schemes stay readable.
-SECRET_PATTERNS = [
-    ("openai_style_key", r"(?<![A-Za-z0-9])sk-(?:[A-Za-z0-9]+-)?[A-Za-z0-9_-]{16,}", 0.85),
-    ("anthropic_key", r"(?<![A-Za-z0-9])sk-ant-[A-Za-z0-9_-]{20,}", 0.9),
-    ("aws_access_key", r"(?<![A-Za-z0-9])(?:AKIA|ASIA)[0-9A-Z]{16}(?![A-Za-z0-9])", 0.85),
-    ("github_token", r"(?<![A-Za-z0-9])gh[pousr]_[A-Za-z0-9]{30,}", 0.85),
-    ("slack_token", r"(?<![A-Za-z0-9])xox[abprs]-[A-Za-z0-9-]{10,}", 0.85),
-    ("google_api_key", r"(?<![A-Za-z0-9])AIza[0-9A-Za-z_-]{35}(?![A-Za-z0-9])", 0.85),
-    ("stripe_key", r"(?<![A-Za-z0-9])[sr]k_(?:live|test)_[A-Za-z0-9]{16,}", 0.85),
-    ("twilio", r"(?<![A-Za-z0-9])SK[0-9a-fA-F]{32}(?![A-Za-z0-9])", 0.7),
-    ("hf_token", r"(?<![A-Za-z0-9])hf_[A-Za-z0-9]{30,}", 0.85),
-    ("npm_token", r"(?<![A-Za-z0-9])npm_[A-Za-z0-9]{30,}", 0.85),
-    ("pypi_token", r"(?<![A-Za-z0-9])pypi-[A-Za-z0-9_-]{30,}", 0.85),
-    ("private_key_block", r"-----BEGIN [A-Z ]*PRIVATE KEY-----(?:[\s\S]*?-----END [A-Z ]*PRIVATE KEY-----|[\s\S]*)", 0.95),
-    ("jwt", r"(?<![A-Za-z0-9])eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}", 0.8),
-    ("db_url_credentials", r"(?i)\b[a-z][a-z0-9+.-]*://[^\s:/@]+:([^\s@/]{4,})@", 0.9),
-    # Assignment form: api_key=..., password: ..., DEEPSEEK_API_KEY="..." (at least 8 value chars). The value is
-    # group 1. The last two keywords are the Chinese words for "password" and "secret key" (as \u escapes), and
-    # the separator class also accepts the full-width colon (U+FF1A).
-    ("credential_assignment",
-     r"(?i)(?:api[_-]?key|secret[_-]?key|access[_-]?token|auth[_-]?token|client[_-]?secret|private[_-]?key|"
-     r"app[_-]?secret|password|passwd|secret|token|\u5bc6\u7801|\u5bc6\u94a5)\s*[:=\uff1a]\s*[\"']?"
-     r"([A-Za-z0-9_\-/+=.@#$%!&*^~?]{8,})", 0.7),
-]
-VALUE_ONLY = {"db_url_credentials", "credential_assignment"}
+# Keys / credentials: the patterns live in rules.py (shared with the regex-only detectors); Presidio runs them too.
 
 
 def build_analyzer(languages: tuple[str, ...] = ("en",), deny_words: tuple[str, ...] = ()):
@@ -194,9 +171,12 @@ def plausible(entity: str, span: str, lang: str) -> bool:
 def scan(analyzer, text: str, languages: tuple[str, ...], threshold: float) -> list[Finding]:
     found: list[Finding] = []
     for lang in languages:
+        if lang == "zh" and not _CJK.search(text):
+            continue   # the Chinese model has nothing to find in text without CJK characters
         for r in analyzer.analyze(text=text, language=lang, score_threshold=threshold):
             if r.entity_type in SENSITIVE_ENTITIES and plausible(r.entity_type, text[r.start:r.end], lang):
                 found.append(Finding(r.entity_type, r.start, r.end, r.score))
+    found += rules.find(text)   # credentials, ID numbers, contract names and addresses: no model needed
     return _merge_overlaps(found)
 
 
