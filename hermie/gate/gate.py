@@ -9,7 +9,7 @@ from collections import OrderedDict
 from fnmatch import fnmatch
 from urllib.parse import urlparse
 
-from hermie.gate.judge import ContextualJudge
+from hermie.gate.judge import make_judge
 from hermie.gate.recognizers import build_analyzer, scan as pattern_scan, smuggling_risk_text, smuggling_risk_url
 from hermie.gate.redact import PLACEHOLDER, MappingStore, MappingStoreError, _merge_overlaps, redact, restore
 from hermie.gate.types import _GATE_TOKEN, CleanBody, Finding, Origin, ScanResult
@@ -81,7 +81,7 @@ class Gate:
     def __init__(self, config, analyzer=None, judge=None, store: MappingStore | None = None):
         self.c = config
         self._analyzer = analyzer
-        self.judge = judge if judge is not None else (ContextualJudge(config) if config.judge else None)
+        self.judge = judge if judge is not None else (make_judge(config) if config.judge else None)
         self.store = store or MappingStore(config.mapping_path)
         snap = self.store.snapshot()
         self._mapping = dict(snap.mapping)

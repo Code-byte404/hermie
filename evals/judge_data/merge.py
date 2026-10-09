@@ -137,7 +137,7 @@ def merge(raw_dir: Path, batches: dict[str, dict]) -> tuple[list[dict], dict]:
             sid = f"{batch['id']}:{it['scenario']}"
             rows.append({"scenario": sid, "label": ROLES[it["role"]], "role": it["role"], "category": batch["category"],
                          "form": it["form"], "origin": FORMS[it["form"]][0], "length": batch["length"], "kind": batch["kind"],
-                         "split_only": batch.get("split_only"), "text": it["text"]})
+                         "split_only": batch.get("split_only"), "style": batch.get("style", "synthetic"), "text": it["text"]})
     texts = [r["text"] for r in rows]
     drop = near_duplicates(texts, groups=[r["scenario"] for r in rows])
     report["duplicates"] = len(drop)

@@ -34,11 +34,18 @@ def prepare(splits, train_sample: float, seed: int = 7) -> int:
     data = HERE / "data"
     items = []
     rng = random.Random(seed)
+    answered: set[str] = set()
+    last = 0
+    for out in sorted((HERE / "label" / "out").glob("*.json")) if (HERE / "label" / "out").exists() else []:
+        answered |= set(json.loads(out.read_text()))
+        last = max(last, int(out.stem))
     for name in splits:
         for line in (data / f"{name}.jsonl").read_text(encoding="utf-8").splitlines():
             if not line.strip():
                 continue
             r = json.loads(line)
+            if r["id"] in answered:
+                continue          # already labelled in an earlier pass
             if name == "train" and rng.random() >= train_sample:
                 continue
             items.append({"id": r["id"], "text": r["text"]})
@@ -55,7 +62,7 @@ def prepare(splits, train_sample: float, seed: int = 7) -> int:
         size += len(it["text"])
     if cur:
         batches.append(cur)
-    for i, b in enumerate(batches, 1):
+    for i, b in enumerate(batches, last + 1):
         inp = HERE / "label" / "in" / f"{i:03d}.json"
         out = HERE / "label" / "out" / f"{i:03d}.json"
         inp.write_text(json.dumps(b, ensure_ascii=False, indent=1))

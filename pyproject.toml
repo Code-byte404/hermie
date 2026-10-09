@@ -31,6 +31,7 @@ dependencies = [
 
 [project.optional-dependencies]
 test = ["pytest==9.1.1", "pytest-asyncio==1.4.0", "hypothesis==6.140.0"]
+laya = ["laya-mlx==0.3.0"]   # optional judge backend, Apple Silicon only
 
 [project.urls]
 Homepage = "https://github.com/Code-byte404/hermie"

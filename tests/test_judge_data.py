@@ -130,3 +130,20 @@ def test_email_domains_example_and_its_subdomains_pass_but_example_edu_does_not(
     assert merge.problems(mk("p@lab.example.org"), BATCH) == []
     assert "real_email_domain" in merge.problems(mk("p@example.edu"), BATCH)
     assert "real_email_domain" in merge.problems(mk("p@notexample.com"), BATCH)
+
+
+def test_new_rows_go_to_train_or_dev_and_never_to_test():
+    old = _rows(10)
+    known = {r["id"] for r in old}
+    new = []
+    for i in range(30):
+        for role, label in (("pos", True), ("hardneg", False)):
+            new.append({"id": f"n{i}{role}", "scenario": f"nat:{i}", "label": label, "role": role, "category": "hr", "kind": "pair",
+                        "style": "natural", "split_only": None, "text": f"natural {i} {role}"})
+    new.append({"id": "xd", "scenario": "xl-dev:1", "label": True, "role": "pos", "category": "mixed", "kind": "xl", "split_only": "dev", "text": "x"})
+    out = split.split_new(old + new, known)
+    assert set(out) == {"train", "dev"} and all(r["id"] not in known for rs in out.values() for r in rs)
+    assert len(out["dev"]) == 2 * round(30 * 0.15) + 1 and sum(len(v) for v in out.values()) == 61
+    import pytest
+    with pytest.raises(ValueError):
+        split.split_new([{**new[0], "id": "bad", "split_only": "test"}], set())

@@ -40,8 +40,41 @@ def split_rows(rows: list[dict]) -> dict[str, list[dict]]:
     return out
 
 
+def split_new(rows: list[dict], known_ids: set[str], dev_fraction: float = 0.15) -> dict[str, list[dict]]:
+    """Rows not seen before go to train or dev only; the frozen test split never receives anything. Stratified by
+    (kind, category, style); a row marked split_only for test is refused (it would change the frozen set)."""
+    new = [r for r in rows if r["id"] not in known_ids]
+    if any(r.get("split_only") == "test" for r in new):
+        raise ValueError("new rows may not target the frozen test split")
+    out: dict[str, list[dict]] = {"train": [], "dev": []}
+    strata: dict[tuple, dict[str, list[dict]]] = defaultdict(lambda: defaultdict(list))
+    for r in new:
+        if r.get("split_only") == "dev":
+            out["dev"].append(r)
+        else:
+            strata[(r["kind"], r["category"], r.get("style", "synthetic"))][r["scenario"]].append(r)
+    for scenarios in strata.values():
+        order = sorted(scenarios, key=_rank)
+        n_dev = round(len(order) * dev_fraction)
+        for i, sc in enumerate(order):
+            out["dev" if i < n_dev else "train"] += scenarios[sc]
+    return out
+
+
 def main(argv=None) -> int:
     data = HERE / "data"
+    if "--add-new" in (argv if argv is not None else sys.argv[1:]):
+        rows = [json.loads(l) for l in (data / "all.jsonl").read_text(encoding="utf-8").splitlines() if l.strip()]
+        known = set()
+        for name in ("train", "dev", "test"):
+            known |= {json.loads(l)["id"] for l in (data / f"{name}.jsonl").read_text(encoding="utf-8").splitlines() if l.strip()}
+        parts = split_new(rows, known)
+        for name, rs in parts.items():
+            with open(data / f"{name}.jsonl", "a", encoding="utf-8") as f:
+                for r in rs:
+                    f.write(json.dumps(r, ensure_ascii=False) + "\n")
+        print(json.dumps({n: {"added": len(rs), "positives": sum(r["label"] for r in rs)} for n, rs in parts.items()}))
+        return 0
     rows = [json.loads(l) for l in (data / "all.jsonl").read_text(encoding="utf-8").splitlines() if l.strip()]
     frozen = data / "test.FROZEN"
     if frozen.exists():

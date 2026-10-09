@@ -6,7 +6,7 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from taxonomy import (CATEGORY_FORMS, EASY_BATCHES, EASY_NEG_KINDS, EASY_PER_BATCH, FORMS, HARD_NEG_KINDS, INDUSTRIES,  # noqa: E402
+from taxonomy import (NATURAL_BATCHES, NATURAL_EASY_BATCHES, NATURAL_EASY_PER_BATCH, NATURAL_SCENARIOS, XL_DEV_BATCHES, CATEGORY_FORMS, EASY_BATCHES, EASY_NEG_KINDS, EASY_PER_BATCH, FORMS, HARD_NEG_KINDS, INDUSTRIES,  # noqa: E402
                       LENGTHS, PAIR_BATCHES, PAIR_SCENARIOS, POS_CATEGORIES, XL_PER_BATCH)
 
 HERE = Path(__file__).resolve().parent
@@ -64,6 +64,18 @@ Forms to rotate through: {forms}. Settings: {industries}.
 Form descriptions: {form_desc}
 """
 
+NATURAL_STYLE = """
+Style for this batch: write the way people actually type to a coding assistant or jot a note, not like a document. Texts are short (one or
+two sentences, up to about 250 characters). Mix these kinds across the scenarios, and vary names, jobs and settings:
+  - a plain statement of fact ("<Name>'s contract ends in March and they have not been told")
+  - a request to an assistant with the fact inside it ("help me word an email to <Name> about ...")
+  - a note to self or a code comment
+  - casual wording, lowercase, abbreviations, an occasional typo or missing punctuation
+For "hardneg" texts keep the same casual style and similar content words, but about nothing private: public facts, general questions,
+invented generic examples, hypotheticals, or someone's own non-sensitive plans. Some hardnegs should mention a named person or a company
+in an ordinary, harmless way (a colleague's meeting time, a public product, a well-known open-source project).
+"""
+
 OUTPUT = """How to deliver: write a Python script to {script} that defines ITEMS, a list of dicts, and writes {out} as JSON Lines
 (one json.dumps(item) per line, ensure_ascii=False). Use triple-quoted strings for the texts so you never hand-escape. Run the
 script. Each item has exactly these keys:
@@ -105,6 +117,20 @@ def _batches() -> list[dict]:
         out.append({"id": f"xl-{k + 1}", "kind": "xl", "category": "mixed", "length": "xl", "forms": ["markdown", "source_file", "shell_log", "git_diff"],
                     "n": XL_PER_BATCH, "industries": [INDUSTRIES[(k * 4 + j) % len(INDUSTRIES)] for j in range(4)],
                     "pos_categories": cats, "split_only": "test"})
+    for cat in POS_CATEGORIES:
+        for k in range(NATURAL_BATCHES):
+            out.append({"id": f"nat-{cat}-{k + 1}", "kind": "pair", "style": "natural", "category": cat, "length": "s",
+                        "forms": ["chat_prompt"], "n": NATURAL_SCENARIOS,
+                        "industries": [INDUSTRIES[(len(out) * 3 + j) % len(INDUSTRIES)] for j in range(4)], "split_only": None})
+    for k in range(NATURAL_EASY_BATCHES):
+        out.append({"id": f"nat-easy-{k + 1}", "kind": "easy", "style": "natural", "category": "easy", "length": "s",
+                    "forms": ["chat_prompt"], "n": NATURAL_EASY_PER_BATCH, "industries": [], "split_only": None})
+    for k in range(XL_DEV_BATCHES):
+        cats = [xl_cats[(k * 3 + 5 + j) % len(xl_cats)] for j in range(3)]
+        out.append({"id": f"xl-dev-{k + 1}", "kind": "xl", "category": "mixed", "length": "xl",
+                    "forms": ["markdown", "source_file", "shell_log", "git_diff"], "n": XL_PER_BATCH,
+                    "industries": [INDUSTRIES[(k * 4 + 7 + j) % len(INDUSTRIES)] for j in range(4)],
+                    "pos_categories": cats, "split_only": "dev"})
     return out
 
 
@@ -125,6 +151,8 @@ def render_prompt(b: dict, raw_dir: Path) -> str:
         descs = "; ".join(POS_CATEGORIES[c] for c in b["pos_categories"])
         text = XL_TASK.format(pos_desc=descs, n_half=b["n"] // 2, **{**common, "n": b["n"]})
         roles, total = '"pos" or "hardneg"; each scenario has exactly one of each', b["n"]
+    if b.get("style") == "natural":
+        text += NATURAL_STYLE
     return text + "\n" + OUTPUT.format(script=script, out=out, roles=roles, total=total)
 
 

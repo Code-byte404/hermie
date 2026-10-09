@@ -116,7 +116,7 @@ Every string in the JSON request body is scanned before the request is sent (ins
 
 1. **Rules.** Regex recognizers for API keys and credentials (OpenAI, Anthropic, AWS, GitHub, Slack, Google, Stripe, Hugging Face, npm, PyPI, private-key blocks, JWTs, database URLs, `password=...` assignments), phone numbers, emails, cards, IBANs, IP addresses and US SSN / passport / driver-license numbers. Matches become placeholders such as `<PHONE_NUMBER_1>`.
 2. **NER.** Presidio with spaCy finds person names (two or more capitalized words), also replaced by placeholders. Optional Chinese engine (`languages = ["en", "zh"]`) adds mainland mobile, ID-card and bank-card numbers.
-3. **Judge (optional, `--judge ollama:MODEL`).** A local Ollama model answers "is this sensitive?" for user messages and tool results that the first two layers left alone, and flags encoded data (high-entropy base64 tokens; in URLs also hex tokens, long query strings and digit runs). It sees the first 8000 characters of a text. A flagged user message is held for you; a flagged tool result is withheld and replaced by a short note.
+3. **Judge (optional, `--judge ollama:MODEL` or `--judge laya:PATH`).** A local Ollama model answers "is this sensitive?" for user messages and tool results that the first two layers left alone, and flags encoded data (high-entropy base64 tokens; in URLs also hex tokens, long query strings and digit runs). It sees the first 8000 characters of a text. A flagged user message is held for you; a flagged tool result is withheld and replaced by a short note. `laya:PATH` instead runs a fine-tuned [Laya](https://github.com/NandhaKishorM/laya) decision model through laya-mlx (`pip install hermie[laya]`, Apple Silicon only): one yes/no forward pass of about 40 ms instead of a few hundred for a chat model, texts longer than 4000 characters scored in windows (at most eight) with the highest score winning. The checkpoint is not shipped; `evals/judge_data/` has the synthetic data, the scoring script and the results to train and check your own.
 
 Images are withheld by default (`images = "pass"` sends them). The same value always gets the same placeholder, also where it comes back in the agent's own history (assistant text, tool calls, tool results), and replies are restored from a local mapping before the agent sees them, in JSON replies and in streams (a placeholder split across two stream events is reassembled). `hermie forget` deletes the stored values; placeholder numbers are never reused, so an old placeholder never restores to a different value.
 
@@ -178,7 +178,7 @@ Everything Hermie writes lives in `~/.hermie`: `receipt.jsonl`, `outbound/`, `ma
 - An egress check for shell and MCP traffic: scan what the agent's own subprocesses send out for values already in the mapping.
 - Cursor, once its request origin (client or Cursor's servers) is verified.
 - Per-project mapping namespaces.
-- A judge that does not need Ollama.
+- Publish a fine-tuned judge checkpoint (the licence of fine-tuned Laya weights is not stated upstream).
 - A launchd / systemd unit to run `hermie serve` in the background.
 - Faster scanning of tool results with many findings.
 - Per-call leaf identity for OpenAI chat parallel tool calls (see the limitation above).

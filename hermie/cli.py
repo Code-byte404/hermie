@@ -287,7 +287,7 @@ def _parser() -> argparse.ArgumentParser:
     sp.add_argument("--host")
     sp.add_argument("--port", type=int)
     sp.add_argument("--mode", choices=["enforce", "observe"])
-    sp.add_argument("--judge", help="e.g. ollama:MODEL")
+    sp.add_argument("--judge", help="ollama:MODEL or laya:PATH (a fine-tuned Laya checkpoint, needs laya-mlx)")
     sp.add_argument("--upstream", help="custom upstream URL")
     sp.add_argument("--no-bodies", action="store_true", help="do not store outbound bodies")
     sp = add("tail", _tail, "follow the receipt log")

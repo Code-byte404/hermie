@@ -82,3 +82,12 @@ INDUSTRIES = ["a regional hospital network", "a fintech startup", "a game studio
               "a university research lab", "a law firm", "a retail chain", "a B2B SaaS company",
               "a government contractor", "a nonprofit", "a manufacturing plant", "a media company",
               "an insurance broker", "a telecom operator", "a biotech company", "a recruitment agency"]
+
+
+# Natural-style batches (added after the first fine-tune showed a gap on short, colloquial hand-written cases).
+# These rows only ever go to train or dev: the test split is frozen.
+NATURAL_BATCHES = 2          # per positive category
+NATURAL_SCENARIOS = 16       # pair scenarios per natural batch
+NATURAL_EASY_BATCHES = 4
+NATURAL_EASY_PER_BATCH = 40
+XL_DEV_BATCHES = 2           # 8,000-character items for the dev split, to choose a long-text policy
