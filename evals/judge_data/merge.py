@@ -16,7 +16,7 @@ from taxonomy import FORMS, LENGTH_TOLERANCE, LENGTHS  # noqa: E402
 
 HERE = Path(__file__).resolve().parent
 ROLES = {"pos": True, "hardneg": False, "easyneg": False}
-_CJK = re.compile(r"[　-〿぀-ヿ㐀-䶿一-鿿가-힯＀-￯]")
+_CJK = re.compile(r"[\u3000-\u303f\u3040-\u30ff\u3400-\u4dbf\u4e00-\u9fff\uac00-\ud7af\uff00-\uffef]")
 # Anything shaped like a real credential is rejected; the fake-key convention (sk-test-...) is allowed.
 _KEYS = re.compile(r"(?<![A-Za-z0-9])(?:sk-(?!test)[A-Za-z0-9_-]{20,}|AKIA[0-9A-Z]{16}|gh[pousr]_[A-Za-z0-9]{30,}|"
                    r"xox[abprs]-[A-Za-z0-9-]{10,}|AIza[0-9A-Za-z_-]{35}|[sr]k_live_[A-Za-z0-9]{16,}|-----BEGIN [A-Z ]*PRIVATE KEY)")

@@ -62,10 +62,10 @@
 {"text": "Rename these 50 files to lowercase", "sensitive": false}
 {"text": "Write a SQL query that counts orders per month", "sensitive": false}
 {"text": "What does a typical company's annual leave policy look like", "sensitive": false, "note": "General question, no specific individual involved"}
-{"text": "房屋租赁合同\n甲方（出租人）：张伟\n身份证号：11010519491231002X\n住址：北京市朝阳区建国路88号院3号楼1201室", "sensitive": true, "layer": "rules", "entities": ["CN_ID_CARD", "ADDRESS", "PERSON"]}
-{"text": "本人周杰，现住湖北省武汉市洪山区珞喻路1037号，自愿签署本协议。", "sensitive": true, "layer": "rules", "entities": ["ADDRESS", "PERSON"]}
-{"text": "收货地址：北京市海淀区中关村大街1号海龙大厦2层", "sensitive": true, "layer": "rules", "entities": ["ADDRESS"]}
-{"text": "数据库密码：Qx7vP2mLr9", "sensitive": true, "layer": "rules", "entities": ["SECRET"]}
-{"text": "甲方：北京某某科技有限公司", "sensitive": false}
-{"text": "住址：见附件", "sensitive": false}
-{"text": "地址：待定", "sensitive": false}
+{"text": "\u623f\u5c4b\u79df\u8d41\u5408\u540c\n\u7532\u65b9\uff08\u51fa\u79df\u4eba\uff09\uff1a\u5f20\u4f1f\n\u8eab\u4efd\u8bc1\u53f7\uff1a11010519491231002X\n\u4f4f\u5740\uff1a\u5317\u4eac\u5e02\u671d\u9633\u533a\u5efa\u56fd\u8def88\u53f7\u96623\u53f7\u697c1201\u5ba4", "sensitive": true, "layer": "rules", "entities": ["CN_ID_CARD", "ADDRESS", "PERSON"]}
+{"text": "\u672c\u4eba\u5468\u6770\uff0c\u73b0\u4f4f\u6e56\u5317\u7701\u6b66\u6c49\u5e02\u6d2a\u5c71\u533a\u73de\u55bb\u8def1037\u53f7\uff0c\u81ea\u613f\u7b7e\u7f72\u672c\u534f\u8bae\u3002", "sensitive": true, "layer": "rules", "entities": ["ADDRESS", "PERSON"]}
+{"text": "\u6536\u8d27\u5730\u5740\uff1a\u5317\u4eac\u5e02\u6d77\u6dc0\u533a\u4e2d\u5173\u6751\u5927\u88571\u53f7\u6d77\u9f99\u5927\u53a62\u5c42", "sensitive": true, "layer": "rules", "entities": ["ADDRESS"]}
+{"text": "\u6570\u636e\u5e93\u5bc6\u7801\uff1aQx7vP2mLr9", "sensitive": true, "layer": "rules", "entities": ["SECRET"]}
+{"text": "\u7532\u65b9\uff1a\u5317\u4eac\u67d0\u67d0\u79d1\u6280\u6709\u9650\u516c\u53f8", "sensitive": false}
+{"text": "\u4f4f\u5740\uff1a\u89c1\u9644\u4ef6", "sensitive": false}
+{"text": "\u5730\u5740\uff1a\u5f85\u5b9a", "sensitive": false}

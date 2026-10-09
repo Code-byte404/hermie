@@ -113,7 +113,7 @@ def test_credentials_are_found_in_every_shape(text, core):
 def test_bare_tokens_after_authorization_words_and_phrases_are_found():
     for text in (f"Authorization: Bearer {r(40, B64)}", f"curl -u admin:{r(16)} https://x.example.com", f"x-api-key: {r(36, B64URL)}",
                  f"GET /v1/items?api_key={r(32, HEX)}&limit=5", f"the password is {r(10, ALNUM + '!@#')}7x for the staging db",
-                 f"AWS keys: AKIA{r(16, UP)} and {r(40, B64)}", "密码是" + r(12) + "4", "数据库密码：" + r(14) + "8"):
+                 f"AWS keys: AKIA{r(16, UP)} and {r(40, B64)}", "\u5bc6\u7801\u662f" + r(12) + "4", "\u6570\u636e\u5e93\u5bc6\u7801\uff1a" + r(14) + "8"):
         fs = rules.find(text)
         assert fs, text
 
@@ -137,16 +137,16 @@ def _cn_mobile():
 
 
 PII = []   # (text, [(span, entity-kind)])
-for name, addr in [("张伟", "北京市朝阳区建国路88号院3号楼1201室"), ("李秀英", "上海市浦东新区世纪大道100号"), ("王建国", "广东省深圳市南山区科技园南区高新南一道5栋302"),
-                   ("欧阳明轩", "四川省成都市武侯区人民南路四段27号"), ("刘芳", "浙江省杭州市西湖区文三路398号")]:
+for name, addr in [("\u5f20\u4f1f", "\u5317\u4eac\u5e02\u671d\u9633\u533a\u5efa\u56fd\u8def88\u53f7\u96623\u53f7\u697c1201\u5ba4"), ("\u674e\u79c0\u82f1", "\u4e0a\u6d77\u5e02\u6d66\u4e1c\u65b0\u533a\u4e16\u7eaa\u5927\u9053100\u53f7"), ("\u738b\u5efa\u56fd", "\u5e7f\u4e1c\u7701\u6df1\u5733\u5e02\u5357\u5c71\u533a\u79d1\u6280\u56ed\u5357\u533a\u9ad8\u65b0\u5357\u4e00\u90535\u680b302"),
+                   ("\u6b27\u9633\u660e\u8f69", "\u56db\u5ddd\u7701\u6210\u90fd\u5e02\u6b66\u4faf\u533a\u4eba\u6c11\u5357\u8def\u56db\u6bb527\u53f7"), ("\u5218\u82b3", "\u6d59\u6c5f\u7701\u676d\u5dde\u5e02\u897f\u6e56\u533a\u6587\u4e09\u8def398\u53f7")]:
     i, m = _cn_id(), _cn_mobile()
-    PII.append((f"房屋租赁合同\n甲方（出租人）：{name}\n身份证号：{i}\n住址：{addr}\n联系电话：{m}\n乙方（承租人）：见附件",
+    PII.append((f"\u623f\u5c4b\u79df\u8d41\u5408\u540c\n\u7532\u65b9\uff08\u51fa\u79df\u4eba\uff09\uff1a{name}\n\u8eab\u4efd\u8bc1\u53f7\uff1a{i}\n\u4f4f\u5740\uff1a{addr}\n\u8054\u7cfb\u7535\u8bdd\uff1a{m}\n\u4e59\u65b9\uff08\u627f\u79df\u4eba\uff09\uff1a\u89c1\u9644\u4ef6",
                 [(name, "PERSON"), (i, "ID"), (addr, "ADDRESS"), (m, "PHONE")]))
 PII += [
-    ("本人周杰，身份证号码" + (zi := _cn_id()) + "，现住湖北省武汉市洪山区珞喻路1037号，自愿签署本协议。", [("周杰", "PERSON"), (zi, "ID"), ("湖北省武汉市洪山区珞喻路1037号", "ADDRESS")]),
-    ("收货地址：北京市海淀区中关村大街1号海龙大厦2层", [("北京市海淀区中关村大街1号海龙大厦2层", "ADDRESS")]),
-    ("员工李明（工号E10234）家庭住址为上海市徐汇区漕溪北路88号", [("李明", "PERSON"), ("上海市徐汇区漕溪北路88号", "ADDRESS")]),
-    ("请联系陈先生，电话" + (cm := _cn_mobile()), [("陈", "PERSON"), (cm, "PHONE")]),
+    ("\u672c\u4eba\u5468\u6770\uff0c\u8eab\u4efd\u8bc1\u53f7\u7801" + (zi := _cn_id()) + "\uff0c\u73b0\u4f4f\u6e56\u5317\u7701\u6b66\u6c49\u5e02\u6d2a\u5c71\u533a\u73de\u55bb\u8def1037\u53f7\uff0c\u81ea\u613f\u7b7e\u7f72\u672c\u534f\u8bae\u3002", [("\u5468\u6770", "PERSON"), (zi, "ID"), ("\u6e56\u5317\u7701\u6b66\u6c49\u5e02\u6d2a\u5c71\u533a\u73de\u55bb\u8def1037\u53f7", "ADDRESS")]),
+    ("\u6536\u8d27\u5730\u5740\uff1a\u5317\u4eac\u5e02\u6d77\u6dc0\u533a\u4e2d\u5173\u6751\u5927\u88571\u53f7\u6d77\u9f99\u5927\u53a62\u5c42", [("\u5317\u4eac\u5e02\u6d77\u6dc0\u533a\u4e2d\u5173\u6751\u5927\u88571\u53f7\u6d77\u9f99\u5927\u53a62\u5c42", "ADDRESS")]),
+    ("\u5458\u5de5\u674e\u660e\uff08\u5de5\u53f7E10234\uff09\u5bb6\u5ead\u4f4f\u5740\u4e3a\u4e0a\u6d77\u5e02\u5f90\u6c47\u533a\u6f15\u6eaa\u5317\u8def88\u53f7", [("\u674e\u660e", "PERSON"), ("\u4e0a\u6d77\u5e02\u5f90\u6c47\u533a\u6f15\u6eaa\u5317\u8def88\u53f7", "ADDRESS")]),
+    ("\u8bf7\u8054\u7cfb\u9648\u5148\u751f\uff0c\u7535\u8bdd" + (cm := _cn_mobile()), [("\u9648", "PERSON"), (cm, "PHONE")]),
     ('SERVICE AGREEMENT\nThis agreement is made between John Smith ("Client"), residing at 1428 Elm Street, Springfield, IL 62704, and Maria Gonzalez ("Provider").',
      [("John Smith", "PERSON"), ("Maria Gonzalez", "PERSON"), ("1428 Elm Street, Springfield, IL 62704", "ADDRESS")]),
     ("Party A: Elena Vasquez\nAddress: 4521 Oak Ridge Drive, Austin, TX 78745\nSSN: 078-05-1120\nDate of birth: 03/14/1985",
@@ -171,10 +171,10 @@ PII += [   # a second batch written after the first round of fixes, to see what 
     ("Mr. Peter Hallworth (NI number JG103759A) lives at 5 Station Road, Cambridge CB1 2JD", [("JG103759A", "ID"), ("5 Station Road, Cambridge CB1 2JD", "ADDRESS")]),
     ("Please send the contract to Sarah O'Connell, 14 Rosewood Crescent, Dublin D04 X2Y3", [("Sarah O'Connell", "PERSON"), ("14 Rosewood Crescent, Dublin D04 X2Y3", "ADDRESS")]),
     ("Customer: David Mwangi\nDelivery address: 27 Moi Avenue, Nairobi 00100\nPhone on file", [("David Mwangi", "PERSON"), ("27 Moi Avenue, Nairobi 00100", "ADDRESS")]),
-    ("乙方：赵丽颖，居民身份证号码：" + (zid := _cn_id()), [("赵丽颖", "PERSON"), (zid, "ID")]),
-    ("家庭住址：广东省广州市天河区体育西路103号维多利广场B座2305室", [("广东省广州市天河区体育西路103号维多利广场B座2305室", "ADDRESS")]),
-    ("联系人：孙小红 电话：13912345678", [("孙小红", "PERSON"), ("13912345678", "PHONE")]),
-    ("收件人：吴天宇 地址：重庆市渝中区解放碑民权路28号", [("吴天宇", "PERSON"), ("重庆市渝中区解放碑民权路28号", "ADDRESS")]),
+    ("\u4e59\u65b9\uff1a\u8d75\u4e3d\u9896\uff0c\u5c45\u6c11\u8eab\u4efd\u8bc1\u53f7\u7801\uff1a" + (zid := _cn_id()), [("\u8d75\u4e3d\u9896", "PERSON"), (zid, "ID")]),
+    ("\u5bb6\u5ead\u4f4f\u5740\uff1a\u5e7f\u4e1c\u7701\u5e7f\u5dde\u5e02\u5929\u6cb3\u533a\u4f53\u80b2\u897f\u8def103\u53f7\u7ef4\u591a\u5229\u5e7f\u573aB\u5ea72305\u5ba4", [("\u5e7f\u4e1c\u7701\u5e7f\u5dde\u5e02\u5929\u6cb3\u533a\u4f53\u80b2\u897f\u8def103\u53f7\u7ef4\u591a\u5229\u5e7f\u573aB\u5ea72305\u5ba4", "ADDRESS")]),
+    ("\u8054\u7cfb\u4eba\uff1a\u5b59\u5c0f\u7ea2 \u7535\u8bdd\uff1a13912345678", [("\u5b59\u5c0f\u7ea2", "PERSON"), ("13912345678", "PHONE")]),
+    ("\u6536\u4ef6\u4eba\uff1a\u5434\u5929\u5b87 \u5730\u5740\uff1a\u91cd\u5e86\u5e02\u6e1d\u4e2d\u533a\u89e3\u653e\u7891\u6c11\u6743\u8def28\u53f7", [("\u5434\u5929\u5b87", "PERSON"), ("\u91cd\u5e86\u5e02\u6e1d\u4e2d\u533a\u89e3\u653e\u7891\u6c11\u6743\u8def28\u53f7", "ADDRESS")]),
 ]
 PII_CASES = [pytest.param(t, sp, id=f"pii{i}") for i, (t, sp) in enumerate(PII)]
 
@@ -193,15 +193,15 @@ def test_entities_are_typed_for_placeholders():
     text = "Party A: Elena Vasquez\nAddress: 4521 Oak Ridge Drive, Austin, TX 78745\nPAN: ABCDE1234F"
     kinds = {f.entity for f in rules.find(text)}
     assert {"PERSON", "ADDRESS", "NATIONAL_ID"} <= kinds
-    assert "CN_ID_CARD" in {f.entity for f in rules.find("身份证号：" + _cn_id())}
-    assert "CN_MOBILE" in {f.entity for f in rules.find("手机" + _cn_mobile())}
+    assert "CN_ID_CARD" in {f.entity for f in rules.find("\u8eab\u4efd\u8bc1\u53f7\uff1a" + _cn_id())}
+    assert "CN_MOBILE" in {f.entity for f in rules.find("\u624b\u673a" + _cn_mobile())}
 
 
 def test_a_chinese_id_number_needs_a_valid_checksum():
     bad = _cn_id()[:-1] + ("0" if _cn_id()[-1] != "0" else "1")
     ok = _cn_id()
-    assert not [f for f in rules.find("编号 " + bad + " 结束") if f.entity == "CN_ID_CARD"] or bad == ok
-    assert [f for f in rules.find("编号 " + ok + " 结束") if f.entity == "CN_ID_CARD"]
+    assert not [f for f in rules.find("\u7f16\u53f7 " + bad + " \u7ed3\u675f") if f.entity == "CN_ID_CARD"] or bad == ok
+    assert [f for f in rules.find("\u7f16\u53f7 " + ok + " \u7ed3\u675f") if f.entity == "CN_ID_CARD"]
 
 
 # --- things that must NOT be touched -----------------------------------------------------------
@@ -232,13 +232,13 @@ CLEAN = [
     "Address: Optional[str] = None",
     "IP address: 10.0.0.1",
     "email address: someone@example.com",
-    "甲方：北京某某科技有限公司",
+    "\u7532\u65b9\uff1a\u5317\u4eac\u67d0\u67d0\u79d1\u6280\u6709\u9650\u516c\u53f8",
     "Customer Service Representative: please escalate",
     "Name: str = Field(...)",
     "Contact: support@example.com",
-    "同事王芳明天请假，不用等她",
-    "住址：见附件",
-    "地址：待定",
+    "\u540c\u4e8b\u738b\u82b3\u660e\u5929\u8bf7\u5047\uff0c\u4e0d\u7528\u7b49\u5979",
+    "\u4f4f\u5740\uff1a\u89c1\u9644\u4ef6",
+    "\u5730\u5740\uff1a\u5f85\u5b9a",
     "The quick brown fox jumps over the lazy dog. Contact support for help.",
     "postgresql://user:<password>@localhost:5432/db",
     "def authenticate(user, password):\n    return check(user, password)",

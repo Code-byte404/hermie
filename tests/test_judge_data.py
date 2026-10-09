@@ -24,7 +24,7 @@ def test_validation_rejects_rule_breakers():
         "empty": _item(text="  "),
         "bad_role": _item(role="maybe"),
         "bad_form": _item(form="poem"),
-        "cjk": _item(text="Priya Nair 被解雇了, support team lead, final day is Friday, keep it quiet please."),
+        "cjk": _item(text="Priya Nair \u88ab\u89e3\u96c7\u4e86, support team lead, final day is Friday, keep it quiet please."),
         "real_key_shape": _item(text="Priya Nair is out. deploy key AKIAIOSFODNN7EXAMPLE stays with ops until the layoff is announced."),
         "real_email_domain": _item(text="Priya Nair (priya.nair@acmecorp.io) is being let go on Friday; keep it quiet until HR announces."),
         "real_phone_shape": _item(text="Priya Nair is being let go on Friday, reach her at 415-867-5309 before HR announces it."),
