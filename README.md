@@ -4,7 +4,9 @@
 
 <h1 align="center">Hermie</h1>
 
-<p align="center">Hermie is a local proxy between a coding agent and its cloud API: it redacts what goes out, restores placeholders in what comes back, and keeps a verbatim receipt of every request. Paste an API key into Claude Code and it ends up in your <code>.env</code> without the key ever leaving your machine.</p>
+<p align="center">Hermie is a local proxy between a coding agent and its cloud API: it redacts what goes out, restores placeholders in what comes back, and keeps a verbatim receipt of every request.</p>
+
+<p align="center"><b>Paste your API keys to Claude Code. It configures your <code>.env</code>. The keys never leave your machine.</b></p>
 
 <p align="center">
   <a href="LICENSE"><img alt="MIT" src="https://img.shields.io/badge/license-MIT-orange"></a>
@@ -12,7 +14,29 @@
   <img alt="platform: macOS / Linux" src="https://img.shields.io/badge/platform-macOS%20%2F%20Linux-lightgrey">
 </p>
 
-## What it looks like
+## Hand Claude your keys without handing it your keys
+
+![Claude Code with Hermie's hooks: the user pastes a key and asks for a .env file. Claude writes the file. Under the Write tool Claude Code prints Hermie's line that one placeholder was restored before the write ran, and at the end of the turn a summary of what was replaced. The status line at the bottom shows the proxy is up and how many values stay local](assets/demo-env.gif)
+
+You do not have to know how to set up environment variables, and you do not have to keep keys away from the chat. Paste them the way you would to a colleague. Claude writes the `.env` file; the cloud only ever sees `<SECRET_1>`.
+
+1. **You paste** `OPENAI_API_KEY=sk-...` into Claude Code.
+2. **Hermie swaps it** for `<SECRET_1>` before the request leaves your machine.
+3. **Claude writes** `OPENAI_API_KEY=<SECRET_1>` into its Write call. It never saw a key, so it does not warn you about one.
+4. **Hermie swaps it back** inside the tool call, and your `.env` gets the real key.
+
+Claude Code tells you each time it happens (`hermie install-hooks`):
+
+```text
+⏺ Write(.env)
+  ⎿  Wrote 1 line to .env
+  ⎿  PostToolUse:Write says: Hermie: 1 placeholder restored before this Write (.env) ran. The real value
+     never left this machine.
+```
+
+[Quickstart](#quickstart) · [how it works](#keys-the-model-never-sees) · [what it does not protect](#what-this-does-not-protect)
+
+## The same idea for personal data
 
 ![A Claude Code prompt containing a customer's name, phone, email and a key. Claude answers normally. hermie show prints the user message Anthropic actually received: the four values are placeholders](assets/demo.gif)
 
@@ -55,8 +79,6 @@ After 0.3.0 is published on PyPI, the first line becomes `pip install hermie && 
 Other commands: `hermie show ID` (the stored outbound body of a request), `hermie allow ID` (release a held or withheld item), `hermie hide VALUE` (put a value in the mapping by hand), `hermie stats [--days N]` (totals from the receipt), `hermie status` (one line: proxy up, values kept local, last request), `hermie install-hooks` (Claude Code status line and hooks), `hermie forget` (clear the placeholder mapping). `hermie COMMAND --help` lists the options.
 
 ## Keys the model never sees
-
-![Claude Code with Hermie's hooks: the user pastes a key and asks for a .env file. Claude writes the file. Under the Write tool Claude Code prints Hermie's line that one placeholder was restored before the write ran, and at the end of the turn a summary of what was replaced. The status line at the bottom shows the proxy is up and how many values stay local](assets/demo-env.gif)
 
 Paste a key into the prompt the way you would paste it to a colleague:
 
