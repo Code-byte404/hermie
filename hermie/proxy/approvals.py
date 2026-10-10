@@ -16,7 +16,7 @@ from typing import Literal
 
 KEEP = 500
 _FULL_HASH = re.compile(r"[0-9a-f]{64}")
-Choice = Literal["send", "reject", "allow_all"]
+Choice = Literal["send", "reject", "allow_all", "local"]
 _KEYS: dict[str, Choice] = {"s": "send", "r": "reject", "a": "allow_all"}
 
 
@@ -28,6 +28,7 @@ class PendingItem:
     size: int
     excerpt: str
     id: str | None = None
+    local_ok: bool = False
 
 
 def _append(path: Path, row: dict) -> None:
@@ -200,6 +201,7 @@ class Approvals:
         self.store = store
         self.session = session
         self.dropped: set[str] = set()   # messages the user rejected; Claude Code resends them in its history
+        self.rewrites: dict[str, str] = {}   # content hash -> rewritten text (already scanned), memory only
 
     def assign(self, h: str) -> str:
         return self.store.assign(h)
@@ -379,7 +381,7 @@ class DialogPrompter:
 
 
 _UI_FRESH_S = 90
-_ANSWERS = {"send": "send", "reject": "reject", "session": "allow_all"}
+_ANSWERS = {"send": "send", "reject": "reject", "session": "allow_all", "local": "local"}
 
 
 def touch_ui(data_dir: Path) -> None:
@@ -398,7 +400,8 @@ def read_asks(data_dir: Path) -> list[dict]:
 
 
 def write_answer(data_dir: Path, ask_id: str, answer: str) -> bool:
-    if answer not in _ANSWERS or not any(a.get("id") == ask_id for a in read_asks(data_dir)):
+    rows = [a for a in read_asks(data_dir) if a.get("id") == ask_id]
+    if answer not in _ANSWERS or not rows or (answer == "local" and rows[0].get("local") is not True):
         return False
     _append(Path(data_dir) / "answers.jsonl", {"id": ask_id, "answer": answer, "at": time.time()})
     return True
@@ -436,7 +439,10 @@ class ModPrompter:
         ask_id = item.id or item.hash[:4]
         async with self._lock:
             started = time.time()
-            self._publish([{"id": ask_id, "kind": item.kind, "reason": item.reason, "size": item.size}])
+            row = {"id": ask_id, "kind": item.kind, "reason": item.reason, "size": item.size}
+            if item.local_ok:
+                row["local"] = True
+            self._publish([row])
             deadline = time.monotonic() + self.timeout_s
             try:
                 while time.monotonic() < deadline:

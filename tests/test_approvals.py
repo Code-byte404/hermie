@@ -219,3 +219,38 @@ async def test_mod_prompter_rejects_on_timeout(tmp_path):
     item = PendingItem(hash="cafe" + "0" * 60, kind="message", reason="judge", size=40, excerpt="x", id="cafe")
     touch_ui(tmp_path)
     assert await ModPrompter(tmp_path, 0.1, poll_s=0.01).ask(item) == "reject"
+
+
+async def test_mod_prompter_publishes_local_flag_and_returns_local(tmp_path):
+    from hermie.proxy.approvals import ModPrompter, read_asks, touch_ui, write_answer
+    item = PendingItem(hash="cafe" + "0" * 60, kind="message", reason="judge", size=40, excerpt="the layoff list",
+                       id="cafe", local_ok=True)
+    touch_ui(tmp_path)
+    p = ModPrompter(tmp_path, 5, poll_s=0.01)
+    task = asyncio.create_task(p.ask(item))
+    for _ in range(100):
+        await asyncio.sleep(0.01)
+        if read_asks(tmp_path):
+            break
+    assert read_asks(tmp_path) == [{"id": "cafe", "kind": "message", "reason": "judge", "size": 40, "local": True}]
+    assert "layoff" not in (tmp_path / "asks.json").read_text()
+    assert write_answer(tmp_path, "cafe", "local")
+    assert await task == "local"
+
+
+async def test_local_answer_is_refused_when_the_ask_has_no_local_flag(tmp_path):
+    from hermie.proxy.approvals import ModPrompter, read_asks, touch_ui, write_answer
+    item = PendingItem(hash="cafe" + "0" * 60, kind="message", reason="judge", size=40, excerpt="x", id="cafe")
+    touch_ui(tmp_path)
+    task = asyncio.create_task(ModPrompter(tmp_path, 0.3, poll_s=0.01).ask(item))
+    for _ in range(100):
+        await asyncio.sleep(0.01)
+        if read_asks(tmp_path):
+            break
+    assert not write_answer(tmp_path, "cafe", "local")
+    assert await task == "reject"
+
+
+def test_approvals_rewrites_start_empty(tmp_path):
+    from hermie.proxy.approvals import AllowStore, Approvals, SessionAllow
+    assert Approvals(AllowStore(tmp_path), SessionAllow()).rewrites == {}
