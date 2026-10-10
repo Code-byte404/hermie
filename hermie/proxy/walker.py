@@ -52,6 +52,7 @@ class WalkResult:
     counts: dict[str, int] = field(default_factory=dict)
     scanned_bytes: int = 0
     held: Decision | None = None
+    held_text: str | None = None
 
 
 def _is_image(node: dict) -> bool:
@@ -270,6 +271,9 @@ class _Walker:
         if origin is Origin.USER:
             if not unscanned and self.approvals.is_allowed(res.hash, res.reason):
                 self.out.decisions.append(Decision("pass", did, res.reason, size, res.hash, **meta))
+            elif not unscanned and res.hash in getattr(self.approvals, "rewrites", {}):
+                self.out.decisions.append(Decision("pass", did, "local", size, res.hash, **meta))
+                return self.apply(parent, key, self.approvals.rewrites[res.hash])
             elif not unscanned and res.hash in self.approvals.dropped:
                 # rejected before and now only history: keep the conversation usable, the text stays home
                 self.out.decisions.append(Decision("withhold", did, "rejected earlier", size, res.hash, **meta))
@@ -281,6 +285,7 @@ class _Walker:
                 self.out.decisions.append(d)
                 if not self.observe:
                     self.out.held = d
+                    self.out.held_text = text
                     return False
             return self.apply(parent, key, res.text)
         if not unscanned and self.approvals.is_allowed(res.hash, res.reason):

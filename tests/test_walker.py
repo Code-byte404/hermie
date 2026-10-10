@@ -201,3 +201,35 @@ def test_user_text_with_an_encoded_blob_is_held_for_smuggling(tmp_path, analyzer
     assert out.held is not None and out.held.reason.startswith("smuggling: possible base64")
     long_prose = {"model": "m", "messages": [{"role": "user", "content": "Please refactor the module. " * 40}]}
     assert walk_request(long_prose, gate, Allow(), cfg).held is None
+
+
+class _Judge:
+    def is_sensitive(self, text): return "layoff" in text
+
+
+def _msg_body(text):
+    return {"model": "m", "max_tokens": 5, "messages": [{"role": "user", "content": text}]}
+
+
+def test_held_result_carries_the_raw_text(tmp_path, analyzer):
+    cfg, gate = _gate(tmp_path, analyzer, judge=_Judge())
+    out = walk_request(_msg_body("the layoff list is final"), gate, Allow(), cfg)
+    assert out.held is not None and out.held_text == "the layoff list is final"
+    assert walk_request(_msg_body("hello"), gate, Allow(), cfg).held_text is None
+
+
+def test_cached_rewrite_replaces_the_held_message(tmp_path, analyzer):
+    cfg, gate = _gate(tmp_path, analyzer, judge=_Judge())
+    first = walk_request(_msg_body("the layoff list is final"), gate, Allow(), cfg)
+    approvals = Allow(); approvals.rewrites = {first.held.hash: "[rewritten locally] a staffing plan is final"}
+    out = walk_request(_msg_body("the layoff list is final"), gate, approvals, cfg)
+    assert out.held is None and out.held_text is None
+    assert out.body["messages"][0]["content"] == "[rewritten locally] a staffing plan is final"
+    d = next(d for d in out.decisions if d.kind == "pass")
+    assert d.reason == "local"
+
+
+def test_rewrite_is_ignored_for_other_hashes(tmp_path, analyzer):
+    cfg, gate = _gate(tmp_path, analyzer, judge=_Judge())
+    approvals = Allow(); approvals.rewrites = {"0" * 64: "x"}
+    assert walk_request(_msg_body("the layoff list is final"), gate, approvals, cfg).held is not None
