@@ -321,6 +321,7 @@ def _parser() -> argparse.ArgumentParser:
     sp.add_argument("--port", type=int)
     sp.add_argument("--mode", choices=["enforce", "observe"])
     sp.add_argument("--judge", help="ollama:MODEL or laya:PATH (a fine-tuned Laya checkpoint, needs laya-mlx)")
+    sp.add_argument("--local-model", dest="local_model", help="ollama:MODEL that rewrites held messages on request")
     sp.add_argument("--upstream", help="custom upstream URL")
     sp.add_argument("--no-bodies", action="store_true", help="do not store outbound bodies")
     sp = add("tail", _tail, "follow the receipt log")
@@ -358,7 +359,7 @@ def main(argv=None) -> int:
     if args.data_dir:
         overrides["data_dir"] = Path(args.data_dir)
     if args.cmd == "serve":
-        for key in ("host", "port", "mode", "judge"):
+        for key in ("host", "port", "mode", "judge", "local_model"):
             if getattr(args, key) is not None:
                 overrides[key] = getattr(args, key)
         if args.upstream:

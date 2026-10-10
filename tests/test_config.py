@@ -35,3 +35,25 @@ def test_invalid_env_names_the_variable(monkeypatch):
 def test_empty_data_dir_env_is_unset(monkeypatch):
     monkeypatch.setenv("HERMIE_DATA_DIR", "")
     assert Config.load().data_dir == Config().data_dir
+
+
+def test_local_model_defaults_and_validation(tmp_path):
+    c = Config(data_dir=tmp_path)
+    assert c.local_model is None and c.local_timeout_s == 60.0 and c.local_max_chars == 12000
+    assert Config(data_dir=tmp_path, local_model="ollama:qwen3:8b").local_model == "ollama:qwen3:8b"
+    for bad in ("qwen3", "laya:/x", "ollama:"):
+        with pytest.raises(ValueError):
+            Config(data_dir=tmp_path, local_model=bad)
+    with pytest.raises(ValueError):
+        Config(data_dir=tmp_path, local_timeout_s=-1)
+    with pytest.raises(ValueError):
+        Config(data_dir=tmp_path, local_max_chars=0)
+
+
+def test_local_model_from_env(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMIE_LOCAL_MODEL", "ollama:qwen3:8b")
+    monkeypatch.setenv("HERMIE_LOCAL_MAX_CHARS", "500")
+    c = Config.load(data_dir=tmp_path)
+    assert c.local_model == "ollama:qwen3:8b" and c.local_max_chars == 500
+    monkeypatch.setenv("HERMIE_LOCAL_MODEL", "")
+    assert Config.load(data_dir=tmp_path).local_model is None

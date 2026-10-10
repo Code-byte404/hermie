@@ -20,6 +20,9 @@ class Config:
     ollama_url: str = "http://localhost:11434"
     judge_threshold: float = 0.5
     judge_timeout_s: float = 20.0
+    local_model: str | None = None
+    local_timeout_s: float = 60.0
+    local_max_chars: int = 12000
     presidio_threshold: float = 0.5
     images: Literal["withhold", "pass"] = "withhold"
     deny_words: tuple[str, ...] = ()
@@ -55,7 +58,13 @@ class Config:
                 bad(name)
         if not 1 <= self.port <= 65535:
             bad("port")
-        for name in ("cache_mb", "bodies_keep_mb", "hold_timeout_s", "judge_timeout_s"):
+        if self.local_model is not None:
+            prefix, _, model = self.local_model.partition(":")
+            if prefix != "ollama" or not model:
+                bad("local_model")
+        if self.local_max_chars < 1:
+            bad("local_max_chars")
+        for name in ("cache_mb", "bodies_keep_mb", "hold_timeout_s", "judge_timeout_s", "local_timeout_s"):
             if getattr(self, name) < 0:
                 bad(name)
 
@@ -126,7 +135,7 @@ def _split(raw: str) -> list[str]:
 def _parse_env(name: str, raw: str, default):
     if name in _TUPLE_FIELDS:
         return tuple(_split(raw))
-    if name == "judge" or name == "custom_upstream":
+    if name in ("judge", "custom_upstream", "local_model"):
         return raw or None
     var = "HERMIE_" + name.upper()
     try:
