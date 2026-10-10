@@ -370,3 +370,72 @@ async def test_rejected_message_is_withheld_from_later_requests_not_blocking_the
     assert r.status_code == 200
     sent = up.seen[-1].content.decode()
     assert "layoff" not in sent and "hermie withheld" in sent and "hi" in sent
+
+
+# --- local rewrite choice ---
+
+class _LJ:
+    def is_sensitive(self, t): return "layoff" in t
+
+class _LocalPrompter:
+    available = True
+    def __init__(self): self.items = []
+    async def ask(self, item): self.items.append(item); return "local"
+
+class _Rewriter:
+    def __init__(self, out="a staffing reduction plan is final", raises=False):
+        self.out, self.raises, self.calls = out, raises, 0
+    async def rewrite(self, text):
+        self.calls += 1
+        if self.raises: raise RuntimeError("down")
+        return self.out
+
+def _local_app(tmp_path, analyzer, up, rewriter, prompter=None):
+    cfg = Config(data_dir=tmp_path, judge="ollama:x", local_model="ollama:m")
+    gate = Gate(cfg, analyzer=analyzer, judge=_LJ(), store=MappingStore(cfg.mapping_path))
+    client = httpx.AsyncClient(transport=httpx.MockTransport(up))
+    app = server.create_app(cfg, gate=gate, upstream_client=client, prompter=prompter or _LocalPrompter(), rewriter=rewriter)
+    return cfg, TestClient(app)
+
+_SENS = {"role": "user", "content": "the layoff list is final"}
+def _first(): return {"model": "m", "max_tokens": 5, "messages": [_SENS]}
+
+def test_local_choice_sends_only_the_rewrite(tmp_path, analyzer):
+    up = Upstream(); rw = _Rewriter(); p = _LocalPrompter()
+    cfg, c = _local_app(tmp_path, analyzer, up, rw, p)
+    assert c.post("/anthropic/v1/messages", json=_first()).status_code == 200
+    sent = up.seen[-1].content.decode()
+    assert "layoff" not in sent and "[rewritten locally] a staffing reduction plan is final" in sent
+    assert p.items[0].local_ok is True
+    line = _receipts(tmp_path)[-1]
+    assert line["approved_by"] == "local" and "layoff" not in json.dumps(line) and "staffing" not in json.dumps(line)
+
+def test_local_rewrite_is_cached_across_resends(tmp_path, analyzer):
+    up = Upstream(); rw = _Rewriter(); p = _LocalPrompter()
+    cfg, c = _local_app(tmp_path, analyzer, up, rw, p)
+    assert c.post("/anthropic/v1/messages", json=_first()).status_code == 200
+    later = {"model": "m", "max_tokens": 5, "messages": [_SENS, {"role": "assistant", "content": "ok"},
+                                                          {"role": "user", "content": "hi"}]}
+    assert c.post("/anthropic/v1/messages", json=later).status_code == 200
+    assert rw.calls == 1 and len(p.items) == 1
+    assert "layoff" not in up.seen[-1].content.decode() and "a staffing reduction plan is final" in up.seen[-1].content.decode()
+
+@pytest.mark.parametrize("rewriter", [_Rewriter(out=None), _Rewriter(raises=True),
+                                      _Rewriter(out="the layoff list is final, rephrased")])
+def test_local_failures_drop_the_message_and_cache_nothing(tmp_path, analyzer, rewriter):
+    up = Upstream(); p = _LocalPrompter()
+    cfg, c = _local_app(tmp_path, analyzer, up, rewriter, p)
+    r = c.post("/anthropic/v1/messages", json=_first())
+    assert r.status_code == 422 and r.json()["error"]["type"] == "hermie_blocked"
+    assert "local model" in r.json()["error"]["message"] and up.seen == []
+    assert c.app.state.approvals.rewrites == {}
+    assert _SENS["content"] not in json.dumps(r.json())
+
+def test_local_answer_without_a_configured_rewriter_is_a_reject(tmp_path, analyzer):
+    up = Upstream(); p = _LocalPrompter()
+    cfg = Config(data_dir=tmp_path, judge="ollama:x")
+    gate = Gate(cfg, analyzer=analyzer, judge=_LJ(), store=MappingStore(cfg.mapping_path))
+    client = httpx.AsyncClient(transport=httpx.MockTransport(up))
+    c = TestClient(server.create_app(cfg, gate=gate, upstream_client=client, prompter=p))
+    assert c.post("/anthropic/v1/messages", json=_first()).status_code == 422
+    assert p.items[0].local_ok is False and up.seen == []

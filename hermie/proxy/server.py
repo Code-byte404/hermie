@@ -25,8 +25,9 @@ from starlette.routing import Route
 
 from hermie.config import Config
 from hermie.gate.gate import Gate, certify_body, empty_body
+from hermie.gate.local import LOCAL_PREFIX, make_local
 from hermie.gate.redact import MappingStoreError
-from hermie.gate.types import CleanBody
+from hermie.gate.types import CleanBody, Origin
 from hermie.proxy.approvals import AllowStore, Approvals, NoPrompter, PendingItem, SessionAllow
 from hermie.proxy.receipt import BodyStore, Receipt, ReceiptLine, client_label
 from hermie.proxy.stream import StreamStats, relay_sse, restore_json
@@ -59,6 +60,8 @@ NO_FILES = "hermie does not proxy file uploads"
 BAD_PATH = "hermie refuses paths with '.' or '..' segments or encoded slashes"
 SEEN_IMAGES = 4096
 BLOCKED = 'hermie blocked this message (id {id}): {reason}. Run "hermie allow {id}" to send it, then retry.'
+LOCAL_FAILED = ('hermie blocked this message (id {id}): the local model could not rewrite it. '
+                'Run "hermie allow {id}" to send it as is, then retry.')
 UNSCANNED = ("hermie blocked this message (id {id}): {reason}. The text could not be scanned, so it cannot be sent "
              "or released; shorten it or retry.")
 
@@ -216,13 +219,14 @@ def _item_kind(d: Decision) -> str:
 
 
 def create_app(config: Config, gate: Gate | None = None, upstream_client: httpx.AsyncClient | None = None,
-               prompter=None) -> Starlette:
+               prompter=None, rewriter=None) -> Starlette:
     gate = gate if gate is not None else Gate(config)
     if gate.judge is not None and not isinstance(gate.judge, _CountingJudge):
         gate.judge = _CountingJudge(gate.judge)
     owns_client = upstream_client is None
     client = upstream_client or httpx.AsyncClient(timeout=httpx.Timeout(600, connect=30))
     prompter = prompter if prompter is not None else NoPrompter()
+    rewriter = rewriter if rewriter is not None else make_local(config)
     store = AllowStore(config.data_dir)
     approvals = Approvals(store, SessionAllow())
     receipt = Receipt(config)
@@ -256,6 +260,7 @@ def create_app(config: Config, gate: Gate | None = None, upstream_client: httpx.
             rec.held = rec.held or item_id
             item = store.pending.get(item_id) or PendingItem(d.hash, "message", d.reason, d.size, d.excerpt, item_id)
             item.excerpt = d.excerpt
+            item.local_ok = rewriter is not None
             choice = await prompter.ask(item) if prompter.available else "reject"
             if choice == "send":
                 store.allow(d.hash)
@@ -263,6 +268,22 @@ def create_app(config: Config, gate: Gate | None = None, upstream_client: httpx.
             elif choice == "allow_all":
                 approvals.session.all = True
                 rec.approved_by = "session"
+            elif choice == "local" and rewriter is not None:
+                rewritten = None
+                try:
+                    rewritten = await rewriter.rewrite(result.held_text or "")
+                except Exception:   # a broken rewriter is a failed rewrite, never a crash
+                    rewritten = None
+                if rewritten is not None:
+                    ctx = contextvars.copy_context()
+                    ctx.run(_tally.set, rec.tally)
+                    scanned = await asyncio.to_thread(ctx.run, gate.scan, rewritten, Origin.USER)
+                    if not scanned.sensitive:
+                        approvals.rewrites[d.hash] = LOCAL_PREFIX + scanned.text
+                        rec.approved_by = "local"
+                        continue
+                approvals.dropped.add(d.hash)
+                return _error(422, "hermie_blocked", LOCAL_FAILED.format(id=item_id), rec.rid, item_id)
             else:
                 approvals.dropped.add(d.hash)
                 return _error(422, "hermie_blocked", BLOCKED.format(id=item_id, reason=d.reason), rec.rid, item_id)
@@ -363,7 +384,7 @@ def create_app(config: Config, gate: Gate | None = None, upstream_client: httpx.
                 if d.kind == "withhold":
                     rec.withheld.append(register(d))
                 elif d.kind == "pass" and rec.approved_by is None:
-                    rec.approved_by = "session" if approvals.session.all else "allowed"
+                    rec.approved_by = "local" if d.reason == "local" else "session" if approvals.session.all else "allowed"
                 if d.origin == "binary":   # images never pass through the gate cache: remember them here
                     d.new = d.hash not in seen_images
                     seen_images[d.hash] = None

@@ -233,3 +233,17 @@ def test_rewrite_is_ignored_for_other_hashes(tmp_path, analyzer):
     cfg, gate = _gate(tmp_path, analyzer, judge=_Judge())
     approvals = Allow(); approvals.rewrites = {"0" * 64: "x"}
     assert walk_request(_msg_body("the layoff list is final"), gate, approvals, cfg).held is not None
+
+
+def test_detector_error_user_leaf_is_not_replaced_by_a_cached_rewrite(tmp_path):
+    """A user message that could not be scanned stays held even if a rewrite is cached under its hash."""
+    cfg = Config(data_dir=tmp_path)
+    gate = Gate(cfg, analyzer=RaisingAnalyzer(), store=MappingStore(cfg.mapping_path))
+    body = {"model": "m", "messages": [{"role": "user", "content": "my card is on file"}]}
+    first = walk_request(json.loads(json.dumps(body)), gate, Allow(), cfg)
+    assert first.held is not None and first.held.reason.startswith("detector_error")
+    approvals = Allow()
+    approvals.rewrites = {first.held.hash: "[rewritten locally] a harmless sentence"}
+    out = walk_request(json.loads(json.dumps(body)), gate, approvals, cfg)
+    assert out.held is not None and out.held.reason.startswith("detector_error")
+    assert "harmless sentence" not in json.dumps(out.body)
