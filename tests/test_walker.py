@@ -10,7 +10,7 @@ FIX = Path(__file__).parent / "fixtures" / "requests"
 FORMATS = ["anthropic", "openai_chat", "openai_responses", "gemini"]
 
 class Allow:
-    def __init__(self, ids=()): self.ids = set(ids)
+    def __init__(self, ids=()): self.ids = set(ids); self.dropped = set()
     def is_allowed(self, h, reason=""): return h[:4] in self.ids
     def assign(self, h): return h[:4]
 

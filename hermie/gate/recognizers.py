@@ -230,6 +230,9 @@ def smuggling_risk_url(payload: str) -> Optional[str]:
     return None
 
 
+_FS_PATH = re.compile(r"^/(?:private|Users|home|tmp|var|opt|usr|etc|mnt|srv|Volumes)/")   # a path is not encoded data
+
+
 def smuggling_risk_text(text: str) -> Optional[str]:
     """Encoded data inside ordinary text: base64 or hex tokens of TEXT_MIN_TOKEN+ characters with an entropy of at
     least TEXT_MIN_ENTROPY bits per character. No length rule and no digit-run rule (prose is long; commit SHAs and
@@ -238,7 +241,7 @@ def smuggling_risk_text(text: str) -> Optional[str]:
     tokens += [part for tok in tokens if "/" in tok for part in tok.split("/") if len(part) >= TEXT_MIN_TOKEN]
     for tok in tokens:
         core = tok.rstrip("=")
-        if len(core) < TEXT_MIN_TOKEN or _entropy(core) < TEXT_MIN_ENTROPY:
+        if len(core) < TEXT_MIN_TOKEN or _entropy(core) < TEXT_MIN_ENTROPY or _FS_PATH.match(tok):
             continue
         if _HEX.match(core):
             return f"possible hex data: {tok[:24]}..."

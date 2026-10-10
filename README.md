@@ -76,7 +76,7 @@ After 0.3.0 is published on PyPI, the first line becomes `pip install hermie && 
 
 `hermie serve` listens on `127.0.0.1:8787` and prints one base URL per upstream: `/anthropic` (api.anthropic.com), `/openai/v1` (api.openai.com), `/gemini` (generativelanguage.googleapis.com) and `/custom` (any upstream you name with `--upstream`). Your API key or login token is forwarded to the upstream as the client sends it; Hermie never stores it.
 
-Other commands: `hermie show ID` (the stored outbound body of a request), `hermie allow ID` (release a held or withheld item), `hermie hide VALUE` (put a value in the mapping by hand), `hermie stats [--days N]` (totals from the receipt), `hermie status` (one line: proxy up, values kept local, last request), `hermie install-hooks` (Claude Code status line and hooks), `hermie forget` (clear the placeholder mapping). `hermie COMMAND --help` lists the options.
+Other commands: `hermie show ID` (the stored outbound body of a request), `hermie allow ID` (release a held or withheld item), `hermie asks` and `hermie answer ID send|reject|session` (what the Claude Code menu uses), `hermie hide VALUE` (put a value in the mapping by hand), `hermie stats [--days N]` (totals from the receipt), `hermie status` (one line: proxy up, values kept local, last request), `hermie install-hooks` (Claude Code status line and hooks), `hermie forget` (clear the placeholder mapping). `hermie COMMAND --help` lists the options.
 
 ## Keys the model never sees
 
@@ -182,7 +182,7 @@ Hermie holds this message (412 chars): ...
   or later: hermie allow 3fa2
 ```
 
-Type `s`, `r` or `a` and Enter. No answer within `hold_timeout_s` (60 s) rejects. Without a terminal (for example under a process manager) held messages are rejected right away. A rejected request returns HTTP 422 to the agent with a message that names the id; run `hermie allow ID` in any terminal and retry. Withheld tool results and images show up in `hermie tail` with the same `hermie allow ID` line; once allowed, the next request sends them. `[a]llow everything this session` covers judge decisions only. A text the detectors failed on cannot be released at all, and `hermie allow` refuses an id it does not know.
+Type `s`, `r` or `a` and Enter. No answer within `hold_timeout_s` (60 s) rejects. Without a terminal (for example under a process manager) the question goes to the Claude Code menu in [`integrations/claude-code-menu`](integrations/claude-code-menu) while that mod is polling, and otherwise to a macOS dialog (macOS only); with neither, held messages are rejected right away. The menu shows the id, size and reason, never the held text. A message you reject stays rejected for the rest of that `hermie serve` run: Claude Code resends its history with every request, and the rejected message comes back as a short withheld note instead of asking again (`/clear` in the client and a restart of `hermie serve` start fresh). A rejected request returns HTTP 422 to the agent with a message that names the id; run `hermie allow ID` in any terminal and retry. Withheld tool results and images show up in `hermie tail` with the same `hermie allow ID` line; once allowed, the next request sends them. `[a]llow everything this session` covers judge decisions only. A text the detectors failed on cannot be released at all, and `hermie allow` refuses an id it does not know.
 
 ## What this does not protect
 

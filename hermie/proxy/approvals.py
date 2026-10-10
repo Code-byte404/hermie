@@ -8,6 +8,7 @@ import os
 import re
 import sys
 import threading
+import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -198,6 +199,7 @@ class Approvals:
     def __init__(self, store: AllowStore, session: SessionAllow):
         self.store = store
         self.session = session
+        self.dropped: set[str] = set()   # messages the user rejected; Claude Code resends them in its history
 
     def assign(self, h: str) -> str:
         return self.store.assign(h)
@@ -307,3 +309,141 @@ class TtyPrompter:
             except asyncio.CancelledError:
                 pass
             self._say("\n")
+
+
+_DIALOG_SCRIPT = ('on run argv\n'
+                  'set r to display dialog (item 2 of argv) with title (item 1 of argv) '
+                  'buttons (items 4 thru -1 of argv) default button (item -1 of argv) '
+                  'with icon caution giving up after ((item 3 of argv) as integer)\n'
+                  'if gave up of r then return ""\n'
+                  'return button returned of r\n'
+                  'end run')
+
+
+async def _osascript_dialog(title: str, text: str, buttons: list[str], timeout_s: float) -> str | None:
+    """Show a macOS dialog over whatever is in front; the clicked button, or None on timeout / close / error."""
+    proc = await asyncio.create_subprocess_exec(
+        "osascript", "-e", _DIALOG_SCRIPT, title, text, str(int(timeout_s)), *buttons,
+        stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL)
+    out, _ = await proc.communicate()
+    return out.decode().strip() or None
+
+
+_TAGS = re.compile(r"</?session>")
+_REMEMBER_S = 600
+_PROBE = 60
+
+
+def _norm(excerpt: str) -> str:
+    return " ".join(_TAGS.sub(" ", excerpt).lower().split())
+
+
+class DialogPrompter:
+    """Asks through a native macOS dialog, so a headless `hermie serve` can still ask while Claude Code is in front.
+    One dialog per message: Claude Code also sends the same text again inside other requests (a session title), and
+    those get the answer already given instead of a second dialog."""
+    def __init__(self, timeout_s: float, runner=None, clock=None):
+        self.timeout_s = timeout_s
+        self.available = True
+        self._run = runner or _osascript_dialog
+        self._clock = clock or time.monotonic
+        self._lock = asyncio.Lock()
+        self._answers: list[tuple[str, Choice, float]] = []   # (normalised excerpt, answer, when)
+
+    def _remembered(self, norm: str) -> Choice | None:
+        now = self._clock()
+        self._answers = [a for a in self._answers if now - a[2] < _REMEMBER_S]
+        for text, choice, _ in self._answers:
+            short, long_ = sorted((text, norm), key=len)
+            if len(short) >= 10 and short[:_PROBE] in long_:
+                return choice
+        return None
+
+    async def ask(self, item: PendingItem) -> Choice:
+        excerpt = " ".join(item.excerpt[:200].split())
+        norm = _norm(item.excerpt)
+        text = (f"Hermie holds this {item.kind} ({item.size} chars, reason: {item.reason}):\n\n{excerpt}\n\n"
+                f"Send it to the cloud model?  (later: hermie allow {item.id or item.hash[:4]})")
+        async with self._lock:
+            known = self._remembered(norm)
+            if known is not None:
+                return known
+            try:
+                button = await self._run("Hermie: sensitive content", text, ["Reject", "Allow session", "Send"],
+                                         self.timeout_s)
+            except Exception:   # no osascript, no GUI session: never send
+                return "reject"
+            choice: Choice = {"Send": "send", "Allow session": "allow_all"}.get(button, "reject")
+            self._answers.append((norm, choice, self._clock()))
+            return choice
+
+
+_UI_FRESH_S = 90
+_ANSWERS = {"send": "send", "reject": "reject", "session": "allow_all"}
+
+
+def touch_ui(data_dir: Path) -> None:
+    """Called by `hermie asks`: a menu in the client is polling, so a held item can wait for it."""
+    p = Path(data_dir) / "ui.json"
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text(str(time.time()))
+
+
+def read_asks(data_dir: Path) -> list[dict]:
+    try:
+        rows = json.loads((Path(data_dir) / "asks.json").read_text())
+    except (OSError, ValueError):
+        return []
+    return rows if isinstance(rows, list) else []
+
+
+def write_answer(data_dir: Path, ask_id: str, answer: str) -> bool:
+    if answer not in _ANSWERS or not any(a.get("id") == ask_id for a in read_asks(data_dir)):
+        return False
+    _append(Path(data_dir) / "answers.jsonl", {"id": ask_id, "answer": answer, "at": time.time()})
+    return True
+
+
+class ModPrompter:
+    """Asks through a menu in the client (the Claude Code mod polls `hermie asks --json`, answers with
+    `hermie answer`). The ask file holds id, kind, reason and size only, never the held text. With no menu polling
+    it hands the item to `fallback` (the macOS dialog), or rejects."""
+    def __init__(self, data_dir: Path, timeout_s: float, fallback=None, poll_s: float = 0.25):
+        self.data_dir = Path(data_dir)
+        self.timeout_s = timeout_s
+        self.fallback = fallback
+        self.poll_s = poll_s
+        self.available = True
+        self._lock = asyncio.Lock()
+
+    def _ui_fresh(self) -> bool:
+        try:
+            return time.time() - (self.data_dir / "ui.json").stat().st_mtime < _UI_FRESH_S
+        except OSError:
+            return False
+
+    def _publish(self, rows: list[dict]) -> None:
+        tmp = self.data_dir / "asks.json.tmp"
+        self.data_dir.mkdir(parents=True, exist_ok=True)
+        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(fd, "w") as f:
+            f.write(json.dumps(rows))
+        os.replace(tmp, self.data_dir / "asks.json")
+
+    async def ask(self, item: PendingItem) -> Choice:
+        if not self._ui_fresh():
+            return await self.fallback.ask(item) if self.fallback is not None else "reject"
+        ask_id = item.id or item.hash[:4]
+        async with self._lock:
+            started = time.time()
+            self._publish([{"id": ask_id, "kind": item.kind, "reason": item.reason, "size": item.size}])
+            deadline = time.monotonic() + self.timeout_s
+            try:
+                while time.monotonic() < deadline:
+                    for row in reversed(_read_rows(self.data_dir / "answers.jsonl")):
+                        if row.get("id") == ask_id and float(row.get("at", 0)) >= started:
+                            return _ANSWERS.get(str(row.get("answer")), "reject")
+                    await asyncio.sleep(self.poll_s)
+                return "reject"
+            finally:
+                self._publish([])

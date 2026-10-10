@@ -18,7 +18,8 @@ from hermie import __version__
 from hermie.config import Config
 from hermie import claude_code
 from hermie.gate.redact import PLACEHOLDER, MappingStore, MappingStoreError
-from hermie.proxy.approvals import AllowStore, NoPrompter, TtyPrompter
+from hermie.proxy.approvals import (AllowStore, DialogPrompter, ModPrompter, NoPrompter, TtyPrompter, read_asks,
+                                    touch_ui, write_answer)
 from hermie.proxy.receipt import BodyStore, Receipt, ReceiptLine
 
 _SINCE = re.compile(r"(\d+)([mhd])")
@@ -60,7 +61,13 @@ def _serve(config: Config, args) -> int:
     from hermie.proxy.server import create_app
 
     tty = sys.stdin is not None and sys.stdin.isatty()
-    prompter = TtyPrompter(config.hold_timeout_s) if tty else NoPrompter()
+    if tty:
+        prompter = TtyPrompter(config.hold_timeout_s)
+    elif sys.platform == "darwin" and shutil.which("osascript"):
+        # headless serve: ask in the client's menu while one is polling, else in a native dialog
+        prompter = ModPrompter(config.data_dir, config.hold_timeout_s, fallback=DialogPrompter(config.hold_timeout_s))
+    else:
+        prompter = NoPrompter()
     app = create_app(config, prompter=prompter)
     base = f"http://{config.host}:{config.port}"
     home = str(Path.home())
@@ -74,8 +81,12 @@ def _serve(config: Config, args) -> int:
     print(f"  custom upstream: {base}/custom -> {config.custom_upstream or 'off'}")
     if "zh" not in config.languages and importlib.util.find_spec("zh_core_web_sm") is not None:
         print('Chinese model installed but off: add languages = ["en", "zh"] to config.toml to find Chinese names in running text')
-    print("TTY: prompts enabled (held messages ask here)" if tty else
-          "no TTY: held messages are rejected, use `hermie allow ID`")
+    if tty:
+        print("TTY: prompts enabled (held messages ask here)")
+    elif isinstance(prompter, ModPrompter):
+        print("no TTY: held messages ask in the Claude Code menu, or in a macOS dialog when no menu is open")
+    else:
+        print("no TTY: held messages are rejected, use `hermie allow ID`")
     sys.stdout.flush()
     claude_code.write_serve_file(config)
     try:
@@ -129,6 +140,25 @@ def _allow(config: Config, args) -> int:
             print("hermie: unknown id", file=sys.stderr)
         return 1
     print(f"allowed {args.id}")
+    return 0
+
+
+def _asks(config: Config, args) -> int:
+    touch_ui(config.data_dir)
+    rows = read_asks(config.data_dir)
+    if args.json:
+        print(json.dumps(rows))
+    else:
+        for r in rows:
+            print(f"{r['id']}  {r['kind']}  {r['size']} chars  {r['reason']}")
+    return 0
+
+
+def _answer(config: Config, args) -> int:
+    if not write_answer(config.data_dir, args.id, args.answer):
+        print("hermie: no such open ask", file=sys.stderr)
+        return 1
+    print(f"answered {args.id}: {args.answer}")
     return 0
 
 
@@ -301,6 +331,11 @@ def _parser() -> argparse.ArgumentParser:
     sp.add_argument("request_id")
     sp = add("allow", _allow, "allow a withheld or held item")
     sp.add_argument("id")
+    sp = add("asks", _asks, "list held items waiting for an answer (a client menu polls this)")
+    sp.add_argument("--json", action="store_true")
+    sp = add("answer", _answer, "answer an open ask: send, reject, or session (allow judge holds this session)")
+    sp.add_argument("id")
+    sp.add_argument("answer", choices=["send", "reject", "session"])
     sp = add("stats", _stats, "summarize the receipt log")
     sp.add_argument("--days", type=float, default=1)
     sp = add("forget", _forget, "clear the placeholder mapping")

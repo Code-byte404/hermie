@@ -77,12 +77,22 @@ def _is_url(text: str) -> bool:
     return bool(u.scheme and u.netloc)
 
 
+# Claude Code injects its own instructions (CLAUDE.md, memory, hook output) into user messages in these blocks. They are
+# not what the person wrote, so the judge does not weigh them; the patterns and known values still scan them.
+_INJECTED = re.compile(r"<system-reminder>.*?</system-reminder>", re.DOTALL)
+
+
+def strip_injected(text: str) -> str:
+    return _INJECTED.sub("", text)
+
+
 class Gate:
     def __init__(self, config, analyzer=None, judge=None, store: MappingStore | None = None):
         self.c = config
         self._analyzer = analyzer
         self.judge = judge if judge is not None else (make_judge(config) if config.judge else None)
         self.store = store or MappingStore(config.mapping_path)
+        self._verdicts = self._load_verdicts()
         snap = self.store.snapshot()
         self._mapping = dict(snap.mapping)
         self._gen = snap.generation
@@ -152,6 +162,42 @@ class Gate:
             return ScanResult(text, [], True, True, f"detector_error: {type(e).__name__}", {}, h, size)
         self._remember(key, res, gen, searched)
         return res
+
+    _VERDICT_KEEP = 50_000
+
+    def _verdict_key(self, text: str) -> str:
+        return hashlib.sha256(f"{self.c.judge}\0{text}".encode("utf-8", "surrogatepass")).hexdigest()
+
+    def _load_verdicts(self) -> dict[str, bool]:
+        path = self.c.judge_cache_path
+        out: dict[str, bool] = {}
+        try:
+            for line in (path.read_text("utf-8").splitlines() if path is not None and path.exists() else []):
+                k, _, v = line.partition(" ")
+                if len(k) == 64 and v in ("0", "1"):
+                    out[k] = v == "1"
+        except (OSError, ValueError):
+            return {}
+        return dict(list(out.items())[-self._VERDICT_KEEP:])
+
+    def _judge(self, text: str) -> bool:
+        """The judge's verdict, remembered across restarts (a restart would otherwise re-judge a whole conversation
+        history). Errors propagate and are never stored."""
+        key = self._verdict_key(text)
+        known = self._verdicts.get(key)
+        if known is not None:
+            return known
+        verdict = bool(self.judge.is_sensitive(text))
+        self._verdicts[key] = verdict
+        path = self.c.judge_cache_path
+        if path is not None:
+            try:
+                path.parent.mkdir(parents=True, exist_ok=True)
+                with path.open("a", encoding="utf-8") as f:
+                    f.write(f"{key} {int(verdict)}\n")
+            except OSError:
+                pass   # the verdict still holds for this process
+        return verdict
 
     def _judged_origin(self, origin: Origin) -> bool:
         return self.judge is not None and origin in (Origin.USER, Origin.TOOL)
@@ -251,12 +297,13 @@ class Gate:
         judged = sensitive = False
         reason = "clean"
         if self._judged_origin(origin):
-            risk = smuggling_risk_url(red.strip()) if _is_url(red) else smuggling_risk_text(red)
+            risk = smuggling_risk_url(red.strip()) if _is_url(red) else smuggling_risk_text(strip_injected(red))
             if risk is not None:
                 sensitive, reason = True, f"smuggling: {risk}"
             else:
                 judged = True
-                sensitive = bool(self.judge.is_sensitive(red))
+                own = strip_injected(red)
+                sensitive = bool(own.strip()) and self._judge(own)
                 reason = "judge" if sensitive else "clean"
         return ScanResult(red, findings, judged, sensitive, reason, new, h, size), len(merged)
 

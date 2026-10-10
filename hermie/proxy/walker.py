@@ -7,6 +7,7 @@ import re
 from dataclasses import dataclass, field
 from typing import Literal
 
+from hermie.gate.gate import strip_injected
 from hermie.gate.types import Origin
 
 SKIP_KEYS = {
@@ -17,6 +18,7 @@ SKIP_KEYS = {
 
 WITHHELD_NOTE = ('[hermie withheld this tool result (id {id}): {size}, {reason}. '
                  'The user can release it with "hermie allow {id}".]')
+DROPPED_NOTE = "[hermie withheld a message you rejected earlier (id {id}); release with \"hermie allow {id}\"]"
 WITHHELD_IMAGE = "[hermie withheld an image (id {id}); release with \"hermie allow {id}\"]"
 WITHHELD_UNSCANNED = ("[hermie withheld this tool result (id {id}): {size}, {reason}. It could not be scanned, so it "
                       "cannot be released.]")
@@ -268,9 +270,13 @@ class _Walker:
         if origin is Origin.USER:
             if not unscanned and self.approvals.is_allowed(res.hash, res.reason):
                 self.out.decisions.append(Decision("pass", did, res.reason, size, res.hash, **meta))
+            elif not unscanned and res.hash in self.approvals.dropped:
+                # rejected before and now only history: keep the conversation usable, the text stays home
+                self.out.decisions.append(Decision("withhold", did, "rejected earlier", size, res.hash, **meta))
+                return self.apply(parent, key, DROPPED_NOTE.format(id=did))
             else:
                 # a detector error's text is the raw text: no excerpt
-                excerpt = "" if unscanned else " ".join(res.text[:400].split())[:200]
+                excerpt = "" if unscanned else " ".join(strip_injected(res.text)[:400].split())[:200]
                 d = Decision("hold", did, res.reason, size, res.hash, excerpt, **meta)
                 self.out.decisions.append(d)
                 if not self.observe:

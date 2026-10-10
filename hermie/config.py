@@ -71,6 +71,11 @@ class Config:
         return self._under("allowed.jsonl")
 
     @property
+    def judge_cache_path(self) -> Path | None:
+        """Judge verdicts keyed by a hash of the judged text and the judge spec; no text."""
+        return self._under("judge_cache.jsonl")
+
+    @property
     def receipt_path(self) -> Path | None:
         return self._under("receipt.jsonl")
 

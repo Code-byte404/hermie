@@ -1,5 +1,5 @@
 import asyncio, io, json, os, stat, pytest
-from hermie.proxy.approvals import AllowStore, SessionAllow, Approvals, TtyPrompter, NoPrompter, PendingItem
+from hermie.proxy.approvals import AllowStore, SessionAllow, Approvals, TtyPrompter, NoPrompter, DialogPrompter, PendingItem
 
 
 def test_allow_store_prefix_and_persistence(tmp_path):
@@ -148,3 +148,74 @@ def test_register_returns_assigned_id_and_sets_it_on_item(tmp_path):
     idb = s.register(b)
     assert len(idb) == 6 and b.id == idb
     assert set(s.pending) == {"ab12", idb}
+
+
+def _dialog(answers):
+    """A fake osascript runner: returns the next scripted button, records each (title, text, buttons)."""
+    seen = []
+
+    async def run(title, text, buttons, timeout_s):
+        seen.append((title, text, buttons))
+        return answers.pop(0)
+    return run, seen
+
+
+async def test_dialog_prompter_asks_once():
+    item = PendingItem(hash="cafe" + "0" * 60, kind="message", reason="judge", size=40, excerpt="the layoff list", id="cafe")
+    run, seen = _dialog(["Send"])
+    assert await DialogPrompter(5, runner=run).ask(item) == "send"
+    assert len(seen) == 1 and "layoff" in seen[0][1] and "cafe" in seen[0][1]
+    for button, want in (("Reject", "reject"), ("Allow session", "allow_all"), (None, "reject")):
+        run, seen = _dialog([button])
+        assert await DialogPrompter(5, runner=run).ask(item) == want and len(seen) == 1
+
+    async def broken(*a):
+        raise OSError("no osascript")
+    assert await DialogPrompter(5, runner=broken).ask(item) == "reject"
+
+
+async def test_dialog_prompter_reuses_the_answer_for_a_request_that_wraps_the_same_text():
+    text = "Our patient was diagnosed with stage 2 breast cancer last month and her family is struggling"
+    main = PendingItem(hash="aaaa" + "0" * 60, kind="message", reason="judge", size=90, excerpt=text)
+    title = PendingItem(hash="bbbb" + "0" * 60, kind="message", reason="judge", size=300,
+                        excerpt=f"<session> {text} </session> Write the title in the predominant language")
+    other = PendingItem(hash="cccc" + "0" * 60, kind="message", reason="judge", size=40, excerpt="the layoff list is final")
+    run, seen = _dialog(["Send", "Reject"])
+    p = DialogPrompter(5, runner=run)
+    assert await p.ask(main) == "send"
+    assert await p.ask(title) == "send" and len(seen) == 1      # same text, no second dialog
+    assert await p.ask(other) == "reject" and len(seen) == 2    # unrelated text asks again
+
+
+async def test_mod_prompter_waits_for_the_menu_answer_and_publishes_no_text(tmp_path):
+    from hermie.proxy.approvals import ModPrompter, read_asks, touch_ui, write_answer
+    item = PendingItem(hash="cafe" + "0" * 60, kind="message", reason="judge", size=40, excerpt="the layoff list", id="cafe")
+    touch_ui(tmp_path)
+    p = ModPrompter(tmp_path, 5, poll_s=0.01)
+    task = asyncio.create_task(p.ask(item))
+    for _ in range(100):
+        await asyncio.sleep(0.01)
+        if read_asks(tmp_path):
+            break
+    asks = read_asks(tmp_path)
+    assert asks == [{"id": "cafe", "kind": "message", "reason": "judge", "size": 40}]
+    assert "layoff" not in (tmp_path / "asks.json").read_text()
+    assert write_answer(tmp_path, "cafe", "session") and not write_answer(tmp_path, "nope", "send")
+    assert await task == "allow_all"
+    assert read_asks(tmp_path) == []
+
+
+async def test_mod_prompter_falls_back_when_no_menu_polls(tmp_path):
+    from hermie.proxy.approvals import ModPrompter
+    item = PendingItem(hash="cafe" + "0" * 60, kind="message", reason="judge", size=40, excerpt="x", id="cafe")
+    run, seen = _dialog(["Send"])
+    p = ModPrompter(tmp_path, 5, fallback=DialogPrompter(5, runner=run))
+    assert await p.ask(item) == "send" and len(seen) == 1
+    assert await ModPrompter(tmp_path, 5).ask(item) == "reject"
+
+
+async def test_mod_prompter_rejects_on_timeout(tmp_path):
+    from hermie.proxy.approvals import ModPrompter, touch_ui
+    item = PendingItem(hash="cafe" + "0" * 60, kind="message", reason="judge", size=40, excerpt="x", id="cafe")
+    touch_ui(tmp_path)
+    assert await ModPrompter(tmp_path, 0.1, poll_s=0.01).ask(item) == "reject"

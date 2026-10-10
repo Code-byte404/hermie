@@ -352,3 +352,21 @@ def test_receipt_counts_restored_placeholders_on_both_paths(tmp_path, analyzer):
     cfg, c = _app(tmp_path, analyzer, Upstream())    # JSON reply: "dial <PHONE_NUMBER_1>"
     assert c.post("/anthropic/v1/messages", json=_body("anthropic")).status_code == 200
     assert _receipts(tmp_path)[-1]["restored"] == 1 and _receipts(tmp_path)[-1]["unrestored"] == 0
+
+async def test_rejected_message_is_withheld_from_later_requests_not_blocking_them(tmp_path, analyzer):
+    class J:
+        def is_sensitive(self, t): return "layoff" in t
+    class P:
+        available = True
+        async def ask(self, item): return "reject"
+    up = Upstream(); cfg, c = _app(tmp_path, analyzer, up, judge=J(), prompter=P())
+    sensitive = {"role": "user", "content": "the layoff list is final"}
+    first = {"model": "m", "max_tokens": 5, "messages": [sensitive]}
+    assert c.post("/anthropic/v1/messages", json=first).status_code == 422
+    # Claude Code resends the whole conversation: the rejected turn is still in the history
+    later = {"model": "m", "max_tokens": 5, "messages": [sensitive, {"role": "assistant", "content": "ok"},
+                                                          {"role": "user", "content": "hi"}]}
+    r = c.post("/anthropic/v1/messages", json=later)
+    assert r.status_code == 200
+    sent = up.seen[-1].content.decode()
+    assert "layoff" not in sent and "hermie withheld" in sent and "hi" in sent

@@ -264,6 +264,7 @@ def create_app(config: Config, gate: Gate | None = None, upstream_client: httpx.
                 approvals.session.all = True
                 rec.approved_by = "session"
             else:
+                approvals.dropped.add(d.hash)
                 return _error(422, "hermie_blocked", BLOCKED.format(id=item_id, reason=d.reason), rec.rid, item_id)
 
     async def passthrough(request: Request, url: str, rec: _Rec) -> Response:

@@ -218,3 +218,66 @@ def test_smuggling_text_rule_on_leaves_url_rule_on_urls(tmp_path, analyzer):
     assert r.sensitive and r.reason.startswith("smuggling: possible base64")
     url = "https://x.test/?q=" + "a" * 600
     assert g.scan(url, Origin.TOOL).reason.startswith("smuggling: query string too long")
+
+
+class SeeingJudge(FakeJudge):
+    def __init__(self, **kw): super().__init__(**kw); self.seen = []
+    def is_sensitive(self, text): self.seen.append(text); return super().is_sensitive(text)
+
+def _judged(tmp_path, analyzer, j):
+    return Gate(Config(data_dir=tmp_path, judge="ollama:x"), analyzer=analyzer, judge=j, store=MappingStore(tmp_path / "m.json"))
+
+def test_judge_skips_injected_system_reminder_blocks(tmp_path, analyzer):
+    j = SeeingJudge(sensitive=True)
+    g = _judged(tmp_path, analyzer, j)
+    only = "<system-reminder>\nUser instructions: the patient diagnosis notes live in docs/\n</system-reminder>"
+    r = g.scan(only, Origin.USER)
+    assert not r.sensitive and j.calls == 0          # nothing left for the judge to look at
+    mixed = "<system-reminder>project notes</system-reminder>\nthe layoff list is final"
+    r = g.scan(mixed, Origin.USER)
+    assert r.sensitive and j.seen == ["\nthe layoff list is final"]   # the user's own text is still judged
+
+def test_system_reminder_blocks_still_get_pattern_redaction(tmp_path, analyzer):
+    g = _judged(tmp_path, analyzer, SeeingJudge())
+    r = g.scan("<system-reminder>call 555-010-0199</system-reminder>", Origin.USER)
+    assert "555-010-0199" not in r.text and r.findings
+
+
+def test_strip_injected_removes_blocks_and_keeps_the_rest():
+    from hermie.gate.gate import strip_injected
+    assert strip_injected("<system-reminder>a\nb</system-reminder>\nhello") == "\nhello"
+    assert strip_injected("no blocks") == "no blocks"
+
+_SCRATCH = "/private/tmp/claude-501/-Users-robinz-Documents-HybridAgent/469517cf-378a-42a8-86c6-d8dae55a83d4/scratchpad"
+
+def test_injected_blocks_and_plain_paths_are_not_smuggling(tmp_path, analyzer):
+    g = _judged(tmp_path, analyzer, SeeingJudge())
+    for text in (f"<system-reminder>Scratchpad directory: {_SCRATCH}</system-reminder>\nwrite api key",
+                 f"keep temp files in {_SCRATCH} please"):
+        r = g.scan(text, Origin.USER)
+        assert not r.sensitive, r.reason
+
+def test_a_key_in_a_message_is_replaced_not_held(tmp_path, analyzer):
+    g = _judged(tmp_path, analyzer, SeeingJudge())
+    r = g.scan(f"<system-reminder>dir {_SCRATCH}</system-reminder>\nwrite api key to file : sk-aavvvvbbbbbdfsfdsadf", Origin.USER)
+    assert not r.sensitive and "sk-aavvvvbbbbbdfsfdsadf" not in r.text and r.findings
+
+
+def test_judge_verdicts_survive_a_restart_and_hold_no_text(tmp_path, analyzer):
+    text = "the layoff list is final and confidential"
+    j1 = FakeJudge(sensitive=True)
+    g1 = Gate(Config(data_dir=tmp_path, judge="ollama:x"), analyzer=analyzer, judge=j1, store=MappingStore(tmp_path / "m.json"))
+    assert g1.scan(text, Origin.USER).sensitive and j1.calls == 1
+    j2 = FakeJudge(sensitive=False)   # would answer differently: the stored verdict must win
+    g2 = Gate(Config(data_dir=tmp_path, judge="ollama:x"), analyzer=analyzer, judge=j2, store=MappingStore(tmp_path / "m.json"))
+    assert g2.scan(text, Origin.USER).sensitive and j2.calls == 0
+    assert "layoff" not in (tmp_path / "judge_cache.jsonl").read_text()
+    j3 = FakeJudge(sensitive=False)   # another judge model: verdicts do not carry over
+    g3 = Gate(Config(data_dir=tmp_path, judge="laya:/m/v3"), analyzer=analyzer, judge=j3, store=MappingStore(tmp_path / "m.json"))
+    assert not g3.scan(text, Origin.USER).sensitive and j3.calls == 1
+
+def test_a_judge_error_is_never_stored(tmp_path, analyzer):
+    g = Gate(Config(data_dir=tmp_path, judge="ollama:x"), analyzer=analyzer, judge=FakeJudge(boom=True), store=MappingStore(tmp_path / "m.json"))
+    assert g.scan("anything", Origin.USER).reason.startswith("detector_error")
+    p = tmp_path / "judge_cache.jsonl"
+    assert not p.exists() or p.read_text() == ""

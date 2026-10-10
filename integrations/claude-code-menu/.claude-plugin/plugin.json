@@ -1,0 +1,9 @@
+{
+  "name": "hermie",
+  "version": "0.1.0",
+  "description": "Hermie menu for Claude Code: answers held messages in the TUI and shows replaced counts",
+  "types": "./types/index.d.ts",
+  "author": {
+    "name": "Code-byte404"
+  }
+}
