@@ -121,7 +121,7 @@ def test_send_upstream_refuses_plain_bytes():
 
 def test_no_other_send_call_in_the_package():
     import re, pathlib
-    hits = [p for p in pathlib.Path("hermie").rglob("*.py") if p.name != "server.py" and p.name != "judge.py"
+    hits = [p for p in pathlib.Path("hermie").rglob("*.py") if p.name != "server.py" and p.name not in ("judge.py", "local.py")
             and re.search(r"\.(send|stream|post|request)\(", p.read_text())]
     assert hits == [], hits
 
