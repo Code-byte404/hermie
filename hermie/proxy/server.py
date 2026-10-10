@@ -246,6 +246,7 @@ def create_app(config: Config, gate: Gate | None = None, upstream_client: httpx.
 
     async def walk(body: dict, rec: _Rec):
         """Walk, asking the user about held messages; return the result or a 422 response."""
+        local_tried: set[str] = set()
         while True:
             ctx = contextvars.copy_context()
             ctx.run(_tally.set, rec.tally)
@@ -270,10 +271,12 @@ def create_app(config: Config, gate: Gate | None = None, upstream_client: httpx.
                 rec.approved_by = "session"
             elif choice == "local" and rewriter is not None:
                 rewritten = None
-                try:
-                    rewritten = await rewriter.rewrite(result.held_text or "")
-                except Exception:   # a broken rewriter is a failed rewrite, never a crash
-                    rewritten = None
+                if d.hash not in local_tried:   # a second local answer for the same message is a failure
+                    local_tried.add(d.hash)
+                    try:
+                        rewritten = await rewriter.rewrite(result.held_text or "")
+                    except Exception:   # a broken rewriter is a failed rewrite, never a crash
+                        rewritten = None
                 if rewritten is not None:
                     ctx = contextvars.copy_context()
                     ctx.run(_tally.set, rec.tally)

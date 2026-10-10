@@ -247,3 +247,36 @@ def test_detector_error_user_leaf_is_not_replaced_by_a_cached_rewrite(tmp_path):
     out = walk_request(json.loads(json.dumps(body)), gate, approvals, cfg)
     assert out.held is not None and out.held.reason.startswith("detector_error")
     assert "harmless sentence" not in json.dumps(out.body)
+
+
+def test_cached_rewrite_wins_over_an_allow_for_the_same_hash(tmp_path, analyzer):
+    cfg, gate = _gate(tmp_path, analyzer, judge=_Judge())
+    first = walk_request(_msg_body("the layoff list is final"), gate, Allow(), cfg)
+    approvals = Allow(ids=[first.held.hash[:4]])
+    approvals.rewrites = {first.held.hash: "[rewritten locally] a staffing plan is final"}
+    out = walk_request(_msg_body("the layoff list is final"), gate, approvals, cfg)
+    assert out.held is None
+    assert out.body["messages"][0]["content"] == "[rewritten locally] a staffing plan is final"
+
+
+def test_cached_rewrite_is_rescanned_against_the_mapping(tmp_path, analyzer):
+    cfg, gate = _gate(tmp_path, analyzer, judge=_Judge())
+    first = walk_request(_msg_body("the layoff list is final"), gate, Allow(), cfg)
+    MappingStore(cfg.mapping_path).add({"<PROJECT_1>": "zebrafish"})
+    approvals = Allow()
+    approvals.rewrites = {first.held.hash: "[rewritten locally] the zebrafish plan is final"}
+    out = walk_request(_msg_body("the layoff list is final"), gate, approvals, cfg)
+    content = out.body["messages"][0]["content"]
+    assert out.held is None and "zebrafish" not in content and content.count("[rewritten locally] ") == 1
+
+
+def test_stale_rewrite_that_is_now_sensitive_is_dropped_and_held_again(tmp_path, analyzer):
+    class J:
+        def is_sensitive(self, t): return "layoff" in t or "MARKER" in t
+    cfg, gate = _gate(tmp_path, analyzer, judge=J())
+    first = walk_request(_msg_body("the layoff list is final"), gate, Allow(), cfg)
+    approvals = Allow()
+    approvals.rewrites = {first.held.hash: "[rewritten locally] MARKER plan"}
+    out = walk_request(_msg_body("the layoff list is final"), gate, approvals, cfg)
+    assert out.held is not None and approvals.rewrites == {}
+    assert "MARKER" not in json.dumps(out.body)

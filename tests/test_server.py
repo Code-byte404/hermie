@@ -429,6 +429,7 @@ def test_local_failures_drop_the_message_and_cache_nothing(tmp_path, analyzer, r
     assert r.status_code == 422 and r.json()["error"]["type"] == "hermie_blocked"
     assert "local model" in r.json()["error"]["message"] and up.seen == []
     assert c.app.state.approvals.rewrites == {}
+    assert len(c.app.state.approvals.dropped) == 1
     assert _SENS["content"] not in json.dumps(r.json())
 
 def test_local_answer_without_a_configured_rewriter_is_a_reject(tmp_path, analyzer):
@@ -439,3 +440,25 @@ def test_local_answer_without_a_configured_rewriter_is_a_reject(tmp_path, analyz
     c = TestClient(server.create_app(cfg, gate=gate, upstream_client=client, prompter=p))
     assert c.post("/anthropic/v1/messages", json=_first()).status_code == 422
     assert p.items[0].local_ok is False and up.seen == []
+
+
+def test_cached_rewrite_wins_over_session_allow(tmp_path, analyzer):
+    up = Upstream(); rw = _Rewriter(); p = _LocalPrompter()
+    cfg, c = _local_app(tmp_path, analyzer, up, rw, p)
+    assert c.post("/anthropic/v1/messages", json=_first()).status_code == 200
+    c.app.state.approvals.session.all = True
+    assert c.post("/anthropic/v1/messages", json=_first()).status_code == 200
+    sent = up.seen[-1].content.decode()
+    assert "layoff" not in sent and "a staffing reduction plan is final" in sent
+
+
+def test_local_loop_is_bounded(tmp_path, analyzer):
+    class J:
+        def is_sensitive(self, t): return "layoff" in t or t.startswith("[rewritten locally]")
+    up = Upstream(); p = _LocalPrompter(); rw = _Rewriter()
+    cfg = Config(data_dir=tmp_path, judge="ollama:x", local_model="ollama:m")
+    gate = Gate(cfg, analyzer=analyzer, judge=J(), store=MappingStore(cfg.mapping_path))
+    client = httpx.AsyncClient(transport=httpx.MockTransport(up))
+    c = TestClient(server.create_app(cfg, gate=gate, upstream_client=client, prompter=p, rewriter=rw))
+    r = c.post("/anthropic/v1/messages", json=_first())
+    assert r.status_code == 422 and len(p.items) <= 2 and up.seen == []

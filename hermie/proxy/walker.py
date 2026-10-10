@@ -269,11 +269,18 @@ class _Walker:
         # a detector error has no scanned form: never released (not by `hermie allow`, not by the session switch)
         unscanned = res.reason.startswith("detector_error")
         if origin is Origin.USER:
+            stored = None if unscanned else getattr(self.approvals, "rewrites", {}).get(res.hash)
+            if stored is not None:
+                # a cached rewrite goes through the known-values pass again: the mapping may have grown since
+                res2 = self.gate.scan(stored, Origin.USER)
+                if res2.sensitive:
+                    self.approvals.rewrites.pop(res.hash, None)
+                    stored = None
+            if stored is not None:
+                self.out.decisions.append(Decision("pass", did, "local", size, res.hash, **meta))
+                return self.apply(parent, key, res2.text)
             if not unscanned and self.approvals.is_allowed(res.hash, res.reason):
                 self.out.decisions.append(Decision("pass", did, res.reason, size, res.hash, **meta))
-            elif not unscanned and res.hash in getattr(self.approvals, "rewrites", {}):
-                self.out.decisions.append(Decision("pass", did, "local", size, res.hash, **meta))
-                return self.apply(parent, key, self.approvals.rewrites[res.hash])
             elif not unscanned and res.hash in self.approvals.dropped:
                 # rejected before and now only history: keep the conversation usable, the text stays home
                 self.out.decisions.append(Decision("withhold", did, "rejected earlier", size, res.hash, **meta))
