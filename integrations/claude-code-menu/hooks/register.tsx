@@ -66,6 +66,9 @@ export const register: Register = on => {
         { value: 'reject', label: 'Reject', hotkey: '1', note: 'keep it on this machine' },
         { value: 'send', label: 'Send as is', hotkey: '2', note: 'release this one message' },
         { value: 'session', label: 'Allow session', hotkey: '3', note: 'release judge holds until serve restarts' },
+        ...(a.local
+          ? [{ value: 'local', label: 'Rewrite locally', hotkey: '4', note: 'local model removes the specifics, then send' }]
+          : []),
       ]
 
       return (
