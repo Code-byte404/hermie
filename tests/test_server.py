@@ -391,12 +391,15 @@ class _AskOnlyPrompter:   # no review step, like the terminal prompter
     async def ask(self, item): return "local"
 
 class _Rewriter:
-    def __init__(self, out="a staffing reduction plan is final", raises=False):
+    """Fake local span finder: `out` is a list of (span, entity) pairs, a list of such lists (one per call), or None."""
+    def __init__(self, out=(("layoff", "FACT"),), raises=False):
         self.out, self.raises, self.calls = out, raises, 0
-    async def rewrite(self, text):
+    async def spans(self, text):
         self.calls += 1
         if self.raises: raise RuntimeError("down")
-        return self.out[self.calls - 1] if isinstance(self.out, list) else self.out
+        if self.out is not None and self.out and isinstance(self.out[0], list):
+            return self.out[self.calls - 1]
+        return list(self.out) if self.out is not None else None
 
 def _local_app(tmp_path, analyzer, up, rewriter, prompter=None):
     cfg = Config(data_dir=tmp_path, judge="ollama:x", local_model="ollama:m")
@@ -408,15 +411,23 @@ def _local_app(tmp_path, analyzer, up, rewriter, prompter=None):
 _SENS = {"role": "user", "content": "the layoff list is final"}
 def _first(): return {"model": "m", "max_tokens": 5, "messages": [_SENS]}
 
-def test_local_choice_sends_only_the_rewrite(tmp_path, analyzer):
+def test_local_choice_sends_placeholders_for_the_spans(tmp_path, analyzer):
     up = Upstream(); rw = _Rewriter(); p = _LocalPrompter()
     cfg, c = _local_app(tmp_path, analyzer, up, rw, p)
     assert c.post("/anthropic/v1/messages", json=_first()).status_code == 200
     sent = up.seen[-1].content.decode()
-    assert "layoff" not in sent and "[rewritten locally] a staffing reduction plan is final" in sent
-    assert p.items[0].local_ok is True
+    assert "layoff" not in sent and "the <FACT_1> list is final" in sent
+    assert p.shown == ["the <FACT_1> list is final"] and p.items[0].local_ok is True
+    assert json.loads(cfg.mapping_path.read_text())["mapping"]["<FACT_1>"] == "layoff"   # restored in the reply
     line = _receipts(tmp_path)[-1]
-    assert line["approved_by"] == "local" and "layoff" not in json.dumps(line) and "staffing" not in json.dumps(line)
+    assert line["approved_by"] == "local" and "layoff" not in json.dumps(line)
+
+def test_local_every_occurrence_of_a_span_is_replaced_and_the_same_value_shares_a_placeholder(tmp_path, analyzer):
+    up = Upstream(); p = _LocalPrompter()
+    body = {"model": "m", "max_tokens": 5, "messages": [{"role": "user", "content": "layoff here, layoff there, the layoff"}]}
+    cfg, c = _local_app(tmp_path, analyzer, up, _Rewriter(), p)
+    assert c.post("/anthropic/v1/messages", json=body).status_code == 200
+    assert p.shown == ["<FACT_1> here, <FACT_1> there, the <FACT_1>"]
 
 def test_local_rewrite_is_cached_across_resends(tmp_path, analyzer):
     up = Upstream(); rw = _Rewriter(); p = _LocalPrompter()
@@ -426,41 +437,40 @@ def test_local_rewrite_is_cached_across_resends(tmp_path, analyzer):
                                                           {"role": "user", "content": "hi"}]}
     assert c.post("/anthropic/v1/messages", json=later).status_code == 200
     assert rw.calls == 1 and len(p.items) == 1
-    assert "layoff" not in up.seen[-1].content.decode() and "a staffing reduction plan is final" in up.seen[-1].content.decode()
+    assert "layoff" not in up.seen[-1].content.decode() and "the <FACT_1> list is final" in up.seen[-1].content.decode()
 
-@pytest.mark.parametrize("rewriter", [_Rewriter(out=None), _Rewriter(raises=True), _Rewriter(out="x" * 3001)])
+@pytest.mark.parametrize("rewriter", [_Rewriter(out=None), _Rewriter(out=()), _Rewriter(raises=True)])
 def test_local_failures_drop_the_message_and_cache_nothing(tmp_path, analyzer, rewriter):
     up = Upstream(); p = _LocalPrompter()
     cfg, c = _local_app(tmp_path, analyzer, up, rewriter, p)
     r = c.post("/anthropic/v1/messages", json=_first())
     assert r.status_code == 422 and r.json()["error"]["type"] == "hermie_blocked"
-    assert "local" in r.json()["error"]["message"] and up.seen == []
+    assert "local" in r.json()["error"]["message"] and up.seen == [] and p.shown == []
     assert c.app.state.approvals.rewrites == {}
     assert len(c.app.state.approvals.dropped) == 1
     assert _SENS["content"] not in json.dumps(r.json())
 
 def test_local_rewrite_is_not_judged_the_person_decides(tmp_path, analyzer):
     up = Upstream(); p = _LocalPrompter()
-    cfg, c = _local_app(tmp_path, analyzer, up, _Rewriter(out="the layoff list is final, rephrased"), p)
+    cfg, c = _local_app(tmp_path, analyzer, up, _Rewriter(out=(("list", "FACT"),)), p)   # "layoff" stays: the judge would flag it
     assert c.post("/anthropic/v1/messages", json=_first()).status_code == 200
-    assert p.shown == ["the layoff list is final, rephrased"]
-    assert "[rewritten locally] the layoff list is final, rephrased" in up.seen[-1].content.decode()
+    assert p.shown == ["the layoff <FACT_1> is final"]
 
-def test_local_rewrite_shown_is_the_scanned_text(tmp_path, analyzer):
+def test_local_rewrite_shown_is_also_pattern_scanned(tmp_path, analyzer):
     up = Upstream(); p = _LocalPrompter()
-    cfg, c = _local_app(tmp_path, analyzer, up, _Rewriter(out="a staffing plan, mail pat.lee@acme-test.net"), p)
-    assert c.post("/anthropic/v1/messages", json=_first()).status_code == 200
+    body = {"model": "m", "max_tokens": 5, "messages": [{"role": "user", "content": "the layoff list, mail pat.lee@acme-test.net"}]}
+    cfg, c = _local_app(tmp_path, analyzer, up, _Rewriter(), p)   # the model missed the address; the patterns do not
+    assert c.post("/anthropic/v1/messages", json=body).status_code == 200
     assert "pat.lee@acme-test.net" not in p.shown[0] and "<EMAIL_ADDRESS_" in p.shown[0]
     assert "pat.lee@acme-test.net" not in up.seen[-1].content.decode()
 
-def test_local_again_rewrites_again_then_sends(tmp_path, analyzer):
+def test_local_again_asks_the_model_again_then_sends(tmp_path, analyzer):
     up = Upstream(); p = _LocalPrompter(verdicts=("again", "send"))
-    rw = _Rewriter(out=["first version", "second version"])
+    rw = _Rewriter(out=[[("layoff", "FACT")], [("layoff", "FACT"), ("final", "FACT")]])
     cfg, c = _local_app(tmp_path, analyzer, up, rw, p)
     assert c.post("/anthropic/v1/messages", json=_first()).status_code == 200
-    assert rw.calls == 2 and p.shown == ["first version", "second version"]
-    sent = up.seen[-1].content.decode()
-    assert "second version" in sent and "first version" not in sent
+    assert rw.calls == 2 and p.shown == ["the <FACT_1> list is final", "the <FACT_1> list is <FACT_2>"]
+    assert "the <FACT_1> list is <FACT_2>" in up.seen[-1].content.decode()
 
 def test_local_discard_drops_the_message(tmp_path, analyzer):
     up = Upstream(); p = _LocalPrompter(verdicts=("discard",))
@@ -476,8 +486,9 @@ def test_local_without_a_review_step_is_a_discard(tmp_path, analyzer):
 
 def test_local_too_long_rewrite_is_never_shown(tmp_path, analyzer):
     up = Upstream(); p = _LocalPrompter()
-    cfg, c = _local_app(tmp_path, analyzer, up, _Rewriter(out="x" * 3001), p)
-    r = c.post("/anthropic/v1/messages", json=_first())
+    body = {"model": "m", "max_tokens": 5, "messages": [{"role": "user", "content": "layoff " + "x" * 3001}]}
+    cfg, c = _local_app(tmp_path, analyzer, up, _Rewriter(), p)
+    r = c.post("/anthropic/v1/messages", json=body)
     assert r.status_code == 422 and "too long to review" in r.json()["error"]["message"] and p.shown == []
 
 def test_local_answer_without_a_configured_rewriter_is_a_reject(tmp_path, analyzer):
@@ -497,4 +508,4 @@ def test_cached_rewrite_wins_over_session_allow(tmp_path, analyzer):
     c.app.state.approvals.session.all = True
     assert c.post("/anthropic/v1/messages", json=_first()).status_code == 200
     sent = up.seen[-1].content.decode()
-    assert "layoff" not in sent and "a staffing reduction plan is final" in sent
+    assert "layoff" not in sent and "the <FACT_1> list is final" in sent

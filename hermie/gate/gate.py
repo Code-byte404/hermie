@@ -163,6 +163,30 @@ class Gate:
         self._remember(key, res, gen, searched)
         return res
 
+    def redact_spans(self, text: str, spans: list[tuple[str, str]]) -> str:
+        """Replace every literal occurrence of each (value, entity) span with its placeholder, minting and persisting
+        new ones like a scan does. Used for spans a local model found; the placeholders restore in the reply."""
+        self._sync()   # MappingStoreError propagates on purpose
+        findings = []
+        for value, entity in spans:
+            if not value or PLACEHOLDER.fullmatch(value):
+                continue
+            i = text.find(value)
+            while i != -1:
+                findings.append(Finding(entity, i, i + len(value), 1.0))
+                i = text.find(value, i + len(value))
+        out: dict = {}
+
+        def mint(current: dict[str, str], counters: dict[str, int]) -> dict[str, str]:
+            out["red"], new = redact(text, findings, existing=current, counters=counters)
+            return new
+
+        with self._mint_lock:
+            merged = self.store.update(mint)
+            with self._lock:
+                self._mapping = merged
+        return out["red"]
+
     _VERDICT_KEEP = 50_000
 
     def _verdict_key(self, text: str) -> str:

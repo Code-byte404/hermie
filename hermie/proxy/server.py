@@ -25,7 +25,7 @@ from starlette.routing import Route
 
 from hermie.config import Config
 from hermie.gate.gate import Gate, certify_body, empty_body
-from hermie.gate.local import LOCAL_PREFIX, make_local
+from hermie.gate.local import make_local
 from hermie.gate.redact import MappingStoreError
 from hermie.gate.types import CleanBody, Origin
 from hermie.proxy.approvals import AllowStore, Approvals, NoPrompter, PendingItem, SessionAllow
@@ -280,16 +280,19 @@ def create_app(config: Config, gate: Gate | None = None, upstream_client: httpx.
                 review = getattr(prompter, "review", None)
                 while True:
                     try:
-                        rewritten = await rewriter.rewrite(result.held_text or "")
+                        spans = await rewriter.spans(result.held_text or "")
                     except Exception:   # a broken rewriter is a failed rewrite, never a crash
-                        rewritten = None
+                        spans = None
                     shown = None
-                    if rewritten is not None:
-                        # patterns and known values only: the person reads the rewrite and decides, so no judge here
+                    if spans:
+                        # the specifics become placeholders (restored in the reply); patterns and known values scan the
+                        # result, without the judge: the person reads it and decides
                         ctx = contextvars.copy_context()
                         ctx.run(_tally.set, rec.tally)
-                        scanned = await asyncio.to_thread(ctx.run, gate.scan, rewritten, Origin.OTHER)
-                        if not scanned.sensitive and len(scanned.text) <= REVIEW_MAX_CHARS:
+                        red = await asyncio.to_thread(ctx.run, gate.redact_spans, result.held_text or "", spans)
+                        scanned = await asyncio.to_thread(ctx.run, gate.scan, red, Origin.OTHER)
+                        if (not scanned.sensitive and scanned.text != result.held_text
+                                and len(scanned.text) <= REVIEW_MAX_CHARS):
                             shown = scanned.text
                     if shown is None:
                         approvals.dropped.add(d.hash)
@@ -298,7 +301,7 @@ def create_app(config: Config, gate: Gate | None = None, upstream_client: httpx.
                     if verdict == "again":
                         continue
                     if verdict == "send":
-                        approvals.rewrites[d.hash] = LOCAL_PREFIX + shown
+                        approvals.rewrites[d.hash] = shown
                         rec.approved_by = "local"
                         break
                     approvals.dropped.add(d.hash)

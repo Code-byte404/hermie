@@ -65,13 +65,13 @@ export const register: Register = on => {
       if (a.kind === 'rewrite') {
         const reviewChoices = [
           { value: 'reject', label: 'Discard', hotkey: '1', note: 'send nothing' },
-          { value: 'again', label: 'Rewrite again', hotkey: '2', note: 'ask the local model for another version' },
+          { value: 'again', label: 'Redo', hotkey: '2', note: 'the local model looks again' },
           { value: 'send', label: 'Send', hotkey: '3', note: 'send exactly this text' },
         ]
         return (
           <Box flexDirection="column" borderStyle="round" borderColor="permission" paddingX={1}>
             <Text bold color="warning">
-              Local rewrite of message {a.id}: this is what would be sent
+              Message {a.id} with its specifics hidden: this is what would be sent
             </Text>
             <Box marginTop={1}>
               <Text>{a.preview ?? ''}</Text>
@@ -99,7 +99,7 @@ export const register: Register = on => {
         { value: 'send', label: 'Send as is', hotkey: '2', note: 'release this one message' },
         { value: 'session', label: 'Allow session', hotkey: '3', note: 'release judge holds until serve restarts' },
         ...(a.local
-          ? [{ value: 'local', label: 'Rewrite locally', hotkey: '4', note: 'local model removes the specifics, then send' }]
+          ? [{ value: 'local', label: 'Rewrite locally', hotkey: '4', note: 'local model hides the specifics as placeholders, you review' }]
           : []),
       ]
 

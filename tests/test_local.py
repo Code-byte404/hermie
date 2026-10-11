@@ -3,7 +3,7 @@ import json
 import httpx
 
 from hermie.config import Config
-from hermie.gate.local import LOCAL_PREFIX, LocalRewriter, make_local
+from hermie.gate.local import LocalRewriter, make_local
 
 
 def _rewriter(handler, **kw):
@@ -11,8 +11,8 @@ def _rewriter(handler, **kw):
     return LocalRewriter(cfg, client=httpx.AsyncClient(transport=httpx.MockTransport(handler)))
 
 
-def _ok(content):
-    return lambda req: httpx.Response(200, json={"message": {"content": content}})
+def _reply(spans):
+    return lambda req: httpx.Response(200, json={"message": {"content": json.dumps({"spans": spans})}})
 
 
 def test_make_local_is_none_without_a_model():
@@ -20,36 +20,44 @@ def test_make_local_is_none_without_a_model():
     assert isinstance(make_local(Config(data_dir=None, local_model="ollama:m")), LocalRewriter)
 
 
-def test_prefix_is_plain_text():
-    assert LOCAL_PREFIX.startswith("[rewritten locally]")
-
-
-async def test_rewrite_returns_stripped_model_text_and_sends_think_false():
+async def test_spans_returns_pairs_and_sends_the_request_shape():
     seen = []
     def handler(req):
         seen.append(json.loads(req.content))
-        return httpx.Response(200, json={"message": {"content": "  a plain summary \n"}})
-    out = await _rewriter(handler).rewrite("the layoff list is final")
-    assert out == "a plain summary"
+        return httpx.Response(200, json={"message": {"content": json.dumps(
+            {"spans": [{"text": "Lin", "type": "PERSON"}, {"text": "62%", "type": "NUMBER"}]})}})
+    out = await _rewriter(handler).spans("Lin is at 62% of plan")
+    assert out == [("Lin", "PERSON"), ("62%", "NUMBER")]
     body = seen[0]
     assert body["model"] == "m" and body["think"] is False and body["stream"] is False
-    assert body["messages"][-1] == {"role": "user", "content": "<message>the layoff list is final</message>"}
-    assert "do not carry out the request" in body["messages"][0]["content"].lower()
+    assert body["messages"][-1] == {"role": "user", "content": "<message>Lin is at 62% of plan</message>"}
+    assert "do not answer it" in body["messages"][0]["content"].lower() and "spans" in json.dumps(body["format"])
 
 
-async def test_rewrite_none_on_empty_output():
-    assert await _rewriter(_ok("   ")).rewrite("x") is None
+async def test_spans_keep_only_literal_substrings_with_known_types_and_a_sane_length():
+    rows = [{"text": "Lin", "type": "PERSON"}, {"text": "Lin", "type": "ORGANIZATION"},   # duplicate: first wins
+            {"text": "Mia", "type": "PERSON"},            # not in the text
+            {"text": "a", "type": "PERSON"},               # too short
+            {"text": "plan", "type": "BOGUS"},             # unknown type
+            {"text": "x" * 201, "type": "FACT"}]           # too long
+    assert await _rewriter(_reply(rows)).spans("Lin is at plan " + "x" * 201) == [("Lin", "PERSON")]
 
 
-async def test_rewrite_none_on_http_error_and_bad_json():
-    assert await _rewriter(lambda r: httpx.Response(500)).rewrite("x") is None
-    assert await _rewriter(lambda r: httpx.Response(200, json={"oops": 1})).rewrite("x") is None
+async def test_spans_none_when_nothing_usable():
+    assert await _rewriter(_reply([])).spans("x y") is None
+    assert await _rewriter(_reply([{"text": "zzz", "type": "PERSON"}])).spans("x y") is None
+
+
+async def test_spans_none_on_http_error_and_bad_json():
+    assert await _rewriter(lambda r: httpx.Response(500)).spans("x") is None
+    assert await _rewriter(lambda r: httpx.Response(200, json={"oops": 1})).spans("x") is None
+    assert await _rewriter(lambda r: httpx.Response(200, json={"message": {"content": "not json"}})).spans("x") is None
     def boom(req): raise httpx.ConnectError("down")
-    assert await _rewriter(boom).rewrite("x") is None
+    assert await _rewriter(boom).spans("x") is None
 
 
-async def test_rewrite_none_for_text_over_the_limit_without_calling_the_model():
+async def test_spans_none_for_text_over_the_limit_without_calling_the_model():
     calls = []
-    def handler(req): calls.append(1); return httpx.Response(200, json={"message": {"content": "x"}})
-    assert await _rewriter(handler, local_max_chars=10).rewrite("y" * 11) is None
+    def handler(req): calls.append(1); return httpx.Response(200, json={"message": {"content": "{}"}})
+    assert await _rewriter(handler, local_max_chars=10).spans("y" * 11) is None
     assert calls == []
