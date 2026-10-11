@@ -33,8 +33,8 @@ async def test_rewrite_returns_stripped_model_text_and_sends_think_false():
     assert out == "a plain summary"
     body = seen[0]
     assert body["model"] == "m" and body["think"] is False and body["stream"] is False
-    assert body["messages"][-1] == {"role": "user", "content": "the layoff list is final"}
-    assert "never repeat" in body["messages"][0]["content"].lower()
+    assert body["messages"][-1] == {"role": "user", "content": "<message>the layoff list is final</message>"}
+    assert "do not carry out the request" in body["messages"][0]["content"].lower()
 
 
 async def test_rewrite_none_on_empty_output():
