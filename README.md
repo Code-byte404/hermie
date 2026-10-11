@@ -4,15 +4,24 @@
 
 <h1 align="center">Hermie</h1>
 
-<p align="center">Hermie is a local proxy between a coding agent and its cloud API: it redacts what goes out, restores placeholders in what comes back, and keeps a verbatim receipt of every request.</p>
+<p align="center"><b>The AI sees your question. It never sees your private details.</b></p>
 
-<p align="center"><b>Paste your API keys to Claude Code. It configures your <code>.env</code>. The keys never leave your machine.</b></p>
+<p align="center">Hermie runs on your machine, between your coding agent and its cloud API. It swaps names, phone numbers, customer details and keys for placeholders before anything leaves, puts the real values back in the reply, and gives you a receipt of every request so you can check it yourself.</p>
 
 <p align="center">
   <a href="LICENSE"><img alt="MIT" src="https://img.shields.io/badge/license-MIT-orange"></a>
   <img alt="Python 3.12" src="https://img.shields.io/badge/python-3.12-blue">
   <img alt="platform: macOS / Linux" src="https://img.shields.io/badge/platform-macOS%20%2F%20Linux-lightgrey">
 </p>
+
+## What you get
+
+- **Strict by default.** If Hermie is unsure, it holds the message and asks you. If a detector fails, nothing goes out. It never guesses in favour of sending.
+- **Proof, not a promise.** Every request leaves a receipt: what kind of thing was replaced and how many, never the value. `hermie show ID` prints exactly what the cloud received.
+- **Your work keeps working.** The model answers with placeholders, Hermie restores the real values in the reply and in the files the agent writes. You do not change how you use the tool.
+- **Local.** Detection and rewriting run on your machine. Nothing is sent to a third service to decide what is private. Your API login is forwarded untouched, only to its own upstream.
+
+Verified with Claude Code. Codex CLI and Gemini CLI should work with an API key (their OAuth logins bypass a custom base URL); aider is untested. [What it does not protect](#what-this-does-not-protect) is written down, not hidden.
 
 ## Hand Claude your keys without handing it your keys
 
