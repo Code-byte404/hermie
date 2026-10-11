@@ -1,4 +1,4 @@
-export type Ask = { id: string; kind: string; reason: string; size: number; local?: boolean }
+export type Ask = { id: string; kind: string; reason: string; size: number; local?: boolean; preview?: string }
 
 export type Summary = {
   replaced: Record<string, number>

@@ -62,6 +62,38 @@ export const register: Register = on => {
       const { Box, Button, Text } = $.ui.resolve(e)
       const a = waiting[0]
       const more = waiting.length > 1 ? ` (+${waiting.length - 1} more)` : ''
+      if (a.kind === 'rewrite') {
+        const reviewChoices = [
+          { value: 'reject', label: 'Discard', hotkey: '1', note: 'send nothing' },
+          { value: 'again', label: 'Rewrite again', hotkey: '2', note: 'ask the local model for another version' },
+          { value: 'send', label: 'Send', hotkey: '3', note: 'send exactly this text' },
+        ]
+        return (
+          <Box flexDirection="column" borderStyle="round" borderColor="permission" paddingX={1}>
+            <Text bold color="warning">
+              Local rewrite of message {a.id}: this is what would be sent
+            </Text>
+            <Box marginTop={1}>
+              <Text>{a.preview ?? ''}</Text>
+            </Box>
+            <Box flexDirection="column" marginTop={1}>
+              {reviewChoices.map((c, i) => (
+                <Box key={`row-${c.value}`} flexDirection="row" gap={2}>
+                  <Button
+                    key={c.value}
+                    label={`${c.hotkey}. ${c.label}`}
+                    hotkey={c.hotkey}
+                    variant={i === 0 ? 'primary' : 'secondary'}
+                    autoFocus={i === 0 ? true : undefined}
+                    onPress={() => answer($, a.id, c.value)}
+                  />
+                  <Text dimColor>{c.note}</Text>
+                </Box>
+              ))}
+            </Box>
+          </Box>
+        )
+      }
       const choices = [
         { value: 'reject', label: 'Reject', hotkey: '1', note: 'keep it on this machine' },
         { value: 'send', label: 'Send as is', hotkey: '2', note: 'release this one message' },

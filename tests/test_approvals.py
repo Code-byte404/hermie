@@ -251,6 +251,59 @@ async def test_local_answer_is_refused_when_the_ask_has_no_local_flag(tmp_path):
     assert await task == "reject"
 
 
+async def _wait_ask(tmp_path):
+    from hermie.proxy.approvals import read_asks
+    for _ in range(100):
+        await asyncio.sleep(0.01)
+        if read_asks(tmp_path):
+            return read_asks(tmp_path)
+    return []
+
+
+async def test_review_publishes_the_rewrite_and_clears_it_after_the_answer(tmp_path):
+    from hermie.proxy.approvals import ModPrompter, read_asks, touch_ui, write_answer
+    item = PendingItem(hash="cafe" + "0" * 60, kind="message", reason="judge", size=40, excerpt="x", id="cafe", local_ok=True)
+    touch_ui(tmp_path)
+    task = asyncio.create_task(ModPrompter(tmp_path, 5, poll_s=0.01).review(item, "a staffing plan"))
+    assert await _wait_ask(tmp_path) == [{"id": "cafe", "kind": "rewrite", "reason": "judge", "size": 15,
+                                          "preview": "a staffing plan"}]
+    assert write_answer(tmp_path, "cafe", "again")
+    assert await task == "again"
+    assert read_asks(tmp_path) == [] and "staffing" not in (tmp_path / "asks.json").read_text()
+
+
+@pytest.mark.parametrize("answer,verdict", [("send", "send"), ("again", "again"), ("reject", "discard")])
+async def test_review_answers(tmp_path, answer, verdict):
+    from hermie.proxy.approvals import ModPrompter, touch_ui, write_answer
+    item = PendingItem(hash="cafe" + "0" * 60, kind="message", reason="judge", size=40, excerpt="x", id="cafe")
+    touch_ui(tmp_path)
+    task = asyncio.create_task(ModPrompter(tmp_path, 5, poll_s=0.01).review(item, "text"))
+    await _wait_ask(tmp_path)
+    assert write_answer(tmp_path, "cafe", answer)
+    assert await task == verdict
+
+
+async def test_review_refuses_session_and_local_answers_and_times_out_to_discard(tmp_path):
+    from hermie.proxy.approvals import ModPrompter, touch_ui, write_answer
+    item = PendingItem(hash="cafe" + "0" * 60, kind="message", reason="judge", size=40, excerpt="x", id="cafe", local_ok=True)
+    touch_ui(tmp_path)
+    task = asyncio.create_task(ModPrompter(tmp_path, 0.3, poll_s=0.01).review(item, "text"))
+    await _wait_ask(tmp_path)
+    assert not write_answer(tmp_path, "cafe", "session") and not write_answer(tmp_path, "cafe", "local")
+    assert await task == "discard"
+
+
+async def test_review_without_a_menu_is_a_discard_and_again_needs_a_shown_rewrite(tmp_path):
+    from hermie.proxy.approvals import ModPrompter, touch_ui, write_answer
+    item = PendingItem(hash="cafe" + "0" * 60, kind="message", reason="judge", size=40, excerpt="x", id="cafe")
+    assert await ModPrompter(tmp_path, 0.1, poll_s=0.01).review(item, "text") == "discard"
+    touch_ui(tmp_path)
+    task = asyncio.create_task(ModPrompter(tmp_path, 0.3, poll_s=0.01).ask(item))
+    await _wait_ask(tmp_path)
+    assert not write_answer(tmp_path, "cafe", "again")
+    assert await task == "reject"
+
+
 def test_approvals_rewrites_start_empty(tmp_path):
     from hermie.proxy.approvals import AllowStore, Approvals, SessionAllow
     assert Approvals(AllowStore(tmp_path), SessionAllow()).rewrites == {}

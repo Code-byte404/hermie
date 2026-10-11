@@ -270,7 +270,7 @@ def test_cached_rewrite_is_rescanned_against_the_mapping(tmp_path, analyzer):
     assert out.held is None and "zebrafish" not in content and content.count("[rewritten locally] ") == 1
 
 
-def test_stale_rewrite_that_is_now_sensitive_is_dropped_and_held_again(tmp_path, analyzer):
+def test_cached_rewrite_is_not_judged_again_the_person_approved_it(tmp_path, analyzer):
     class J:
         def is_sensitive(self, t): return "layoff" in t or "MARKER" in t
     cfg, gate = _gate(tmp_path, analyzer, judge=J())
@@ -278,5 +278,4 @@ def test_stale_rewrite_that_is_now_sensitive_is_dropped_and_held_again(tmp_path,
     approvals = Allow()
     approvals.rewrites = {first.held.hash: "[rewritten locally] MARKER plan"}
     out = walk_request(_msg_body("the layoff list is final"), gate, approvals, cfg)
-    assert out.held is not None and approvals.rewrites == {}
-    assert "MARKER" not in json.dumps(out.body)
+    assert out.held is None and out.body["messages"][0]["content"] == "[rewritten locally] MARKER plan"

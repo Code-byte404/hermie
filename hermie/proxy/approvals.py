@@ -381,7 +381,9 @@ class DialogPrompter:
 
 
 _UI_FRESH_S = 90
-_ANSWERS = {"send": "send", "reject": "reject", "session": "allow_all", "local": "local"}
+_ANSWERS = {"send": "send", "reject": "reject", "session": "allow_all", "local": "local", "again": "again"}
+_REVIEW = {"send": "send", "again": "again", "reject": "discard"}   # answers to a shown rewrite
+Review = Literal["send", "again", "discard"]
 
 
 def touch_ui(data_dir: Path) -> None:
@@ -401,7 +403,14 @@ def read_asks(data_dir: Path) -> list[dict]:
 
 def write_answer(data_dir: Path, ask_id: str, answer: str) -> bool:
     rows = [a for a in read_asks(data_dir) if a.get("id") == ask_id]
-    if answer not in _ANSWERS or not rows or (answer == "local" and rows[0].get("local") is not True):
+    if answer not in _ANSWERS or not rows:
+        return False
+    row = rows[0]
+    if answer == "local" and row.get("local") is not True:
+        return False
+    if answer == "again" and row.get("kind") != "rewrite":
+        return False   # "again" only answers a shown rewrite
+    if row.get("kind") == "rewrite" and answer not in _REVIEW:
         return False
     _append(Path(data_dir) / "answers.jsonl", {"id": ask_id, "answer": answer, "at": time.time()})
     return True
@@ -433,23 +442,38 @@ class ModPrompter:
             f.write(json.dumps(rows))
         os.replace(tmp, self.data_dir / "asks.json")
 
+    async def _wait(self, ask_id: str, row: dict) -> str | None:
+        """Publish one ask row and wait for its answer; None on a timeout. The row is cleared afterwards."""
+        started = time.time()
+        self._publish([row])
+        deadline = time.monotonic() + self.timeout_s
+        try:
+            while time.monotonic() < deadline:
+                for r in reversed(_read_rows(self.data_dir / "answers.jsonl")):
+                    if r.get("id") == ask_id and float(r.get("at", 0)) >= started:
+                        return str(r.get("answer"))
+                await asyncio.sleep(self.poll_s)
+            return None
+        finally:
+            self._publish([])
+
     async def ask(self, item: PendingItem) -> Choice:
         if not self._ui_fresh():
             return await self.fallback.ask(item) if self.fallback is not None else "reject"
         ask_id = item.id or item.hash[:4]
         async with self._lock:
-            started = time.time()
             row = {"id": ask_id, "kind": item.kind, "reason": item.reason, "size": item.size}
             if item.local_ok:
                 row["local"] = True
-            self._publish([row])
-            deadline = time.monotonic() + self.timeout_s
-            try:
-                while time.monotonic() < deadline:
-                    for row in reversed(_read_rows(self.data_dir / "answers.jsonl")):
-                        if row.get("id") == ask_id and float(row.get("at", 0)) >= started:
-                            return _ANSWERS.get(str(row.get("answer")), "reject")
-                    await asyncio.sleep(self.poll_s)
-                return "reject"
-            finally:
-                self._publish([])
+            answer = await self._wait(ask_id, row)
+            return _ANSWERS.get(answer, "reject") if answer is not None else "reject"
+
+    async def review(self, item: PendingItem, text: str) -> Review:
+        """Show the user a local rewrite (the one place the ask file holds text, and only the rewrite, only until it is
+        answered): send it, rewrite again, or discard. No menu, a timeout or any other answer is a discard."""
+        if not self._ui_fresh():
+            return "discard"
+        ask_id = item.id or item.hash[:4]
+        async with self._lock:
+            row = {"id": ask_id, "kind": "rewrite", "reason": item.reason, "size": len(text), "preview": text}
+            return _REVIEW.get(await self._wait(ask_id, row) or "", "discard")

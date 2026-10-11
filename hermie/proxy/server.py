@@ -60,11 +60,11 @@ NO_FILES = "hermie does not proxy file uploads"
 BAD_PATH = "hermie refuses paths with '.' or '..' segments or encoded slashes"
 SEEN_IMAGES = 4096
 BLOCKED = 'hermie blocked this message (id {id}): {reason}. Run "hermie allow {id}" to send it, then retry.'
-LOCAL_FAILED = ('hermie blocked this message (id {id}): the local model could not rewrite it. '
-                'Run "hermie allow {id}" to send it as is, then retry.')
-LOCAL_STILL_SENSITIVE = ('hermie blocked this message (id {id}): the local rewrite was still judged sensitive ({reason}), '
-                         'so nothing was sent. Rephrase the message, or run "hermie allow {id}" to send it as is, '
-                         'then retry.')
+LOCAL_FAILED = ('hermie blocked this message (id {id}): the local model could not rewrite it, or the rewrite was too '
+                'long to review. Run "hermie allow {id}" to send it as is, then retry.')
+LOCAL_DISCARDED = ('hermie blocked this message (id {id}): you did not send the local rewrite, so nothing was sent. '
+                   'Run "hermie allow {id}" to send the original as is, then retry.')
+REVIEW_MAX_CHARS = 3000   # longer than this does not fit the menu, so the person could not read all of it
 UNSCANNED = ("hermie blocked this message (id {id}): {reason}. The text could not be scanned, so it cannot be sent "
              "or released; shorten it or retry.")
 
@@ -273,26 +273,36 @@ def create_app(config: Config, gate: Gate | None = None, upstream_client: httpx.
                 approvals.session.all = True
                 rec.approved_by = "session"
             elif choice == "local" and rewriter is not None:
-                rewritten, still = None, None
-                if d.hash not in local_tried:   # a second local answer for the same message is a failure
-                    local_tried.add(d.hash)
+                if d.hash in local_tried:   # a second local answer for the same message is a failure
+                    approvals.dropped.add(d.hash)
+                    return _error(422, "hermie_blocked", LOCAL_FAILED.format(id=item_id), rec.rid, item_id)
+                local_tried.add(d.hash)
+                review = getattr(prompter, "review", None)
+                while True:
                     try:
                         rewritten = await rewriter.rewrite(result.held_text or "")
                     except Exception:   # a broken rewriter is a failed rewrite, never a crash
                         rewritten = None
-                if rewritten is not None:
-                    ctx = contextvars.copy_context()
-                    ctx.run(_tally.set, rec.tally)
-                    scanned = await asyncio.to_thread(ctx.run, gate.scan, rewritten, Origin.USER)
-                    if not scanned.sensitive:
-                        approvals.rewrites[d.hash] = LOCAL_PREFIX + scanned.text
-                        rec.approved_by = "local"
+                    shown = None
+                    if rewritten is not None:
+                        # patterns and known values only: the person reads the rewrite and decides, so no judge here
+                        ctx = contextvars.copy_context()
+                        ctx.run(_tally.set, rec.tally)
+                        scanned = await asyncio.to_thread(ctx.run, gate.scan, rewritten, Origin.OTHER)
+                        if not scanned.sensitive and len(scanned.text) <= REVIEW_MAX_CHARS:
+                            shown = scanned.text
+                    if shown is None:
+                        approvals.dropped.add(d.hash)
+                        return _error(422, "hermie_blocked", LOCAL_FAILED.format(id=item_id), rec.rid, item_id)
+                    verdict = await review(item, shown) if review is not None else "discard"
+                    if verdict == "again":
                         continue
-                    still = scanned.reason or "sensitive"
-                approvals.dropped.add(d.hash)
-                msg = (LOCAL_STILL_SENSITIVE.format(id=item_id, reason=still) if still
-                       else LOCAL_FAILED.format(id=item_id))
-                return _error(422, "hermie_blocked", msg, rec.rid, item_id)
+                    if verdict == "send":
+                        approvals.rewrites[d.hash] = LOCAL_PREFIX + shown
+                        rec.approved_by = "local"
+                        break
+                    approvals.dropped.add(d.hash)
+                    return _error(422, "hermie_blocked", LOCAL_DISCARDED.format(id=item_id), rec.rid, item_id)
             else:
                 approvals.dropped.add(d.hash)
                 return _error(422, "hermie_blocked", BLOCKED.format(id=item_id, reason=d.reason), rec.rid, item_id)

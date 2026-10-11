@@ -271,8 +271,8 @@ class _Walker:
         if origin is Origin.USER:
             stored = None if unscanned else getattr(self.approvals, "rewrites", {}).get(res.hash)
             if stored is not None:
-                # a cached rewrite goes through the known-values pass again: the mapping may have grown since
-                res2 = self.gate.scan(stored, Origin.USER)
+                # the person approved this rewrite; patterns and known values still run (the mapping may have grown)
+                res2 = self.gate.scan(stored, Origin.OTHER)
                 if res2.sensitive:
                     self.approvals.rewrites.pop(res.hash, None)
                     stored = None
