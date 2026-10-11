@@ -62,6 +62,9 @@ SEEN_IMAGES = 4096
 BLOCKED = 'hermie blocked this message (id {id}): {reason}. Run "hermie allow {id}" to send it, then retry.'
 LOCAL_FAILED = ('hermie blocked this message (id {id}): the local model could not rewrite it. '
                 'Run "hermie allow {id}" to send it as is, then retry.')
+LOCAL_STILL_SENSITIVE = ('hermie blocked this message (id {id}): the local rewrite was still judged sensitive ({reason}), '
+                         'so nothing was sent. Rephrase the message, or run "hermie allow {id}" to send it as is, '
+                         'then retry.')
 UNSCANNED = ("hermie blocked this message (id {id}): {reason}. The text could not be scanned, so it cannot be sent "
              "or released; shorten it or retry.")
 
@@ -270,7 +273,7 @@ def create_app(config: Config, gate: Gate | None = None, upstream_client: httpx.
                 approvals.session.all = True
                 rec.approved_by = "session"
             elif choice == "local" and rewriter is not None:
-                rewritten = None
+                rewritten, still = None, None
                 if d.hash not in local_tried:   # a second local answer for the same message is a failure
                     local_tried.add(d.hash)
                     try:
@@ -285,8 +288,11 @@ def create_app(config: Config, gate: Gate | None = None, upstream_client: httpx.
                         approvals.rewrites[d.hash] = LOCAL_PREFIX + scanned.text
                         rec.approved_by = "local"
                         continue
+                    still = scanned.reason or "sensitive"
                 approvals.dropped.add(d.hash)
-                return _error(422, "hermie_blocked", LOCAL_FAILED.format(id=item_id), rec.rid, item_id)
+                msg = (LOCAL_STILL_SENSITIVE.format(id=item_id, reason=still) if still
+                       else LOCAL_FAILED.format(id=item_id))
+                return _error(422, "hermie_blocked", msg, rec.rid, item_id)
             else:
                 approvals.dropped.add(d.hash)
                 return _error(422, "hermie_blocked", BLOCKED.format(id=item_id, reason=d.reason), rec.rid, item_id)

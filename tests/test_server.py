@@ -427,10 +427,19 @@ def test_local_failures_drop_the_message_and_cache_nothing(tmp_path, analyzer, r
     cfg, c = _local_app(tmp_path, analyzer, up, rewriter, p)
     r = c.post("/anthropic/v1/messages", json=_first())
     assert r.status_code == 422 and r.json()["error"]["type"] == "hermie_blocked"
-    assert "local model" in r.json()["error"]["message"] and up.seen == []
+    assert "local" in r.json()["error"]["message"] and up.seen == []
     assert c.app.state.approvals.rewrites == {}
     assert len(c.app.state.approvals.dropped) == 1
     assert _SENS["content"] not in json.dumps(r.json())
+
+def test_local_message_says_whether_the_rewrite_failed_or_was_still_sensitive(tmp_path, analyzer):
+    up = Upstream()
+    _, c = _local_app(tmp_path, analyzer, up, _Rewriter(out=None), _LocalPrompter())
+    assert "could not rewrite" in c.post("/anthropic/v1/messages", json=_first()).json()["error"]["message"]
+    up = Upstream()
+    _, c = _local_app(tmp_path / "b", analyzer, up, _Rewriter(out="the layoff list is final, rephrased"), _LocalPrompter())
+    msg = c.post("/anthropic/v1/messages", json=_first()).json()["error"]["message"]
+    assert "still judged sensitive (judge)" in msg and "layoff" not in msg
 
 def test_local_answer_without_a_configured_rewriter_is_a_reject(tmp_path, analyzer):
     up = Upstream(); p = _LocalPrompter()
