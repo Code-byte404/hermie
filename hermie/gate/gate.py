@@ -18,6 +18,7 @@ from hermie.gate.types import _GATE_TOKEN, CleanBody, Finding, Origin, ScanResul
 CHUNK_CHARS = 48 * 1024
 CHUNK_OVERLAP = 256      # a fixed-size cut (no newline in the chunk) re-scans this much of the previous chunk
 MIN_KNOWN_LEN = 4        # shorter mapping values are not searched for literally (noise)
+MIN_SPAN_LEN = 3         # shorter ASCII local-model spans ("ID", "HR") are dropped: they match too much
 
 
 def certify_body(data: bytes) -> CleanBody:
@@ -84,6 +85,10 @@ _INJECTED = re.compile(r"<system-reminder>.*?</system-reminder>", re.DOTALL)
 
 def strip_injected(text: str) -> str:
     return _INJECTED.sub("", text)
+
+
+def _ascii_word(ch: str) -> bool:
+    return ch.isascii() and (ch.isalnum() or ch == "_")
 
 
 class Gate:
@@ -167,14 +172,19 @@ class Gate:
         """Replace every literal occurrence of each (value, entity) span with its placeholder, minting and persisting
         new ones like a scan does. Used for spans a local model found; the placeholders restore in the reply."""
         self._sync()   # MappingStoreError propagates on purpose
+        taken = [(m.start(), m.end()) for m in PLACEHOLDER.finditer(text)]
         findings = []
         for value, entity in spans:
-            if not value or PLACEHOLDER.fullmatch(value):
+            if len(value.strip()) < (MIN_SPAN_LEN if value.isascii() else 2) or PLACEHOLDER.search(value):
                 continue
-            i = text.find(value)
-            while i != -1:
-                findings.append(Finding(entity, i, i + len(value), 1.0))
-                i = text.find(value, i + len(value))
+            # whole words only (`Lin` is not in `Linda`), and never inside a placeholder already in the text
+            # (ASCII edges only: Chinese has no spaces between words)
+            rx = re.compile((r"(?<![A-Za-z0-9_])" if _ascii_word(value[0]) else "") + re.escape(value)
+                            + (r"(?![A-Za-z0-9_])" if _ascii_word(value[-1]) else ""))
+            for m in rx.finditer(text):
+                if not any(s < m.end() and m.start() < e for s, e in taken):
+                    findings.append(Finding(entity, m.start(), m.end(), 1.0))
+        findings = _merge_overlaps(findings)
         out: dict = {}
 
         def mint(current: dict[str, str], counters: dict[str, int]) -> dict[str, str]:
@@ -321,12 +331,14 @@ class Gate:
         judged = sensitive = False
         reason = "clean"
         if self._judged_origin(origin):
-            risk = smuggling_risk_url(red.strip()) if _is_url(red) else smuggling_risk_text(strip_injected(red))
+            # the client injects <system-reminder> blocks into the user's turn; anywhere else (a file, a tool's
+            # output) the tags are just text and could wrap anything, so they are judged too
+            own = strip_injected(red) if origin is Origin.USER else red
+            risk = smuggling_risk_url(red.strip()) if _is_url(red) else smuggling_risk_text(own)
             if risk is not None:
                 sensitive, reason = True, f"smuggling: {risk}"
             else:
                 judged = True
-                own = strip_injected(red)
                 sensitive = bool(own.strip()) and self._judge(own)
                 reason = "judge" if sensitive else "clean"
         return ScanResult(red, findings, judged, sensitive, reason, new, h, size), len(merged)
