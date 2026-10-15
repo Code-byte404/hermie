@@ -27,7 +27,7 @@ class _Counting:
         return out, missing
 
 # Leaf keys whose string values are streamed text and therefore pass through the buffer.
-BUFFERED_KEYS = {"text", "partial_json", "content", "arguments", "delta"}
+BUFFERED_KEYS = {"text", "partial_json", "content", "arguments", "delta", "thinking", "reasoning_content", "refusal"}
 # Leaves that are JSON text (tool arguments): a restored value goes in JSON-escaped, so a quote or a newline in it
 # neither breaks the arguments nor adds keys. A Responses `delta` is JSON text only in an `*arguments*` event.
 JSON_TEXT_KEYS = {"partial_json", "arguments"}
@@ -361,17 +361,23 @@ async def relay_sse(upstream: AsyncIterator[bytes], restore: Restore,
         del pending[:keep]
         return out
 
-    async for chunk in upstream:
-        acc += chunk
-        while True:
-            found = _next_block(acc)
-            if found is None:
-                break
-            block, eol, acc = found
-            ev = take(block, eol)
-            if ev is not None:
-                for b in push(ev):
-                    yield b
+    error: Optional[Exception] = None
+    try:
+        async for chunk in upstream:
+            acc += chunk
+            while True:
+                found = _next_block(acc)
+                if found is None:
+                    break
+                block, eol, acc = found
+                ev = take(block, eol)
+                if ev is not None:
+                    for b in push(ev):
+                        yield b
+    except Exception as e:
+        # the upstream broke off: the events held back for a tail still go out (a half event does not), then the
+        # error propagates to the caller
+        error, acc = e, b""
     if acc.strip():
         # an unterminated final event: restore it like the others, emitted with a terminator
         ev = take(acc.rstrip(b"\r\n"), "\r\n" if b"\r\n" in acc else "\n")
@@ -383,3 +389,5 @@ async def relay_sse(upstream: AsyncIterator[bytes], restore: Restore,
         yield e.render()
     stats.unrestored = buffer.unrestored
     stats.restored = restore.restored
+    if error is not None:
+        raise error

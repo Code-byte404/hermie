@@ -237,3 +237,32 @@ def test_restore_json_escapes_values_inside_argument_strings():
     assert json.loads(obj["choices"][0]["message"]["tool_calls"][0]["function"]["arguments"]) == {"q": ODD["<SECRET_2>"]}
     resp = {"output": [{"type": "function_call", "arguments": args}]}
     assert json.loads(restore_json(resp, RO)[0]["output"][0]["arguments"]) == {"q": ODD["<SECRET_2>"]}
+
+
+async def test_a_mid_stream_error_still_delivers_held_events_then_raises():
+    import httpx
+    async def chunks():
+        yield _ev(delta={"text": "call 555 or <PHONE_NUM"}).encode()
+        yield b'data: {"delta":{"te'          # a half event: dropped
+        raise httpx.ReadError("upstream went away")
+    got = []
+    stats = StreamStats()
+    with pytest.raises(httpx.ReadError):
+        async for c in relay_sse(chunks(), R, stats):
+            got.append(c)
+    out = b"".join(got).decode()
+    assert json.loads(out.split("data: ", 1)[1])["delta"]["text"] == "call 555 or <PHONE_NUM"
+    assert out.count("data:") == 1 and stats.events == 1
+
+
+@pytest.mark.parametrize("make", [
+    lambda s: {"type": "content_block_delta", "index": 0, "delta": {"type": "thinking_delta", "thinking": s}},
+    lambda s: {"choices": [{"index": 0, "delta": {"reasoning_content": s}}]},
+    lambda s: {"choices": [{"index": 0, "delta": {"refusal": s}}]},
+])
+async def test_reasoning_and_refusal_text_is_buffered_across_events(make):
+    ph = "<PHONE_NUMBER_1>"
+    raw = (_ev(**make("call " + ph[:6])) + _ev(**make(ph[6:] + " now"))).encode()
+    stats = StreamStats()
+    out = await _relay(raw, stats)
+    assert "555-010-0199" in out and stats.unrestored == 0
