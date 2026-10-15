@@ -105,6 +105,14 @@ _NOT_A_SECRET_TAIL = {"path", "file", "dir", "directory", "name", "length", "siz
                       "format", "algorithm", "alg", "mode", "version", "label", "title", "description", "env", "var", "variable"}
 _SEGMENT = re.compile(r"[A-Z]+(?![a-z])|[A-Z]?[a-z]+|\d+")
 _ASSIGN = re.compile(r"""(?P<name>[A-Za-z_][A-Za-z0-9_.\-]{0,63})["']?[ \t]*(?::=|=>|=|:)[ \t]*["']?(?P<val>[^\s"'`,;<>(){}\[\]\\]{8,})""")
+# _ASSIGN stops at the first bracket or semicolon; password managers use those. These two take the whole value: inside
+# quotes, or the rest of the line in an env file (`DB_PASSWORD=k7#Lq;9vX)2m`) or a YAML mapping.
+_ASSIGN_QUOTED = re.compile(r"""(?P<name>[A-Za-z_][A-Za-z0-9_.\-]{0,63})["']?[ \t]*(?::=|=>|=|:)[ \t]*"""
+                            r"""(?:"(?P<dq>[^"\s]{8,128})"|'(?P<sq>[^'\s]{8,128})')""")
+_ASSIGN_LINE = re.compile(r"""(?m)^[ \t]*(?:export[ \t]+)?(?:(?P<env>[A-Z][A-Z0-9_]{0,63})=|(?P<yaml>[A-Za-z_][A-Za-z0-9_.\-]{0,63}):[ \t]+)"""
+                          r"""(?P<line>[^\s"'][^\s]{7,127})[ \t]*$""")
+# A call, an expansion, a template or a list is code, not a value.
+_CODE_VALUE = re.compile(r"^[A-Za-z_][\w.]*\(.*\)$|\$\{|\$\(|\{\{|^\[")
 
 
 def _segments(name: str) -> list[str]:
@@ -118,15 +126,18 @@ def _wordish_fraction(val: str) -> float:
     return sum(len(m.group()) for m in _WORDISH.finditer(val)) / max(len(val), 1)
 
 
-def _secretish(val: str) -> bool:
+def _secretish(val: str, wordy_ok: bool = False) -> bool:
     """Generated secrets nearly always contain a digit; a long mixed-case high-entropy string without one counts too.
-    Plain words, snake_case names and CamelCase identifiers do not."""
+    Plain words, snake_case names and CamelCase identifiers do not, unless `wordy_ok` (under a password name people
+    pick words plus digits: `Password123`)."""
     if re.fullmatch(r"[+-]?[\d.]+(?:[eE][+-]?\d+)?", val) and "." in val:
         return False                       # a float
-    if _wordish_fraction(val) >= 0.6 or (_SNAKE_OR_KEBAB.fullmatch(val) and not _UUID.fullmatch(val)):
+    if (_wordish_fraction(val) >= 0.6 and not wordy_ok) or (_SNAKE_OR_KEBAB.fullmatch(val) and not _UUID.fullmatch(val)):
         return False                       # CamelCase / snake_case identifiers, model ids, file names
     if any(c.isdigit() for c in val):
         return True
+    if wordy_ok and any(c.isalpha() for c in val) and any(not c.isalnum() and c not in "_-." for c in val):
+        return True                        # letters and symbols: a password manager's output
     return len(val) >= 32 and any(c.islower() for c in val) and any(c.isupper() for c in val) and _entropy(val) >= 4.2
 
 
@@ -136,21 +147,34 @@ def _value_looks_secret(val: str, segs: list[str]) -> bool:
         return False
     if val.startswith(("/", "./", "../", "~/", "file:", "http://", "https://")) and "@" not in val and val.count("/") >= 2:
         return False
-    return _secretish(val)
+    if _CODE_VALUE.search(val):
+        return False
+    return _secretish(val, wordy_ok=bool(set(segs) & _PASSWORDISH))
+
+
+def _assignments(text: str):
+    """(name, value, value start) for every assignment shape."""
+    for m in _ASSIGN.finditer(text):
+        yield m.group("name"), m.group("val"), m.start("val")
+    for m in _ASSIGN_QUOTED.finditer(text):
+        g = "dq" if m.group("dq") is not None else "sq"
+        yield m.group("name"), m.group(g), m.start(g)
+    for m in _ASSIGN_LINE.finditer(text):
+        yield m.group("env") or m.group("yaml"), m.group("line"), m.start("line")
 
 
 def _name_driven(text: str) -> list[Finding]:
     out = []
-    for m in _ASSIGN.finditer(text):
-        segs = _segments(m.group("name"))
-        if not set(segs) & _SENSITIVE or segs[-1] in _NOT_A_SECRET_TAIL:
+    for name, val, start in _assignments(text):
+        segs = _segments(name)
+        if not segs or not set(segs) & _SENSITIVE or segs[-1] in _NOT_A_SECRET_TAIL:
             continue
-        if _value_looks_secret(m.group("val"), segs):
-            out.append(Finding("SECRET", m.start("val"), m.end("val") - (1 if m.group("val").endswith(".") else 0), 0.75))
+        if _value_looks_secret(val, segs):
+            out.append(Finding("SECRET", start, start + len(val) - (1 if val.endswith(".") else 0), 0.75))
     return out
 
 
-_BIG_TOKEN = re.compile(r"(?<![A-Za-z0-9+/_=-])[A-Za-z0-9+/_-]{40,200}={0,2}(?![A-Za-z0-9+/_=-])")
+_BIG_TOKEN = re.compile(r"(?<![A-Za-z0-9+/_=-])[A-Za-z0-9+/_-]{40,}={0,2}(?![A-Za-z0-9+/_=-])")
 _NOT_A_TOKEN_PREFIX = re.compile(r"^(?:sha\d{1,3}|md5)-")
 _AFTER_B64 = re.compile(r"(?:base64,|integrity[\"']?\s*[:=]\s*[\"']?|sha\d{0,3}-)$", re.I)
 
@@ -165,7 +189,7 @@ def _entropy_tokens(text: str) -> list[Finding]:
             continue
         if not (any(c.islower() for c in tok) and any(c.isupper() for c in tok) and any(c.isdigit() for c in tok)):
             continue
-        if tok.count("/") >= 3 or _wordish_fraction(tok) >= 0.6:
+        if (tok.count("/") >= 3 and tok.count("/") * 20 > len(tok)) or _wordish_fraction(tok) >= 0.6:   # a path, words
             continue
         if _entropy(tok) >= 4.3:
             out.append(Finding("SECRET", m.start(), m.end(), 0.6))

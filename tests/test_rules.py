@@ -253,3 +253,48 @@ CLEAN = [
 @pytest.mark.parametrize("text", CLEAN)
 def test_ordinary_text_is_left_alone(text):
     assert rules.find(text) == [], [(text[f.start:f.end], f.entity) for f in rules.find(text)]
+
+
+# --- passwords with punctuation, wordy passwords, long encoded secrets (review 2026-10-15) ---------
+
+PUNCT = "#;)(,:'<>[]{}\\"
+
+
+def _punct_password():
+    chars = [rnd.choice(ALNUM) for _ in range(14)]
+    for i in (2, 5, 9):
+        chars[i] = rnd.choice(PUNCT.replace("'", "").replace("\\", ""))
+    return "".join(chars)
+
+
+@pytest.mark.parametrize("shape", ["env", "export", "env_quoted", "json", "python", "yaml_quoted"])
+def test_a_password_with_punctuation_is_hidden_whole(shape):
+    v = _punct_password()
+    text = {"env": f"DB_PASSWORD={v}", "export": f"export DB_PASSWORD={v}", "env_quoted": f'DB_PASSWORD="{v}"',
+            "json": '{"db_password": "' + v + '"}', "python": f"db_password = '{v}'",
+            "yaml_quoted": f'db_password: "{v}"'}[shape]
+    found = rules.find(text)
+    assert _covered(found, text, v), (text, [(text[f.start:f.end]) for f in found])
+
+
+@pytest.mark.parametrize("text", ['{"password": "Password123"}', "password: Sunshine2024", 'ADMIN_PASS="Welcome2026"'])
+def test_a_wordy_password_under_a_password_name_is_hidden(text):
+    assert rules.find(text), text
+
+
+def test_a_long_encoded_secret_under_a_neutral_key_is_hidden():
+    v = base64.b64encode(rnd.randbytes(300)).decode()
+    text = '{"auths": {"registry.example.com": {".dockerconfigjson": "' + v + '"}}}'
+    assert _covered(rules.find(text), text, v)
+
+
+@pytest.mark.parametrize("text", [
+    "key = config['api_key_v2']",
+    'token = "Bearer {token}"',
+    'password = "Enter your password"',
+    'PASSWORD="$(cat secret.txt)"',
+    "password=get_pw(x2)",
+    "pass_through: identity_v2",
+])
+def test_code_around_password_names_is_left_alone(text):
+    assert rules.find(text) == [], [(text[f.start:f.end], f.entity) for f in rules.find(text)]
