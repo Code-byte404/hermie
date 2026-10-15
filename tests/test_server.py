@@ -369,7 +369,7 @@ async def test_rejected_message_is_withheld_from_later_requests_not_blocking_the
     r = c.post("/anthropic/v1/messages", json=later)
     assert r.status_code == 200
     sent = up.seen[-1].content.decode()
-    assert "layoff" not in sent and "hermie withheld" in sent and "hi" in sent
+    assert "layoff" not in sent and "Hermie withheld" in sent and "hi" in sent
 
 
 # --- local rewrite choice ---
@@ -518,3 +518,13 @@ def test_unwritable_body_store_does_not_fail_the_request(tmp_path, analyzer):
     r = c.post("/anthropic/v1/messages", json=_body("anthropic"), headers={"x-api-key": "sk-test-key"})
     assert r.status_code == 200 and len(up.seen) == 1
     assert json.loads((tmp_path / "receipt.jsonl").read_text().splitlines()[-1])["status"] == 200
+
+
+def test_receipt_records_placeholders_and_withheld_sources_without_values(tmp_path, analyzer):
+    up = Upstream()
+    cfg, c = _app(tmp_path, analyzer, up)
+    body = {"model": "m", "messages": [{"role": "user", "content": "call 555-010-0199 about it"}]}
+    assert c.post("/anthropic/v1/messages", json=body, headers={"x-api-key": "sk-test-key"}).status_code == 200
+    line = json.loads((tmp_path / "receipt.jsonl").read_text().splitlines()[-1])
+    assert line["placeholders"] == ["<PHONE_NUMBER_1>"] and line["withheld_items"] == []
+    assert "555-010-0199" not in json.dumps(line)

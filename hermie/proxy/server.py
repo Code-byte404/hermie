@@ -23,10 +23,11 @@ from starlette.requests import Request
 from starlette.responses import JSONResponse, Response, StreamingResponse
 from starlette.routing import Route
 
+from hermie import explain
 from hermie.config import Config
 from hermie.gate.gate import Gate, certify_body, empty_body
 from hermie.gate.local import make_local
-from hermie.gate.redact import MappingStoreError
+from hermie.gate.redact import PLACEHOLDER, MappingStoreError
 from hermie.gate.types import CleanBody, Origin
 from hermie.proxy.approvals import AllowStore, Approvals, NoPrompter, PendingItem, SessionAllow
 from hermie.proxy.receipt import BodyStore, Receipt, ReceiptLine, client_label
@@ -198,6 +199,8 @@ class _Rec:
     status: int | None = None
     upstream_error: str | None = None
     new_parts: list[dict] = field(default_factory=list)
+    placeholders: list[str] = field(default_factory=list)
+    withheld_items: list[dict] = field(default_factory=list)
     tally: _JudgeTally = field(default_factory=_JudgeTally)
 
     def line(self) -> ReceiptLine:
@@ -207,7 +210,7 @@ class _Rec:
             replaced=dict(self.replaced), withheld=list(self.withheld), held=self.held, approved_by=self.approved_by,
             unrestored=self.unrestored, judge_calls=self.tally.calls, judge_ms=int(self.tally.ms),
             status=self.status, upstream_error=self.upstream_error, mode=self.mode, new_parts=list(self.new_parts),
-            restored=self.restored)
+            restored=self.restored, placeholders=list(self.placeholders), withheld_items=list(self.withheld_items))
 
 
 def _part(d: Decision) -> dict:
@@ -404,7 +407,10 @@ def create_app(config: Config, gate: Gate | None = None, upstream_client: httpx.
             rec.replaced = dict(result.counts)
             for d in result.decisions:
                 if d.kind == "withhold":
-                    rec.withheld.append(register(d))
+                    wid = register(d)
+                    rec.withheld.append(wid)
+                    rec.withheld_items.append({"id": wid, "tool": d.tool, "file": d.file,
+                                               "why": explain.short_reason(d.reason)})
                 elif d.kind == "pass" and rec.approved_by is None:
                     rec.approved_by = "local" if d.reason == "local" else "session" if approvals.session.all else "allowed"
                 if d.origin == "binary":   # images never pass through the gate cache: remember them here
@@ -417,6 +423,9 @@ def create_app(config: Config, gate: Gate | None = None, upstream_client: httpx.
                     rec.new_parts.append(_part(d))
 
             clean = certify_body(json.dumps(result.body, ensure_ascii=False).encode())
+            known = gate.mapping
+            rec.placeholders = list(dict.fromkeys(
+                m.group(0) for m in PLACEHOLDER.finditer(clean.data.decode("utf-8", "replace")) if m.group(0) in known))[:200]
             bodies.put(rid, clean.data)
             try:
                 resp = await send_upstream(client, request.method, url, forward_headers(request.headers), clean,

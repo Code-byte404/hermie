@@ -5,12 +5,14 @@ import json
 import os
 import re
 import time
-from dataclasses import dataclass, fields
+from dataclasses import dataclass, field, fields
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Iterator
 
 from hermie.config import Config
+from hermie.explain import SHORT_REASONS
+from hermie.gate.redact import PLACEHOLDER
 
 _ID = re.compile(r"[0-9a-f]{12}")
 
@@ -20,7 +22,8 @@ class ReceiptLine:
     """One proxied request. No free-text field on purpose: nothing here may carry request text.
 
     `upstream_error` is an exception class name only. `new_parts` entries are dicts with the
-    keys `origin`, `tool`, `size`, `entities` and nothing else.
+    keys `origin`, `tool`, `size`, `entities` and nothing else. `placeholders` holds placeholder names (never values);
+    `withheld_items` entries hold `id`, `tool`, `file` (a basename) and `why` (a fixed label from `explain`).
     """
     at: str
     id: str
@@ -41,6 +44,8 @@ class ReceiptLine:
     mode: str
     new_parts: list[dict]
     restored: int = 0   # placeholders put back into the reply; lines written before the field exist read as 0
+    placeholders: list[str] = field(default_factory=list)     # placeholder names in the outbound body, never values
+    withheld_items: list[dict] = field(default_factory=list)  # {id, tool, file (basename), why (a fixed label)}
 
 
 _FIELDS = {f.name for f in fields(ReceiptLine)}
@@ -91,6 +96,18 @@ def _sanitized(line: ReceiptLine) -> dict:
     data["new_parts"] = parts
     data["restored"] = _int(data["restored"]) or 0
     data["unrestored"] = _int(data["unrestored"]) or 0
+    data["placeholders"] = [p for p in (data["placeholders"] or [])
+                            if isinstance(p, str) and PLACEHOLDER.fullmatch(p)][:200]
+    items = []
+    for it in data["withheld_items"] or []:
+        if not isinstance(it, dict):
+            continue
+        tool, file, why = it.get("tool"), it.get("file"), it.get("why")
+        items.append({"id": str(it.get("id", ""))[:16],
+                      "tool": None if tool is None else str(tool)[:64],
+                      "file": None if not file else Path(str(file)).name[:80],
+                      "why": why if why in SHORT_REASONS else "held for review"})
+    data["withheld_items"] = items
     return data
 
 

@@ -131,3 +131,27 @@ def test_body_store_does_not_rescan_the_directory_under_the_cap(tmp_path, monkey
     for i in range(50):
         bs.put(f"{i:012x}", b"x" * 1000)
     assert calls == []
+
+
+def test_receipt_new_fields_keep_names_only(tmp_path):
+    r = Receipt(Config(data_dir=tmp_path))
+    r.write(_line(placeholders=["<PERSON_1>", "Alice Chen", "<SECRET_1>"],
+                  withheld_items=[{"id": "9c21", "tool": "Read", "file": "/home/a/customers.csv", "why": "judged private",
+                                   "text": "555-010-0199"},
+                                  {"id": "9c22", "tool": None, "file": None, "why": "possible hex data: 3f9a1c"}]))
+    raw = (tmp_path / "receipt.jsonl").read_text()
+    assert "Alice Chen" not in raw and "555-010-0199" not in raw and "3f9a1c" not in raw and "/home/a" not in raw
+    [got] = list(r.iter())
+    assert got.placeholders == ["<PERSON_1>", "<SECRET_1>"]
+    assert got.withheld_items == [{"id": "9c21", "tool": "Read", "file": "customers.csv", "why": "judged private"},
+                                  {"id": "9c22", "tool": None, "file": None, "why": "held for review"}]
+
+
+def test_receipt_line_without_new_fields_still_parses(tmp_path):
+    r = Receipt(Config(data_dir=tmp_path))
+    old = {f.name: getattr(_line(), f.name) for f in dataclasses.fields(ReceiptLine)
+           if f.name not in ("placeholders", "withheld_items")}
+    with open(tmp_path / "receipt.jsonl", "a") as f:
+        f.write(json.dumps(old) + "\n")
+    [got] = list(r.iter())
+    assert got.placeholders == [] and got.withheld_items == []

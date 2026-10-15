@@ -7,6 +7,7 @@ import re
 from dataclasses import dataclass, field
 from typing import Literal
 
+from hermie import explain
 from hermie.gate.gate import strip_injected
 from hermie.gate.types import Origin
 
@@ -16,12 +17,6 @@ SKIP_KEYS = {
     "tool_choice", "response_format", "thought_signature",
 }
 
-WITHHELD_NOTE = ('[hermie withheld this tool result (id {id}): {size}, {reason}. '
-                 'The user can release it with "hermie allow {id}".]')
-DROPPED_NOTE = "[hermie withheld a message you rejected earlier (id {id}); release with \"hermie allow {id}\"]"
-WITHHELD_IMAGE = "[hermie withheld an image (id {id}); release with \"hermie allow {id}\"]"
-WITHHELD_UNSCANNED = ("[hermie withheld this tool result (id {id}): {size}, {reason}. It could not be scanned, so it "
-                      "cannot be released.]")
 MIN_NUMBER_DIGITS = 6   # inside tool payloads, numbers with this many digits are scanned (card numbers, phone ids)
 
 _MESSAGE_ROOTS = ("messages", "contents", "input")
@@ -39,11 +34,12 @@ class Decision:
     reason: str
     size: int
     hash: str = ""      # full hash of the leaf (or of the image data), for the allow store
-    excerpt: str = ""   # hold only: the pattern-redacted text, single line, first 200 chars
+    excerpt: str = ""   # hold only: the pattern-redacted text, single line, first 300 chars
     origin: str = ""    # Origin value of the leaf ("user", "tool", ...; "binary" for images)
     entities: list[str] = field(default_factory=list)   # entity names found in the leaf, sorted, unique
     new: bool = True    # False when the gate answered from its cache (the leaf was seen before)
     tool: str | None = None   # name of the tool call the leaf belongs to, when cheap to find
+    file: str | None = None   # basename of the file the tool call named, when the call says it
 
 
 @dataclass
@@ -172,6 +168,7 @@ class _Walker:
         self.out = WalkResult(body=copy.deepcopy(body))
         self.images: list[tuple] = []   # handled after the text leaves, so text decisions come first
         self._names: dict[str, str] | None = None
+        self._files: dict[str, str] = {}   # tool_use id -> basename of the file its input names
 
     def _id(self, full: str) -> str:
         """Ids come from the allow store, the same source the receipt and `hermie allow` use."""
@@ -257,7 +254,7 @@ class _Walker:
             return
         self.out.decisions.append(Decision("withhold", did, "image", size, full, origin="binary"))
         if not self.observe:
-            parent[key] = _image_note(node, WITHHELD_IMAGE.format(id=did))
+            parent[key] = _image_note(node, explain.note_text("image", did))
 
     def leaf(self, parent, key, text: str, path, number: bool = False) -> bool:
         """Scan one string (or, with `number`, the text of a number: it is replaced only by a placeholder or a note)."""
@@ -283,7 +280,8 @@ class _Walker:
             return True if number else self.apply(parent, key, res.text)
 
         meta = {"origin": origin.value, "entities": sorted({f.entity for f in res.findings}),
-                "new": not res.cached, "tool": self._tool_name(path)}
+                "new": not res.cached, "tool": self._tool_name(path),
+                "file": self._tool_file(path) if origin is Origin.TOOL else None}
         if res.findings:
             self.out.decisions.append(Decision("placeholders", None, f"{len(res.findings)} replaced", size, **meta))
         if not flagged:
@@ -307,10 +305,10 @@ class _Walker:
             elif not unscanned and res.hash in self.approvals.dropped:
                 # rejected before and now only history: keep the conversation usable, the text stays home
                 self.out.decisions.append(Decision("withhold", did, "rejected earlier", size, res.hash, **meta))
-                return self.apply(parent, key, DROPPED_NOTE.format(id=did))
+                return self.apply(parent, key, explain.note_text("dropped", did))
             else:
                 # a detector error's text is the raw text: no excerpt
-                excerpt = "" if unscanned else " ".join(strip_injected(res.text)[:400].split())[:200]
+                excerpt = "" if unscanned else " ".join(strip_injected(res.text)[:600].split())[:300]
                 d = Decision("hold", did, res.reason, size, res.hash, excerpt, **meta)
                 self.out.decisions.append(d)
                 if not self.observe:
@@ -322,8 +320,8 @@ class _Walker:
             self.out.decisions.append(Decision("pass", did, res.reason, size, res.hash, **meta))
             return self.apply(parent, key, res.text)
         self.out.decisions.append(Decision("withhold", did, res.reason, size, res.hash, **meta))
-        note = (WITHHELD_UNSCANNED if unscanned else WITHHELD_NOTE).format(id=did, size=_fmt_size(size),
-                                                                           reason=res.reason)
+        note = explain.note_text("unscanned" if unscanned else "tool", did, size=_fmt_size(size), reason=res.reason,
+                                 tool=meta["tool"])
         return self.apply(parent, key, note)
 
     def _tool_names(self) -> dict[str, str]:
@@ -338,6 +336,12 @@ class _Walker:
                         for k in ("id", "call_id"):
                             if isinstance(n.get(k), str):
                                 names[n[k]] = name
+                    inp = n.get("input")
+                    if isinstance(inp, dict) and isinstance(n.get("id"), str):
+                        for key in ("file_path", "path", "notebook_path"):
+                            if isinstance(inp.get(key), str) and inp[key].strip():
+                                self._files[n["id"]] = inp[key].rstrip("/").rsplit("/", 1)[-1][:80]
+                                break
                     fn = n.get("function")
                     if isinstance(fn, dict) and isinstance(fn.get("name"), str) and isinstance(n.get("id"), str):
                         names[n["id"]] = fn["name"]
@@ -351,6 +355,19 @@ class _Walker:
                 collect(self.orig.get(root))
             self._names = names
         return self._names
+
+    def _tool_file(self, path) -> str | None:
+        """Basename of the file a tool result came from (Anthropic tool_use input), when the call names one."""
+        node = self.orig
+        for p in path[:-1]:
+            try:
+                node = node[p]
+            except (KeyError, IndexError, TypeError):
+                return None
+            if isinstance(node, dict) and node.get("type") == "tool_result":
+                self._tool_names()
+                return self._files.get(node.get("tool_use_id"))
+        return None
 
     def _tool_name(self, path) -> str | None:
         node = self.orig

@@ -198,9 +198,9 @@ async def test_dialog_prompter_asks_again_for_a_different_message_with_the_same_
 
 
 async def test_dialog_prompter_does_not_reuse_an_answer_for_a_cut_excerpt():
-    head = "x" * 50 + " the quarterly numbers for the board, " * 6
-    first = PendingItem(hash="aaaa" + "0" * 60, kind="message", reason="judge", size=900, excerpt=(head + "part one")[:200])
-    second = PendingItem(hash="bbbb" + "0" * 60, kind="message", reason="judge", size=900, excerpt=(head + "part two")[:200])
+    head = "x" * 50 + " the quarterly numbers for the board, " * 8
+    first = PendingItem(hash="aaaa" + "0" * 60, kind="message", reason="judge", size=900, excerpt=(head + "part one")[:300])
+    second = PendingItem(hash="bbbb" + "0" * 60, kind="message", reason="judge", size=900, excerpt=(head + "part two")[:300])
     assert first.excerpt == second.excerpt
     run, seen = _dialog(["Send", "Reject"])
     p = DialogPrompter(5, runner=run)

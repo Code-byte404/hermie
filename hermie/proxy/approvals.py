@@ -344,7 +344,7 @@ async def _osascript_dialog(title: str, text: str, buttons: list[str], timeout_s
 
 _TAGS = re.compile(r"</?session>")
 _REMEMBER_S = 600
-_EXCERPT_MAX = 200   # walker cuts excerpts here; a cut excerpt does not show the whole message
+_EXCERPT_MAX = 300   # walker cuts excerpts here; a cut excerpt does not show the whole message
 
 
 def _norm(excerpt: str) -> str:

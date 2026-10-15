@@ -4,7 +4,7 @@ from hermie.config import Config
 from hermie.gate.gate import Gate
 from hermie.gate.redact import MappingStore
 from hermie.gate.types import Origin
-from hermie.proxy.walker import walk_request, classify, SKIP_KEYS, WITHHELD_NOTE
+from hermie.proxy.walker import walk_request, classify, SKIP_KEYS
 
 FIX = Path(__file__).parent / "fixtures" / "requests"
 FORMATS = ["anthropic", "openai_chat", "openai_responses", "gemini"]
@@ -43,7 +43,7 @@ def test_tool_result_withheld_with_id_and_released_after_allow(tmp_path, analyze
     body = json.loads((FIX / "anthropic.json").read_text())
     out = walk_request(body, gate, Allow(), cfg)
     note = out.body["messages"][2]["content"][0]["content"]
-    assert note.startswith("[hermie withheld this tool result (id ") and "hermie allow" in note
+    assert note.startswith("[Hermie withheld this tool result (") and "hermie allow" in note
     d = [d for d in out.decisions if d.kind == "withhold"][0]
     out2 = walk_request(json.loads((FIX / "anthropic.json").read_text()), gate, Allow([d.id]), cfg)
     assert "<SECRET_1>" in out2.body["messages"][2]["content"][0]["content"]   # released: pattern-redacted, not raw
@@ -188,7 +188,7 @@ def test_withheld_note_shows_the_store_id_on_a_collision(tmp_path, analyzer):
     store.register(PendingItem(h[:4] + "f" * 60 if h[4] != "f" else h[:4] + "e" * 60, "tool result", "judge", 1, ""))
     out = walk_request(_tool_result_body(text), gate, Approvals(store, SessionAllow()), cfg)
     note = out.body["messages"][2]["content"][0]["content"]
-    assert f"(id {h[:6]})" in note and f'hermie allow {h[:6]}"' in note
+    assert f"hermie allow {h[:6]}]" in note and f"hermie allow {h[:4]}]" not in note
 
 
 def test_user_text_with_an_encoded_blob_is_held_for_smuggling(tmp_path, analyzer):
@@ -327,4 +327,43 @@ def test_a_flagged_custom_tool_output_is_withheld(tmp_path, analyzer):
     cfg, gate = _gate(tmp_path, analyzer, judge=SensitiveToolJudge())
     body = {"model": "m", "input": [{"type": "custom_tool_call_output", "call_id": "c1", "output": "key AKIA in the log"}]}
     out = walk_request(body, gate, Allow(), cfg)
-    assert out.body["input"][0]["output"].startswith("[hermie withheld this tool result")
+    assert out.body["input"][0]["output"].startswith("[Hermie withheld this tool result")
+
+
+class AlwaysJudge:
+    def is_sensitive(self, text): return True
+
+
+def test_withheld_note_names_tool_and_file_and_asks_to_tell_the_user(tmp_path, analyzer):
+    cfg, gate = _gate(tmp_path, analyzer, judge=AlwaysJudge())
+    body = {"messages": [
+        {"role": "assistant", "content": [{"type": "tool_use", "id": "t1", "name": "Read",
+                                           "input": {"file_path": "/srv/app/customers.csv"}}]},
+        {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "t1", "content": "rows of customers"}]}]}
+    out = walk_request(body, gate, Allow(), cfg)
+    note = out.body["messages"][1]["content"][0]["content"]
+    assert note.startswith("[Hermie withheld this tool result (Read, ") and "Tell the user" in note
+    assert "customers.csv" not in note and "rows of customers" not in note
+    [d] = [d for d in out.decisions if d.kind == "withhold"]
+    assert d.tool == "Read" and d.file == "customers.csv"
+
+
+def test_withheld_note_without_file_names_tool_only(tmp_path, analyzer):
+    cfg, gate = _gate(tmp_path, analyzer, judge=AlwaysJudge())
+    body = {"input": [{"type": "function_call", "call_id": "c1", "name": "shell", "arguments": "{}"},
+                      {"type": "function_call_output", "call_id": "c1", "output": "secret stuff here"}]}
+    out = walk_request(body, gate, Allow(), cfg)
+    [d] = [d for d in out.decisions if d.kind == "withhold"]
+    assert d.tool == "shell" and d.file is None
+    assert out.body["input"][1]["output"].startswith("[Hermie withheld this tool result (shell, ")
+
+
+def test_dropped_note_has_no_text_and_plain_label(tmp_path, analyzer):
+    cfg, gate = _gate(tmp_path, analyzer, judge=AlwaysJudge())
+    approvals = Allow()
+    body = {"messages": [{"role": "user", "content": "lay off the night team"}]}
+    first = walk_request(body, gate, approvals, cfg)
+    approvals.dropped.add(first.held.hash)
+    again = walk_request({"messages": [body["messages"][0], {"role": "user", "content": "ok"}]}, gate, approvals, cfg)
+    note = again.body["messages"][0]["content"]
+    assert "night team" not in note and "chose not to send" in note and "rejected" not in note.lower()
