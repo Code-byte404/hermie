@@ -110,6 +110,18 @@ def test_hook_tolerates_bad_input(tmp_path, monkeypatch, capsys):
     assert cli.main(["hook", "--data-dir", str(tmp_path)]) == 0 and capsys.readouterr().out == ""
 
 
+def test_hook_and_status_never_fail_on_a_broken_config(tmp_path, monkeypatch, capsys):
+    import io
+    for body in ("not_a_field = 1\n", 'port = "8787"\n', "port = [\n"):
+        bad = tmp_path / "config.toml"
+        bad.write_text(body)
+        monkeypatch.setattr("sys.stdin", io.StringIO(json.dumps({"hook_event_name": "Stop", "session_id": "s9"})))
+        assert cli.main(["hook", "--config", str(bad), "--data-dir", str(tmp_path)]) == 0, body
+        assert capsys.readouterr().out == ""
+        assert cli.main(["status", "--config", str(bad), "--data-dir", str(tmp_path)]) == 0, body
+        assert capsys.readouterr().out.strip() == "hermie: config error"
+
+
 def test_hook_cli_prints_json_for_claude_code(tmp_path, monkeypatch, capsys):
     import io
     cfg = Config(data_dir=tmp_path)

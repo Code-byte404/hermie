@@ -366,6 +366,19 @@ def main(argv=None) -> int:
             overrides["custom_upstream"] = args.upstream
         if args.no_bodies:
             overrides["bodies"] = False
+    if args.cmd in ("hook", "status"):
+        # Claude Code runs these on every prompt and redraw: exit 2 from a hook blocks the prompt, so they never fail
+        # (a broken config included) and never echo its contents.
+        try:
+            config = Config.load(Path(args.config) if args.config else None, **overrides)
+        except Exception:
+            if args.cmd == "status":
+                print(json.dumps({"error": "config"}) if args.json else "hermie: config error")
+            return 0
+        try:
+            return args.fn(config, args)
+        except Exception:
+            return 0
     try:
         config = Config.load(Path(args.config) if args.config else None, **overrides)
         if args.cmd == "tail" and args.since:
