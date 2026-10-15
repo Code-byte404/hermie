@@ -179,3 +179,26 @@ def test_summary_takes_the_largest_request_per_entity_and_sums_restored():
              _line(replaced={"PERSON": 16, "SECRET": 1}, restored=2)]
     assert summarize(lines) == "16 PERSON, 4 EMAIL_ADDRESS, 2 SECRET and 1 more replaced; 3 restored"
     assert summarize([_line()]) is None
+
+
+def test_install_quotes_paths_with_spaces_and_stays_idempotent(tmp_path):
+    import shlex
+    path = tmp_path / ".claude" / "settings.local.json"
+    for _ in range(2):
+        install(path, ["/Users/me/My Envs/bin/python", "-m", "hermie.cli"], "/Users/me/Hermie Data")
+    data = json.loads(path.read_text())
+    assert len(data["hooks"]["Stop"]) == 1
+    cmd = data["hooks"]["Stop"][0]["hooks"][0]["command"]
+    assert shlex.split(cmd) == ["/Users/me/My Envs/bin/python", "-m", "hermie.cli", "hook", "--data-dir", "/Users/me/Hermie Data"]
+    assert shlex.split(data["statusLine"]["command"])[-3:] == ["status", "--data-dir", "/Users/me/Hermie Data"]
+    uninstall(path)
+    assert json.loads(path.read_text()) == {}
+
+
+def test_install_hooks_cli_writes_an_absolute_data_dir(tmp_path, monkeypatch):
+    import shlex
+    monkeypatch.chdir(tmp_path)
+    assert cli.main(["install-hooks", "--data-dir", "rel dir"]) == 0
+    data = json.loads((tmp_path / ".claude" / "settings.local.json").read_text())
+    argv = shlex.split(data["hooks"]["Stop"][0]["hooks"][0]["command"])
+    assert argv[-2:] == ["--data-dir", str((tmp_path / "rel dir").resolve())]

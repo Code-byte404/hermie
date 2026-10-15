@@ -11,6 +11,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import shlex
 import socket
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -24,7 +25,6 @@ FILE_TOOLS = ("Write", "Edit", "MultiEdit", "NotebookEdit")
 _SESSION = re.compile(r"[A-Za-z0-9_-]{1,80}")
 _STAMP = "%Y-%m-%dT%H:%M:%SZ"
 _FALLBACK_WINDOW = timedelta(minutes=5)   # a Stop without a marker (hook installed mid-session) looks this far back
-_OURS = re.compile(r"(^|[/\\ ])(hermie|hermie\.cli)( --data-dir \S+)? (hook|status)( --data-dir \S+)?$")
 
 
 # --- status ---
@@ -224,7 +224,23 @@ HOOK_EVENTS = {"UserPromptSubmit": None, "PostToolUse": "|".join(FILE_TOOLS), "S
 
 
 def _is_ours(command) -> bool:
-    return isinstance(command, str) and _OURS.search(command.strip()) is not None
+    """`<hermie> hook|status [--data-dir DIR]`, where <hermie> is a `hermie` executable or `<python> -m hermie.cli`
+    (shell-quoted, as `install` writes it; older unquoted entries parse the same)."""
+    if not isinstance(command, str):
+        return False
+    try:
+        argv = shlex.split(command)
+    except ValueError:
+        return False
+    for i in range(len(argv) - 1):
+        if argv[i] == "--data-dir":
+            del argv[i:i + 2]
+            break
+    if len(argv) < 2 or argv[-1] not in ("hook", "status"):
+        return False
+    prog = argv[:-1]
+    return ((len(prog) == 1 and os.path.basename(prog[0]) == "hermie")
+            or (len(prog) == 3 and prog[1:] == ["-m", "hermie.cli"]))
 
 
 def _entry_is_ours(entry) -> bool:
@@ -263,10 +279,11 @@ def _strip_ours(data: dict) -> dict:
     return data
 
 
-def install(path: Path, command: str, data_dir: str | None = None) -> list[str]:
+def install(path: Path, command: str | list[str], data_dir: str | None = None) -> list[str]:
     """Add the three hooks and the status line to the settings file at `path` (merged, idempotent). `command`
-    is how Claude Code should start hermie. Returns notes for the user."""
-    suffix = f" --data-dir {data_dir}" if data_dir else ""
+    is how Claude Code should start hermie (an executable, or argv); every part is shell-quoted. Returns notes."""
+    command = shlex.join([command] if isinstance(command, str) else command)
+    suffix = f" --data-dir {shlex.quote(data_dir)}" if data_dir else ""
     data = _strip_ours(_load(path))
     hooks = data.setdefault("hooks", {})
     for event, matcher in HOOK_EVENTS.items():

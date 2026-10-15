@@ -279,9 +279,9 @@ def _hook(config: Config, args) -> int:
     return 0
 
 
-def _hermie_command() -> str:
+def _hermie_command() -> list[str]:
     found = shutil.which("hermie")
-    return found if found else f"{sys.executable} -m hermie.cli"
+    return [found] if found else [sys.executable, "-m", "hermie.cli"]
 
 
 def _install_hooks(config: Config, args) -> int:
@@ -291,7 +291,9 @@ def _install_hooks(config: Config, args) -> int:
             claude_code.uninstall(path)
             print(f"removed Hermie's hooks and status line from {path}")
             return 0
-        notes = claude_code.install(path, _hermie_command(), args.data_dir)
+        # absolute: Claude Code runs the hooks from whatever directory its session is in
+        data_dir = str(Path(args.data_dir).expanduser().resolve()) if args.data_dir else None
+        notes = claude_code.install(path, _hermie_command(), data_dir)
     except (OSError, ValueError) as e:
         print(f"hermie: {e}", file=sys.stderr)
         return 1
