@@ -528,3 +528,25 @@ def test_receipt_records_placeholders_and_withheld_sources_without_values(tmp_pa
     line = json.loads((tmp_path / "receipt.jsonl").read_text().splitlines()[-1])
     assert line["placeholders"] == ["<PHONE_NUMBER_1>"] and line["withheld_items"] == []
     assert "555-010-0199" not in json.dumps(line)
+
+
+@pytest.mark.parametrize("answer,needle", [("reject", "you chose Don't send"), ("timeout", "no answer within"),
+                                           ("unavailable", "no one was asked")])
+def test_held_error_names_the_cause(tmp_path, analyzer, answer, needle):
+    class P:
+        available = True
+        async def ask(self, item): return answer
+    up = Upstream()
+    cfg, c = _app(tmp_path, analyzer, up, judge=_LJ(), prompter=P())
+    r = c.post("/anthropic/v1/messages", json={"model": "m", "messages": [{"role": "user", "content": "the layoff list"}]},
+               headers={"x-api-key": "sk-test-key"})
+    msg = r.json()["error"]["message"]
+    assert r.status_code == 422 and needle in msg and "Nothing left this machine." in msg and "layoff" not in msg
+    assert up.seen == []
+
+
+def test_unreachable_error_is_plain(tmp_path, analyzer):
+    up = Upstream(raise_=httpx.ConnectError("boom"))
+    cfg, c = _app(tmp_path, analyzer, up)
+    r = c.post("/anthropic/v1/messages", json=_body("anthropic"), headers={"x-api-key": "sk-test-key"})
+    assert r.status_code == 502 and r.json()["error"]["message"].startswith("Hermie could not reach api.anthropic.com")

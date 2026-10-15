@@ -103,8 +103,8 @@ async def test_tty_prompter_reads_choice_and_times_out():
     assert await p.ask(item) == "send"
     assert "layoff" in out.getvalue() and "hermie allow cafe" in out.getvalue()
     p2 = TtyPrompter(timeout_s=0.2, stdin=io.StringIO(""), stdout=io.StringIO())
-    assert await p2.ask(item) == "reject"
-    assert await NoPrompter().ask(item) == "reject"
+    assert await p2.ask(item) == "unavailable"          # stdin closed: nobody can answer
+    assert await NoPrompter().ask(item) == "unavailable"
 
 
 async def test_tty_prompter_reprompts_on_junk_and_maps_choices():
@@ -126,13 +126,13 @@ async def test_concurrent_asks_are_answered_in_order():
     assert await second == "reject"
 
 
-async def test_timeout_with_open_pipe_rejects_and_stops_countdown():
+async def test_timeout_with_open_pipe_times_out_and_stops_countdown():
     r, w = os.pipe()
     stdin = os.fdopen(r)
     try:
         item = PendingItem(hash="cafe" + "0" * 60, kind="hold", reason="judge", size=1, excerpt="x")
         p = TtyPrompter(timeout_s=0.3, stdin=stdin, stdout=io.StringIO())
-        assert await p.ask(item) == "reject"
+        assert await p.ask(item) == "timeout"
         assert p._ticker.done()
     finally:
         os.close(w)
@@ -162,16 +162,16 @@ def _dialog(answers):
 
 async def test_dialog_prompter_asks_once():
     item = PendingItem(hash="cafe" + "0" * 60, kind="message", reason="judge", size=40, excerpt="the layoff list", id="cafe")
-    run, seen = _dialog(["Send"])
+    run, seen = _dialog(["Send this one"])
     assert await DialogPrompter(5, runner=run).ask(item) == "send"
     assert len(seen) == 1 and "layoff" in seen[0][1] and "cafe" in seen[0][1]
-    for button, want in (("Reject", "reject"), ("Allow session", "allow_all"), (None, "reject")):
+    for button, want in (("Don't send", "reject"), ("Send all this session", "allow_all"), (None, "timeout")):
         run, seen = _dialog([button])
         assert await DialogPrompter(5, runner=run).ask(item) == want and len(seen) == 1
 
     async def broken(*a):
         raise OSError("no osascript")
-    assert await DialogPrompter(5, runner=broken).ask(item) == "reject"
+    assert await DialogPrompter(5, runner=broken).ask(item) == "unavailable"
 
 
 async def test_dialog_prompter_reuses_the_answer_for_a_request_that_wraps_the_same_text():
@@ -180,7 +180,7 @@ async def test_dialog_prompter_reuses_the_answer_for_a_request_that_wraps_the_sa
     title = PendingItem(hash="bbbb" + "0" * 60, kind="message", reason="judge", size=300,
                         excerpt=f"<session> {text} </session> Write the title in the predominant language")
     other = PendingItem(hash="cccc" + "0" * 60, kind="message", reason="judge", size=40, excerpt="the layoff list is final")
-    run, seen = _dialog(["Send", "Reject"])
+    run, seen = _dialog(["Send this one", "Don't send"])
     p = DialogPrompter(5, runner=run)
     assert await p.ask(main) == "send"
     assert await p.ask(title) == "send" and len(seen) == 1      # same text, no second dialog
@@ -191,7 +191,7 @@ async def test_dialog_prompter_asks_again_for_a_different_message_with_the_same_
     opening = "Please draft a reply to this customer complaint about the delayed refund for order "
     first = PendingItem(hash="aaaa" + "0" * 60, kind="message", reason="judge", size=120, excerpt=opening + "A-1001, Jane at 555-0100")
     second = PendingItem(hash="bbbb" + "0" * 60, kind="message", reason="judge", size=120, excerpt=opening + "B-2002, she has cancer")
-    run, seen = _dialog(["Send", "Reject"])
+    run, seen = _dialog(["Send this one", "Don't send"])
     p = DialogPrompter(5, runner=run)
     assert await p.ask(first) == "send"
     assert await p.ask(second) == "reject" and len(seen) == 2
@@ -202,14 +202,14 @@ async def test_dialog_prompter_does_not_reuse_an_answer_for_a_cut_excerpt():
     first = PendingItem(hash="aaaa" + "0" * 60, kind="message", reason="judge", size=900, excerpt=(head + "part one")[:300])
     second = PendingItem(hash="bbbb" + "0" * 60, kind="message", reason="judge", size=900, excerpt=(head + "part two")[:300])
     assert first.excerpt == second.excerpt
-    run, seen = _dialog(["Send", "Reject"])
+    run, seen = _dialog(["Send this one", "Don't send"])
     p = DialogPrompter(5, runner=run)
     assert await p.ask(first) == "send"
     assert await p.ask(second) == "reject" and len(seen) == 2
     assert await p.ask(first) == "send" and len(seen) == 2       # the same item: no second dialog
 
 
-async def test_mod_prompter_waits_for_the_menu_answer_and_publishes_no_text(tmp_path):
+async def test_mod_prompter_waits_for_the_menu_answer_and_clears_the_excerpt(tmp_path):
     from hermie.proxy.approvals import ModPrompter, read_asks, touch_ui, write_answer
     item = PendingItem(hash="cafe" + "0" * 60, kind="message", reason="judge", size=40, excerpt="the layoff list", id="cafe")
     touch_ui(tmp_path)
@@ -220,8 +220,8 @@ async def test_mod_prompter_waits_for_the_menu_answer_and_publishes_no_text(tmp_
         if read_asks(tmp_path):
             break
     asks = read_asks(tmp_path)
-    assert asks == [{"id": "cafe", "kind": "message", "reason": "judge", "size": 40}]
-    assert "layoff" not in (tmp_path / "asks.json").read_text()
+    assert [{k: v for k, v in a.items() if k != "deadline"} for a in asks] == [
+        {"id": "cafe", "kind": "message", "reason": "judge", "size": 40, "excerpt": "the layoff list", "placeholders": []}]
     assert write_answer(tmp_path, "cafe", "session") and not write_answer(tmp_path, "nope", "send")
     assert await task == "allow_all"
     assert read_asks(tmp_path) == []
@@ -230,17 +230,17 @@ async def test_mod_prompter_waits_for_the_menu_answer_and_publishes_no_text(tmp_
 async def test_mod_prompter_falls_back_when_no_menu_polls(tmp_path):
     from hermie.proxy.approvals import ModPrompter
     item = PendingItem(hash="cafe" + "0" * 60, kind="message", reason="judge", size=40, excerpt="x", id="cafe")
-    run, seen = _dialog(["Send"])
+    run, seen = _dialog(["Send this one"])
     p = ModPrompter(tmp_path, 5, fallback=DialogPrompter(5, runner=run))
     assert await p.ask(item) == "send" and len(seen) == 1
-    assert await ModPrompter(tmp_path, 5).ask(item) == "reject"
+    assert await ModPrompter(tmp_path, 5).ask(item) == "unavailable"
 
 
-async def test_mod_prompter_rejects_on_timeout(tmp_path):
+async def test_mod_prompter_times_out(tmp_path):
     from hermie.proxy.approvals import ModPrompter, touch_ui
     item = PendingItem(hash="cafe" + "0" * 60, kind="message", reason="judge", size=40, excerpt="x", id="cafe")
     touch_ui(tmp_path)
-    assert await ModPrompter(tmp_path, 0.1, poll_s=0.01).ask(item) == "reject"
+    assert await ModPrompter(tmp_path, 0.1, poll_s=0.01).ask(item) == "timeout"
 
 
 async def test_mod_prompter_publishes_local_flag_and_returns_local(tmp_path):
@@ -254,10 +254,11 @@ async def test_mod_prompter_publishes_local_flag_and_returns_local(tmp_path):
         await asyncio.sleep(0.01)
         if read_asks(tmp_path):
             break
-    assert read_asks(tmp_path) == [{"id": "cafe", "kind": "message", "reason": "judge", "size": 40, "local": True}]
-    assert "layoff" not in (tmp_path / "asks.json").read_text()
+    [row] = read_asks(tmp_path)
+    assert row["local"] is True and row["excerpt"] == "the layoff list"
     assert write_answer(tmp_path, "cafe", "local")
     assert await task == "local"
+    assert "layoff" not in (tmp_path / "asks.json").read_text()
 
 
 async def test_local_answer_is_refused_when_the_ask_has_no_local_flag(tmp_path):
@@ -270,7 +271,7 @@ async def test_local_answer_is_refused_when_the_ask_has_no_local_flag(tmp_path):
         if read_asks(tmp_path):
             break
     assert not write_answer(tmp_path, "cafe", "local")
-    assert await task == "reject"
+    assert await task == "timeout"
 
 
 async def _wait_ask(tmp_path):
@@ -287,8 +288,8 @@ async def test_review_publishes_the_rewrite_and_clears_it_after_the_answer(tmp_p
     item = PendingItem(hash="cafe" + "0" * 60, kind="message", reason="judge", size=40, excerpt="x", id="cafe", local_ok=True)
     touch_ui(tmp_path)
     task = asyncio.create_task(ModPrompter(tmp_path, 5, poll_s=0.01).review(item, "a staffing plan"))
-    assert await _wait_ask(tmp_path) == [{"id": "cafe", "kind": "rewrite", "reason": "judge", "size": 15,
-                                          "preview": "a staffing plan"}]
+    assert [{k: v for k, v in a.items() if k != "deadline"} for a in await _wait_ask(tmp_path)] == [
+        {"id": "cafe", "kind": "rewrite", "reason": "judge", "size": 15, "preview": "a staffing plan"}]
     assert write_answer(tmp_path, "cafe", "again")
     assert await task == "again"
     assert read_asks(tmp_path) == [] and "staffing" not in (tmp_path / "asks.json").read_text()
@@ -323,7 +324,7 @@ async def test_review_without_a_menu_is_a_discard_and_again_needs_a_shown_rewrit
     task = asyncio.create_task(ModPrompter(tmp_path, 0.3, poll_s=0.01).ask(item))
     await _wait_ask(tmp_path)
     assert not write_answer(tmp_path, "cafe", "again")
-    assert await task == "reject"
+    assert await task == "timeout"
 
 
 def test_approvals_rewrites_start_empty(tmp_path):
@@ -352,3 +353,49 @@ def test_the_newest_row_wins_an_id_in_an_old_pending_file(tmp_path):
         for h in (x, y):
             f.write(json.dumps({"hash": h, "id": "abcd", "kind": "hold", "reason": "judge", "size": 1, "at": "t"}) + "\n")
     assert AllowStore(tmp_path).pending["abcd"].hash == y
+
+
+async def test_timeouts_and_missing_prompters_are_not_a_choice(tmp_path):
+    from hermie.proxy.approvals import ModPrompter, touch_ui
+    item = PendingItem(hash="cafe" + "0" * 60, kind="message", reason="judge", size=40, excerpt="x", id="cafe")
+    assert await NoPrompter().ask(item) == "unavailable"
+    assert await ModPrompter(tmp_path, 5).ask(item) == "unavailable"            # no menu, no fallback
+    touch_ui(tmp_path)
+    assert await ModPrompter(tmp_path, 0.1, poll_s=0.01).ask(item) == "timeout"
+    run, _ = _dialog([None])
+    assert await DialogPrompter(5, runner=run).ask(item) == "timeout"
+
+
+async def test_ask_row_carries_excerpt_placeholders_and_deadline(tmp_path):
+    import time as _t
+    from hermie.proxy.approvals import ModPrompter, read_asks, touch_ui, write_answer
+    item = PendingItem(hash="cafe" + "0" * 60, kind="message", reason="judge", size=40,
+                       excerpt="lay off <PERSON_1> and <PERSON_2>", id="cafe")
+    touch_ui(tmp_path)
+    task = asyncio.create_task(ModPrompter(tmp_path, 30, poll_s=0.01).ask(item))
+    while not read_asks(tmp_path):
+        await asyncio.sleep(0.01)
+    [row] = read_asks(tmp_path)
+    assert row["excerpt"] == "lay off <PERSON_1> and <PERSON_2>" and row["placeholders"] == ["<PERSON_1>", "<PERSON_2>"]
+    assert _t.time() + 25 < row["deadline"] <= _t.time() + 30
+    write_answer(tmp_path, "cafe", "reject")
+    assert await task == "reject" and read_asks(tmp_path) == []
+
+
+async def test_dialog_defaults_to_dont_send_and_shows_consequences():
+    item = PendingItem(hash="cafe" + "0" * 60, kind="message", reason="judge", size=40, excerpt="hi <PERSON_1>",
+                       id="cafe", mapping={"<PERSON_1>": "Alice Chen"})
+    run, seen = _dialog(["Send this one"])
+    assert await DialogPrompter(5, runner=run).ask(item) == "send"
+    title, text, buttons = seen[0]
+    assert buttons[-1] == "Don't send" and "Send all this session" in buttons
+    assert "Why: a local model judged it private" in text and "Alice Chen -> <PERSON_1>" in text
+
+
+async def test_terminal_prompt_uses_the_same_words():
+    out = io.StringIO()
+    p = TtyPrompter(5, stdin=io.StringIO("n\n"), stdout=out)
+    item = PendingItem(hash="cafe" + "0" * 60, kind="message", reason="judge", size=40, excerpt="hi", id="cafe")
+    assert await p.ask(item) == "reject"
+    text = out.getvalue()
+    assert "[n] Don't send" in text and "[s] Send this one" in text and "kind:" not in text

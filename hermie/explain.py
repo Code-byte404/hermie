@@ -101,7 +101,7 @@ def error_text(cause: str, id: str, timeout_s: float = 0) -> str:
         "timeout": f"no answer within {int(timeout_s)} seconds",
         "unavailable": "no one was asked (no menu, dialog or terminal was available)",
         "local_discarded": "you did not send the local rewrite",
-        "local_failed": "the local model could not rewrite it",
+        "local_failed": "the local model could not rewrite it, or the rewrite was too long to review",
     }.get(cause, "you chose Don't send")
     return (f"Hermie did not send this message: {why}. Nothing left this machine. Edit the prompt, or send it "
             f"anyway with: hermie allow {id}, then resend.")

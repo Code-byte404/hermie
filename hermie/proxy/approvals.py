@@ -9,15 +9,20 @@ import re
 import sys
 import threading
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Literal
 
+from hermie import explain
+from hermie.gate.redact import PLACEHOLDER
+
 KEEP = 500
 _FULL_HASH = re.compile(r"[0-9a-f]{64}")
-Choice = Literal["send", "reject", "allow_all", "local"]
-_KEYS: dict[str, Choice] = {"s": "send", "r": "reject", "a": "allow_all"}
+# "timeout" and "unavailable" are not answers: nobody chose, and the message stays home like a reject
+Choice = Literal["send", "reject", "allow_all", "local", "timeout", "unavailable"]
+_KEYS: dict[str, Choice] = {"s": "send", "n": "reject", "r": "reject", "a": "allow_all"}
+_TTY_KEYS = {"reject": "n", "send": "s", "session": "a"}
 
 
 @dataclass
@@ -29,6 +34,18 @@ class PendingItem:
     excerpt: str
     id: str | None = None
     local_ok: bool = False
+    mapping: dict = field(default_factory=dict, repr=False)   # for display only (real values); never persisted
+
+
+def _row(item: PendingItem, timeout_s: float) -> dict:
+    """What a prompt shows about a held item: no text beyond the pattern-redacted excerpt."""
+    row = {"id": item.id or item.hash[:4], "kind": item.kind, "reason": item.reason, "size": item.size,
+           "excerpt": item.excerpt,
+           "placeholders": list(dict.fromkeys(m.group(0) for m in PLACEHOLDER.finditer(item.excerpt))),
+           "deadline": time.time() + timeout_s}
+    if item.local_ok:
+        row["local"] = True
+    return row
 
 
 def _append(path: Path, row: dict) -> None:
@@ -227,7 +244,7 @@ class NoPrompter:
     available = False
 
     async def ask(self, item: PendingItem) -> Choice:
-        return "reject"
+        return "unavailable"
 
 
 class TtyPrompter:
@@ -288,16 +305,12 @@ class TtyPrompter:
                 while not self._queue.empty():
                     self._queue.get_nowait()
             if self._eof and self._queue.empty():
-                return "reject"
+                return "unavailable"
             return await self._ask(item)
 
     async def _ask(self, item: PendingItem) -> Choice:
-        excerpt = " ".join(item.excerpt[:200].split())
-        self._say(f"\nHermie holds this {item.kind} ({item.size} chars): {excerpt}\n"
-                  f"  reason: {item.reason}\n"
-                  f"  kind: {item.kind}\n"
-                  "  [s]end as is  [r]eject  [a]llow everything this session\n"
-                  f"  or later: hermie allow {item.id or item.hash[:4]}\n")
+        view = explain.held_view(_row(item, self.timeout_s), item.mapping)
+        self._say("\n" + "\n".join(explain.held_lines(view, _TTY_KEYS)) + "\n")
         loop = asyncio.get_running_loop()
         deadline = loop.time() + self.timeout_s
         self._ticker = ticker = asyncio.create_task(self._countdown(deadline))
@@ -305,13 +318,13 @@ class TtyPrompter:
             while True:
                 left = deadline - loop.time()
                 if left <= 0:
-                    return "reject"
+                    return "timeout"
                 try:
                     line = await asyncio.wait_for(self._queue.get(), left)
                 except asyncio.TimeoutError:
-                    return "reject"
+                    return "timeout"
                 if line is None:
-                    return "reject"
+                    return "unavailable"
                 choice = _KEYS.get(line.strip().lower())
                 if choice:
                     return choice
@@ -378,20 +391,21 @@ class DialogPrompter:
         return None
 
     async def ask(self, item: PendingItem) -> Choice:
-        excerpt = " ".join(item.excerpt[:200].split())
         norm = _norm(item.excerpt)
-        text = (f"Hermie holds this {item.kind} ({item.size} chars, reason: {item.reason}):\n\n{excerpt}\n\n"
-                f"Send it to the cloud model?  (later: hermie allow {item.id or item.hash[:4]})")
+        view = explain.held_view(_row(item, self.timeout_s), item.mapping)
+        text = "\n\n".join(explain.held_lines(view, {}))   # the options are the buttons
         async with self._lock:
             known = self._remembered(item, norm)
             if known is not None:
                 return known
             try:
-                button = await self._run("Hermie: sensitive content", text, ["Reject", "Allow session", "Send"],
-                                         self.timeout_s)
+                # the last button is the default (Enter): Don't send
+                button = await self._run("Hermie stopped a message", text,
+                                         ["Send this one", "Send all this session", "Don't send"], self.timeout_s)
             except Exception:   # no osascript, no GUI session: never send
-                return "reject"
-            choice: Choice = {"Send": "send", "Allow session": "allow_all"}.get(button, "reject")
+                return "unavailable"
+            choice: Choice = ({"Send this one": "send", "Send all this session": "allow_all", "Don't send": "reject"}
+                              .get(button, "reject") if button else "timeout")
             self._answers.append((item.hash, norm, len(item.excerpt) < _EXCERPT_MAX, choice, self._clock()))
             return choice
 
@@ -434,8 +448,10 @@ def write_answer(data_dir: Path, ask_id: str, answer: str) -> bool:
 
 class ModPrompter:
     """Asks through a menu in the client (the Claude Code mod polls `hermie asks --json`, answers with
-    `hermie answer`). The ask file holds id, kind, reason and size only, never the held text. With no menu polling
-    it hands the item to `fallback` (the macOS dialog), or rejects."""
+    `hermie answer`). The ask file holds id, kind, reason, size, deadline and the held message's pattern-redacted
+    excerpt (first 300 characters, with its placeholder names) until it is answered or times out; a review row holds
+    the rewrite the same way. With no menu polling it hands the item to `fallback` (the macOS dialog), or gives up
+    ("unavailable")."""
     def __init__(self, data_dir: Path, timeout_s: float, fallback=None, poll_s: float = 0.25):
         self.data_dir = Path(data_dir)
         self.timeout_s = timeout_s
@@ -475,21 +491,19 @@ class ModPrompter:
 
     async def ask(self, item: PendingItem) -> Choice:
         if not self._ui_fresh():
-            return await self.fallback.ask(item) if self.fallback is not None else "reject"
+            return await self.fallback.ask(item) if self.fallback is not None else "unavailable"
         ask_id = item.id or item.hash[:4]
         async with self._lock:
-            row = {"id": ask_id, "kind": item.kind, "reason": item.reason, "size": item.size}
-            if item.local_ok:
-                row["local"] = True
-            answer = await self._wait(ask_id, row)
-            return _ANSWERS.get(answer, "reject") if answer is not None else "reject"
+            answer = await self._wait(ask_id, _row(item, self.timeout_s))
+            return _ANSWERS.get(answer, "reject") if answer is not None else "timeout"
 
     async def review(self, item: PendingItem, text: str) -> Review:
-        """Show the user a local rewrite (the one place the ask file holds text, and only the rewrite, only until it is
-        answered): send it, rewrite again, or discard. No menu, a timeout or any other answer is a discard."""
+        """Show the user a local rewrite (held in the ask file only until it is answered): send it, rewrite again, or
+        discard. No menu, a timeout or any other answer is a discard."""
         if not self._ui_fresh():
             return "discard"
         ask_id = item.id or item.hash[:4]
         async with self._lock:
-            row = {"id": ask_id, "kind": "rewrite", "reason": item.reason, "size": len(text), "preview": text}
+            row = {"id": ask_id, "kind": "rewrite", "reason": item.reason, "size": len(text), "preview": text,
+                   "deadline": time.time() + self.timeout_s}
             return _REVIEW.get(await self._wait(ask_id, row) or "", "discard")

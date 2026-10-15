@@ -60,14 +60,7 @@ UNSUPPORTED = "hermie only proxies JSON requests; this path is not in its passth
 NO_FILES = "hermie does not proxy file uploads"
 BAD_PATH = "hermie refuses paths with '.' or '..' segments or encoded slashes"
 SEEN_IMAGES = 4096
-BLOCKED = 'hermie blocked this message (id {id}): {reason}. Run "hermie allow {id}" to send it, then retry.'
-LOCAL_FAILED = ('hermie blocked this message (id {id}): the local model could not rewrite it, or the rewrite was too '
-                'long to review. Run "hermie allow {id}" to send it as is, then retry.')
-LOCAL_DISCARDED = ('hermie blocked this message (id {id}): you did not send the local rewrite, so nothing was sent. '
-                   'Run "hermie allow {id}" to send the original as is, then retry.')
 REVIEW_MAX_CHARS = 3000   # longer than this does not fit the menu, so the person could not read all of it
-UNSCANNED = ("hermie blocked this message (id {id}): {reason}. The text could not be scanned, so it cannot be sent "
-             "or released; shorten it or retry.")
 
 
 async def send_upstream(client: httpx.AsyncClient, method: str, url: str, headers: dict[str, str],
@@ -119,6 +112,14 @@ def path_is_safe(decoded: str, raw: str) -> bool:
 def _is_json(content_type: str) -> bool:
     ct = content_type.split(";", 1)[0].strip().lower()
     return ct == "application/json" or ct.endswith("+json")
+
+
+def _unreachable(url: str, provider: str, e: Exception) -> str:
+    try:
+        host = httpx.URL(url).host
+    except Exception:
+        host = ""
+    return explain.unreachable_text(host or provider, type(e).__name__)
 
 
 def _error(status: int, kind: str, message: str, rid: str, id_: str | None = None) -> JSONResponse:
@@ -262,13 +263,14 @@ def create_app(config: Config, gate: Gate | None = None, upstream_client: httpx.
             d = result.held
             if d.reason.startswith("detector_error"):   # never offered for release: only reject
                 rec.held = rec.held or d.id
-                return _error(422, "hermie_blocked", UNSCANNED.format(id=d.id, reason=d.reason), rec.rid, d.id)
+                return _error(422, "hermie_blocked", explain.UNSCANNED_ERROR, rec.rid, d.id)
             item_id = register(d)
             rec.held = rec.held or item_id
             item = store.pending.get(item_id) or PendingItem(d.hash, "message", d.reason, d.size, d.excerpt, item_id)
             item.excerpt = d.excerpt
             item.local_ok = rewriter is not None
-            choice = await prompter.ask(item) if prompter.available else "reject"
+            item.mapping = gate.mapping
+            choice = await prompter.ask(item) if prompter.available else "unavailable"
             if choice == "send":
                 store.allow(d.hash)
                 rec.approved_by = "user"
@@ -278,7 +280,7 @@ def create_app(config: Config, gate: Gate | None = None, upstream_client: httpx.
             elif choice == "local" and rewriter is not None:
                 if d.hash in local_tried:   # a second local answer for the same message is a failure
                     approvals.dropped.add(d.hash)
-                    return _error(422, "hermie_blocked", LOCAL_FAILED.format(id=item_id), rec.rid, item_id)
+                    return _error(422, "hermie_blocked", explain.error_text("local_failed", item_id), rec.rid, item_id)
                 local_tried.add(d.hash)
                 review = getattr(prompter, "review", None)
                 while True:
@@ -299,7 +301,8 @@ def create_app(config: Config, gate: Gate | None = None, upstream_client: httpx.
                             shown = scanned.text
                     if shown is None:
                         approvals.dropped.add(d.hash)
-                        return _error(422, "hermie_blocked", LOCAL_FAILED.format(id=item_id), rec.rid, item_id)
+                        return _error(422, "hermie_blocked", explain.error_text("local_failed", item_id), rec.rid,
+                                      item_id)
                     verdict = await review(item, shown) if review is not None else "discard"
                     if verdict == "again":
                         continue
@@ -308,10 +311,13 @@ def create_app(config: Config, gate: Gate | None = None, upstream_client: httpx.
                         rec.approved_by = "local"
                         break
                     approvals.dropped.add(d.hash)
-                    return _error(422, "hermie_blocked", LOCAL_DISCARDED.format(id=item_id), rec.rid, item_id)
+                    return _error(422, "hermie_blocked", explain.error_text("local_discarded", item_id), rec.rid,
+                                  item_id)
             else:
                 approvals.dropped.add(d.hash)
-                return _error(422, "hermie_blocked", BLOCKED.format(id=item_id, reason=d.reason), rec.rid, item_id)
+                cause = choice if choice in ("timeout", "unavailable") else "reject"
+                return _error(422, "hermie_blocked", explain.error_text(cause, item_id, config.hold_timeout_s),
+                              rec.rid, item_id)
 
     async def passthrough(request: Request, url: str, rec: _Rec) -> Response:
         # Only body-less GET / DELETE get here: there is nothing to scan, so nothing is certified.
@@ -378,7 +384,7 @@ def create_app(config: Config, gate: Gate | None = None, upstream_client: httpx.
                 except httpx.HTTPError as e:
                     rec.upstream_error = type(e).__name__
                     rec.status = 502
-                    return _error(502, "hermie_upstream_unreachable", type(e).__name__, rid)
+                    return _error(502, "hermie_upstream_unreachable", _unreachable(url, provider, e), rid)
             if not _is_json(request.headers.get("content-type", "")):
                 rec.status = 415
                 return _error(415, "hermie_unsupported", UNSUPPORTED, rid)
@@ -399,7 +405,7 @@ def create_app(config: Config, gate: Gate | None = None, upstream_client: httpx.
             except MappingStoreError as e:
                 rec.status = 507
                 return _error(507, "hermie_mapping_unwritable",
-                              f"hermie could not write its placeholder mapping ({type(e).__name__})", rid)
+                              explain.mapping_error_text(config.mapping_path, type(e).__name__), rid)
             if isinstance(result, Response):
                 rec.status = result.status_code
                 return result
@@ -433,7 +439,7 @@ def create_app(config: Config, gate: Gate | None = None, upstream_client: httpx.
             except httpx.HTTPError as e:
                 rec.upstream_error = type(e).__name__
                 rec.status = 502
-                return _error(502, "hermie_upstream_unreachable", type(e).__name__, rid)
+                return _error(502, "hermie_upstream_unreachable", _unreachable(url, provider, e), rid)
             rec.status = resp.status_code
             headers = _back_headers(resp, rid)
             ct = resp.headers.get("content-type", "")
@@ -448,7 +454,7 @@ def create_app(config: Config, gate: Gate | None = None, upstream_client: httpx.
             except httpx.HTTPError as e:
                 rec.upstream_error = type(e).__name__
                 rec.status = 502
-                return _error(502, "hermie_upstream_unreachable", type(e).__name__, rid)
+                return _error(502, "hermie_upstream_unreachable", _unreachable(url, provider, e), rid)
             finally:
                 await resp.aclose()
             if _is_json(ct):
