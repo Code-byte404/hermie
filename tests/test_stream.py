@@ -178,3 +178,62 @@ def test_restore_json_counts_restored():
     stats = StreamStats()
     obj, n = restore_json({"a": ["<PHONE_NUMBER_1>", {"b": "<FOO_9>", "<SECRET_1>": "<SECRET_1>"}]}, R, stats)
     assert n == 1 and stats.unrestored == 1 and stats.restored == 3
+
+
+# --- tool arguments are JSON text: a restored value is escaped into them (review 2026-10-15) --------
+
+ODD = {"<SECRET_2>": 'line1\nsay "hi" \\ end', "<PERSON_1>": "Jane"}
+
+
+def RO(s):
+    from hermie.gate.redact import restore
+    return restore(s, ODD)
+
+
+async def _relay_odd(raw: str, step=7):
+    async def chunks():
+        b = raw.encode()
+        for i in range(0, len(b), step):
+            yield b[i:i + step]
+    out = b"".join([c async for c in relay_sse(chunks(), RO, StreamStats())]).decode()
+    return [json.loads(l[6:]) for l in out.splitlines() if l.startswith("data: ") and l[6:].startswith("{")]
+
+
+async def test_anthropic_partial_json_gets_an_escaped_value_even_when_split():
+    args = json.dumps({"path": "a.txt", "content": "<SECRET_2> by <PERSON_1>"})
+    cut = args.index("<SECRET_2>") + 4
+    raw = "".join(_ev(type="content_block_delta", index=1, delta={"type": "input_json_delta", "partial_json": part})
+                  for part in (args[:cut], args[cut:]))
+    datas = await _relay_odd(raw)
+    joined = "".join(d["delta"]["partial_json"] for d in datas)
+    assert json.loads(joined) == {"path": "a.txt", "content": 'line1\nsay "hi" \\ end by Jane'}
+
+
+async def test_openai_chat_arguments_get_an_escaped_value():
+    args = json.dumps({"q": "<SECRET_2>"})
+    raw = "".join(_ev(choices=[{"index": 0, "delta": {"tool_calls": [{"index": 0, "function": {"arguments": part}}]}}])
+                  for part in (args[:5], args[5:]))
+    datas = await _relay_odd(raw)
+    joined = "".join(d["choices"][0]["delta"]["tool_calls"][0]["function"]["arguments"] for d in datas)
+    assert json.loads(joined) == {"q": ODD["<SECRET_2>"]}
+
+
+async def test_responses_argument_deltas_are_escaped_but_text_deltas_are_not():
+    args = json.dumps({"q": "<SECRET_2>"})
+    raw = (_ev(type="response.function_call_arguments.delta", delta=args)
+           + _ev(type="response.output_text.delta", delta="<SECRET_2>")
+           + _ev(type="response.function_call_arguments.done", arguments=args))
+    datas = await _relay_odd(raw)
+    assert json.loads(datas[0]["delta"]) == {"q": ODD["<SECRET_2>"]}
+    assert datas[1]["delta"] == ODD["<SECRET_2>"]
+    assert json.loads(datas[2]["arguments"]) == {"q": ODD["<SECRET_2>"]}
+
+
+def test_restore_json_escapes_values_inside_argument_strings():
+    args = json.dumps({"q": "<SECRET_2>"})
+    chat = {"choices": [{"message": {"content": "<SECRET_2>", "tool_calls": [{"function": {"name": "f", "arguments": args}}]}}]}
+    obj, n = restore_json(chat, RO)
+    assert n == 0 and obj["choices"][0]["message"]["content"] == ODD["<SECRET_2>"]
+    assert json.loads(obj["choices"][0]["message"]["tool_calls"][0]["function"]["arguments"]) == {"q": ODD["<SECRET_2>"]}
+    resp = {"output": [{"type": "function_call", "arguments": args}]}
+    assert json.loads(restore_json(resp, RO)[0]["output"][0]["arguments"]) == {"q": ODD["<SECRET_2>"]}

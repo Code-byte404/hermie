@@ -28,8 +28,27 @@ class _Counting:
 
 # Leaf keys whose string values are streamed text and therefore pass through the buffer.
 BUFFERED_KEYS = {"text", "partial_json", "content", "arguments", "delta"}
+# Leaves that are JSON text (tool arguments): a restored value goes in JSON-escaped, so a quote or a newline in it
+# neither breaks the arguments nor adds keys. A Responses `delta` is JSON text only in an `*arguments*` event.
+JSON_TEXT_KEYS = {"partial_json", "arguments"}
 
 _OPEN_TAIL = re.compile(r"<[A-Z_0-9]*\Z")
+
+
+def _escaping(restore: Restore) -> Restore:
+    """Restore for a leaf that is JSON text: every value is JSON-escaped (unknown placeholders stay as they are)."""
+    def run(text: str) -> "tuple[str, int]":
+        missing = 0
+
+        def sub(m: re.Match) -> str:
+            nonlocal missing
+            value, n = restore(m.group(0))
+            if n:
+                missing += n
+                return m.group(0)
+            return json.dumps(value, ensure_ascii=False)[1:-1]
+        return (PLACEHOLDER.sub(sub, text), missing) if "<" in text else (text, 0)
+    return run
 
 
 class PlaceholderBuffer:
@@ -37,23 +56,26 @@ class PlaceholderBuffer:
 
     def __init__(self, restore: Restore):
         self._restore = restore
+        self._restore_json = _escaping(restore)
         self._held = ""
+        self._held_json = False
         self.unrestored = 0
         self.path: Optional[tuple] = None   # JSON path of the leaf the held tail came from
 
-    def _emit(self, text: str) -> str:
-        out, n = self._restore(text)
+    def _emit(self, text: str, json_text: bool = False) -> str:
+        out, n = (self._restore_json if json_text else self._restore)(text)
         self.unrestored += n
         return out
 
-    def feed(self, s: str) -> str:
+    def feed(self, s: str, json_text: bool = False) -> str:
         text = self._held + s
         self._held = ""
         m = _OPEN_TAIL.search(text)
         if m and len(text) - m.start() < MAX_PLACEHOLDER_LEN:
             self._held = text[m.start():]
+            self._held_json = json_text
             text = text[:m.start()]
-        return self._emit(text) if text else ""
+        return self._emit(text, json_text) if text else ""
 
     @property
     def held(self) -> str:
@@ -62,7 +84,7 @@ class PlaceholderBuffer:
     def flush(self) -> str:
         text, self._held = self._held, ""
         self.path = None
-        return self._emit(text) if text else ""
+        return self._emit(text, self._held_json) if text else ""
 
 
 def restore_json(obj: Any, restore: Restore, stats: "Optional[StreamStats]" = None) -> "tuple[Any, int]":
@@ -71,17 +93,18 @@ def restore_json(obj: Any, restore: Restore, stats: "Optional[StreamStats]" = No
     total = 0
     counting = _Counting(restore)
     restore = counting
+    restore_escaped = _escaping(counting)
 
-    def walk(o: Any) -> Any:
+    def walk(o: Any, key: Any = None) -> Any:
         nonlocal total
         if isinstance(o, str):
-            s, n = restore(o)
+            s, n = (restore_escaped if key in JSON_TEXT_KEYS else restore)(o)
             total += n
             return s
         if isinstance(o, list):
             return [walk(x) for x in o]
         if isinstance(o, dict):
-            return {walk(k) if isinstance(k, str) else k: walk(v) for k, v in o.items()}   # keys can carry data
+            return {walk(k) if isinstance(k, str) else k: walk(v, k) for k, v in o.items()}   # keys can carry data
         return o
 
     out = walk(obj)
@@ -91,19 +114,20 @@ def restore_json(obj: Any, restore: Restore, stats: "Optional[StreamStats]" = No
 
 
 def _walk_buffered(o: Any, key: Optional[str], buffer: PlaceholderBuffer, restore: Restore,
-                   last: list, path: tuple = (), cross: Optional[Callable[[], None]] = None) -> Any:
+                   last: list, path: tuple = (), cross: Optional[Callable[[], None]] = None,
+                   json_delta: bool = False) -> Any:
     """Restores in place order; `last` collects (container, key, path) of the final buffered string leaf.
     Before a buffered leaf is fed, a tail held from a leaf at another path is flushed back into that leaf: into the
     previous leaf of this event when there is one, else through `cross` (the leaf sits in an earlier event)."""
 
-    def feed(container, k, v: str, p: tuple) -> None:
+    def feed(container, k, v: str, p: tuple, leaf_key: Any) -> None:
         if buffer.held and buffer.path != p:
             if last:
                 c, ck, _ = last[0]
                 c[ck] += buffer.flush()
             elif cross is not None:
                 cross()
-        container[k] = buffer.feed(v)
+        container[k] = buffer.feed(v, leaf_key in JSON_TEXT_KEYS or (leaf_key == "delta" and json_delta))
         buffer.path = p if buffer.held else None
         last[:] = [(container, k, p)]
 
@@ -112,12 +136,12 @@ def _walk_buffered(o: Any, key: Optional[str], buffer: PlaceholderBuffer, restor
         for k, v in list(o.items()):
             if isinstance(v, str):
                 if k in BUFFERED_KEYS:
-                    feed(o, k, v, path + (k,))
+                    feed(o, k, v, path + (k,), k)
                 else:
                     o[k], n = restore(v)
                     buffer.unrestored += n
             else:
-                o[k] = _walk_buffered(v, k, buffer, restore, last, path + (k,), cross)
+                o[k] = _walk_buffered(v, k, buffer, restore, last, path + (k,), cross, json_delta)
             renamed = renamed or (isinstance(k, str) and "<" in k)
         if renamed:   # keys can carry placeholders (tool arguments whose keys were data)
             items = list(o.items())
@@ -133,12 +157,12 @@ def _walk_buffered(o: Any, key: Optional[str], buffer: PlaceholderBuffer, restor
         for i, v in enumerate(list(o)):
             if isinstance(v, str):
                 if key in BUFFERED_KEYS:
-                    feed(o, i, v, path + (i,))
+                    feed(o, i, v, path + (i,), key)
                 else:
                     o[i], n = restore(v)
                     buffer.unrestored += n
             else:
-                o[i] = _walk_buffered(v, key, buffer, restore, last, path + (i,), cross)
+                o[i] = _walk_buffered(v, key, buffer, restore, last, path + (i,), cross, json_delta)
         return o
     return o
 
@@ -186,7 +210,8 @@ def _process(data: str, buffer: PlaceholderBuffer, restore: Restore,
     if before:
         before(obj)
     last: list = []
-    obj = _walk_buffered(obj, None, buffer, restore, last, cross=cross)
+    json_delta = isinstance(obj, dict) and "arguments" in str(obj.get("type", ""))   # Responses argument deltas
+    obj = _walk_buffered(obj, None, buffer, restore, last, cross=cross, json_delta=json_delta)
     return _dumps(obj), obj, (last[0] if last else None)
 
 
