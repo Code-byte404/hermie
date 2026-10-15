@@ -49,7 +49,7 @@ SECRET_PATTERNS = [
     ("private_key_block", r"-----BEGIN [A-Z ]*PRIVATE KEY-----(?:[\s\S]*?-----END [A-Z ]*PRIVATE KEY-----|[\s\S]*)", 0.95),
     ("jwt", r"(?<![A-Za-z0-9])eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}", 0.8),
     # user:password@ in any URL (the user may be empty: redis://:password@host)
-    ("db_url_credentials", r"(?i)\b[a-z][a-z0-9+.-]*://[^\s:/@]*:([^\s@/]{4,})@", 0.9),
+    ("db_url_credentials", r"(?i)(?<![a-z0-9+.-])[a-z][a-z0-9+.-]*://[^\s:/@]*:([^\s@/]{4,})@", 0.9),
     # Authorization-style headers and the schemes themselves
     ("auth_header", r"(?i)(?:authorization|proxy-authorization|x-api-key|api-key|x-auth-token|x-access-token|x-token)[\"']?\s*[:=]\s*[\"']?"
                     r"(?:(?:bearer|basic|token|apikey)\s+)?([A-Za-z0-9._~+/=-]{12,})", 0.85),

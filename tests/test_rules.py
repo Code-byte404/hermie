@@ -298,3 +298,18 @@ def test_a_long_encoded_secret_under_a_neutral_key_is_hidden():
 ])
 def test_code_around_password_names_is_left_alone(text):
     assert rules.find(text) == [], [(text[f.start:f.end], f.entity) for f in rules.find(text)]
+
+
+@pytest.mark.parametrize("unit", ["a-", "a.", "a+", "ab-cd."])
+def test_long_runs_of_scheme_characters_scan_in_linear_time(unit):
+    import time
+    text = unit * (48 * 1024 // len(unit))
+    t = time.perf_counter()
+    rules.find(text)
+    assert time.perf_counter() - t < 0.5
+
+
+def test_url_credentials_still_found_after_scheme_characters():
+    pw = r(16)
+    text = f"a-b.c+d postgres+psycopg://admin:{pw}@db.example.com/prod"
+    assert any(text[f.start:f.end] == pw for f in rules.find(text))
