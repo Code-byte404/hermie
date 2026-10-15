@@ -187,6 +187,28 @@ async def test_dialog_prompter_reuses_the_answer_for_a_request_that_wraps_the_sa
     assert await p.ask(other) == "reject" and len(seen) == 2    # unrelated text asks again
 
 
+async def test_dialog_prompter_asks_again_for_a_different_message_with_the_same_opening():
+    opening = "Please draft a reply to this customer complaint about the delayed refund for order "
+    first = PendingItem(hash="aaaa" + "0" * 60, kind="message", reason="judge", size=120, excerpt=opening + "A-1001, Jane at 555-0100")
+    second = PendingItem(hash="bbbb" + "0" * 60, kind="message", reason="judge", size=120, excerpt=opening + "B-2002, she has cancer")
+    run, seen = _dialog(["Send", "Reject"])
+    p = DialogPrompter(5, runner=run)
+    assert await p.ask(first) == "send"
+    assert await p.ask(second) == "reject" and len(seen) == 2
+
+
+async def test_dialog_prompter_does_not_reuse_an_answer_for_a_cut_excerpt():
+    head = "x" * 50 + " the quarterly numbers for the board, " * 6
+    first = PendingItem(hash="aaaa" + "0" * 60, kind="message", reason="judge", size=900, excerpt=(head + "part one")[:200])
+    second = PendingItem(hash="bbbb" + "0" * 60, kind="message", reason="judge", size=900, excerpt=(head + "part two")[:200])
+    assert first.excerpt == second.excerpt
+    run, seen = _dialog(["Send", "Reject"])
+    p = DialogPrompter(5, runner=run)
+    assert await p.ask(first) == "send"
+    assert await p.ask(second) == "reject" and len(seen) == 2
+    assert await p.ask(first) == "send" and len(seen) == 2       # the same item: no second dialog
+
+
 async def test_mod_prompter_waits_for_the_menu_answer_and_publishes_no_text(tmp_path):
     from hermie.proxy.approvals import ModPrompter, read_asks, touch_ui, write_answer
     item = PendingItem(hash="cafe" + "0" * 60, kind="message", reason="judge", size=40, excerpt="the layoff list", id="cafe")

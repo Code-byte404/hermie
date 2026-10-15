@@ -333,7 +333,7 @@ async def _osascript_dialog(title: str, text: str, buttons: list[str], timeout_s
 
 _TAGS = re.compile(r"</?session>")
 _REMEMBER_S = 600
-_PROBE = 60
+_EXCERPT_MAX = 200   # walker cuts excerpts here; a cut excerpt does not show the whole message
 
 
 def _norm(excerpt: str) -> str:
@@ -350,14 +350,19 @@ class DialogPrompter:
         self._run = runner or _osascript_dialog
         self._clock = clock or time.monotonic
         self._lock = asyncio.Lock()
-        self._answers: list[tuple[str, Choice, float]] = []   # (normalised excerpt, answer, when)
+        self._answers: list[tuple[str, str, bool, Choice, float]] = []   # (hash, normalised excerpt, whole, answer, when)
 
-    def _remembered(self, norm: str) -> Choice | None:
+    def _remembered(self, item: PendingItem, norm: str) -> Choice | None:
+        """The same item, or a whole (uncut) message that the other one contains entirely. A shared opening is not
+        enough: two messages can start alike and differ in the private part."""
         now = self._clock()
-        self._answers = [a for a in self._answers if now - a[2] < _REMEMBER_S]
-        for text, choice, _ in self._answers:
-            short, long_ = sorted((text, norm), key=len)
-            if len(short) >= 10 and short[:_PROBE] in long_:
+        self._answers = [a for a in self._answers if now - a[4] < _REMEMBER_S]
+        whole = len(item.excerpt) < _EXCERPT_MAX
+        for h, text, text_whole, choice, _ in self._answers:
+            if h == item.hash:
+                return choice
+            (short, short_whole), (long_, _) = sorted(((text, text_whole), (norm, whole)), key=lambda t: len(t[0]))
+            if short_whole and len(short) >= 10 and short in long_:
                 return choice
         return None
 
@@ -367,7 +372,7 @@ class DialogPrompter:
         text = (f"Hermie holds this {item.kind} ({item.size} chars, reason: {item.reason}):\n\n{excerpt}\n\n"
                 f"Send it to the cloud model?  (later: hermie allow {item.id or item.hash[:4]})")
         async with self._lock:
-            known = self._remembered(norm)
+            known = self._remembered(item, norm)
             if known is not None:
                 return known
             try:
@@ -376,7 +381,7 @@ class DialogPrompter:
             except Exception:   # no osascript, no GUI session: never send
                 return "reject"
             choice: Choice = {"Send": "send", "Allow session": "allow_all"}.get(button, "reject")
-            self._answers.append((norm, choice, self._clock()))
+            self._answers.append((item.hash, norm, len(item.excerpt) < _EXCERPT_MAX, choice, self._clock()))
             return choice
 
 
