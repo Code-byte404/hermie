@@ -106,3 +106,28 @@ def test_receipt_line_without_restored_field_still_parses(tmp_path):
     r.write(_line(restored=3))
     lines = list(r.iter())
     assert [l.restored for l in lines] == [0, 3]
+
+
+def test_body_store_put_never_raises_on_unwritable_dir(tmp_path):
+    (tmp_path / "outbound").write_text("not a directory")
+    assert BodyStore(Config(data_dir=tmp_path)).put("a" * 12, b"{}") is None
+
+
+def test_body_store_writes_whole_body_on_short_writes(tmp_path, monkeypatch):
+    real = os.write
+    monkeypatch.setattr(os, "write", lambda fd, data: real(fd, bytes(data[:7])))
+    bs = BodyStore(Config(data_dir=tmp_path))
+    body = json.dumps({"text": "x" * 1000}).encode()
+    bs.put("a" * 12, body)
+    assert bs.get("a" * 12) == body
+
+
+def test_body_store_does_not_rescan_the_directory_under_the_cap(tmp_path, monkeypatch):
+    bs = BodyStore(Config(data_dir=tmp_path, bodies_keep_mb=1))
+    bs.put("f" * 12, b"{}")                       # first put may read the directory once
+    calls = []
+    real = type(bs.dir).glob
+    monkeypatch.setattr(type(bs.dir), "glob", lambda self, pat: calls.append(pat) or real(self, pat))
+    for i in range(50):
+        bs.put(f"{i:012x}", b"x" * 1000)
+    assert calls == []

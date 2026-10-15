@@ -509,3 +509,12 @@ def test_cached_rewrite_wins_over_session_allow(tmp_path, analyzer):
     assert c.post("/anthropic/v1/messages", json=_first()).status_code == 200
     sent = up.seen[-1].content.decode()
     assert "layoff" not in sent and "the <FACT_1> list is final" in sent
+
+
+def test_unwritable_body_store_does_not_fail_the_request(tmp_path, analyzer):
+    up = Upstream()
+    cfg, c = _app(tmp_path, analyzer, up)
+    (tmp_path / "outbound").write_text("not a directory")
+    r = c.post("/anthropic/v1/messages", json=_body("anthropic"), headers={"x-api-key": "sk-test-key"})
+    assert r.status_code == 200 and len(up.seen) == 1
+    assert json.loads((tmp_path / "receipt.jsonl").read_text().splitlines()[-1])["status"] == 200

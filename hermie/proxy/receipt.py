@@ -98,7 +98,9 @@ def _write_private(path: Path, data: bytes, flags: int) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     fd = os.open(path, os.O_WRONLY | os.O_CREAT | flags, 0o600)
     try:
-        os.write(fd, data)
+        view = memoryview(data)
+        while view:
+            view = view[os.write(fd, view):]
     finally:
         os.close(fd)
     os.chmod(path, 0o600)
@@ -161,17 +163,35 @@ class Receipt:
 
 
 class BodyStore:
+    PRUNE_TO = 0.9   # prune down to this share of the cap, so a full store is not rescanned on every put
+
     def __init__(self, config: Config):
         self.enabled = config.bodies
         self.dir = config.outbound_dir
         self.cap = config.bodies_keep_mb * 1024 * 1024
+        self._total: int | None = None   # bytes in outbound/ as last counted, plus what this store wrote since
 
     def put(self, request_id: str, body: bytes) -> Path | None:
+        """Store the body; a write failure is not the request's failure (like the receipt), so it returns None."""
         if not self.enabled or not _ID.fullmatch(request_id):
             return None
         path = self.dir / f"{request_id}.json"
-        _write_private(path, body, os.O_TRUNC)
-        self._prune(keep=path)
+        try:
+            try:
+                before = path.stat().st_size
+            except FileNotFoundError:
+                before = 0
+            _write_private(path, body, os.O_TRUNC)
+        except OSError:
+            try:
+                path.unlink()
+            except OSError:
+                pass
+            return None
+        if self._total is not None:
+            self._total += len(body) - before
+        if self._total is None or self._total > self.cap:
+            self._prune(keep=path)
         return path
 
     def get(self, request_id: str) -> bytes | None:
@@ -192,8 +212,9 @@ class BodyStore:
             entries.append((st.st_mtime_ns, p.name, st.st_size, p))
         entries.sort()  # oldest first; same-instant writes are ordered by id
         total = sum(e[2] for e in entries)
+        target = self.cap if total <= self.cap else int(self.cap * self.PRUNE_TO)
         for _, _, size, p in entries:
-            if total <= self.cap:
+            if total <= target:
                 break
             if p == keep:
                 # A receipt without its body is worse than a cap overrun: a body that alone
@@ -204,6 +225,7 @@ class BodyStore:
             except OSError:
                 continue
             total -= size
+        self._total = total
 
 
 def client_label(user_agent: str | None) -> str:
