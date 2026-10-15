@@ -5,6 +5,7 @@ import argparse
 import getpass
 import importlib.util
 import json
+import math
 import re
 import shutil
 import sys
@@ -30,7 +31,19 @@ def _since(raw: str) -> datetime:
     if not m:
         raise ValueError(f"invalid --since {raw!r} (use 10m, 2h or 1d)")
     unit = {"m": "minutes", "h": "hours", "d": "days"}[m.group(2)]
-    return datetime.now(timezone.utc) - timedelta(**{unit: int(m.group(1))})
+    try:
+        return datetime.now(timezone.utc) - timedelta(**{unit: int(m.group(1))})
+    except OverflowError:
+        raise ValueError(f"invalid --since {raw!r} (too far back)") from None
+
+
+def _days_ago(days: float) -> datetime:
+    try:
+        if not 0 <= days < math.inf:
+            raise OverflowError
+        return datetime.now(timezone.utc) - timedelta(days=days)
+    except OverflowError:
+        raise ValueError(f"invalid --days {days!r} (use a number of days, 0 or more)") from None
 
 
 def _local_time(at: str) -> str:
@@ -163,7 +176,7 @@ def _answer(config: Config, args) -> int:
 
 
 def _stats(config: Config, args) -> int:
-    since = datetime.now(timezone.utc) - timedelta(days=args.days)
+    since = _days_ago(args.days)
     clients: Counter = Counter()
     replaced: Counter = Counter()
     withheld = held = approved = unrestored = errors = 0
@@ -385,6 +398,8 @@ def main(argv=None) -> int:
         config = Config.load(Path(args.config) if args.config else None, **overrides)
         if args.cmd == "tail" and args.since:
             _since(args.since)
+        if args.cmd == "stats":
+            _days_ago(args.days)
     except (ValueError, OSError) as e:
         print(f"hermie: {e}", file=sys.stderr)
         return 2

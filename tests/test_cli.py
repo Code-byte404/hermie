@@ -1,4 +1,5 @@
 import json
+import pytest
 from datetime import datetime, timezone
 from hermie import cli
 from hermie.config import Config
@@ -94,3 +95,14 @@ def test_serve_hints_when_the_chinese_model_is_installed_but_off(monkeypatch, ca
     monkeypatch.setattr(importlib.util, "find_spec", lambda name, *a, **k: object() if name == "zh_core_web_sm" else real(name, *a, **k))
     cli.main(["serve", "--port", "8797", "--data-dir", str(tmp_path)])
     assert 'languages = ["en", "zh"]' in capsys.readouterr().out
+
+
+def test_tail_since_too_far_back_is_a_usage_error(tmp_path, capsys):
+    assert cli.main(["tail", "--once", "--since", "999999999d", "--data-dir", str(tmp_path)]) == 2
+    assert "--since" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("days", ["nan", "inf", "-1", "1e12"])
+def test_stats_rejects_unusable_days(tmp_path, capsys, days):
+    assert cli.main(["stats", "--days", days, "--data-dir", str(tmp_path)]) == 2
+    assert "--days" in capsys.readouterr().err
