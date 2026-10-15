@@ -14,10 +14,9 @@ const HERMIE = 'hermie'
 async function refresh($: any) {
   try {
     const ran = await $.process.run([HERMIE, 'status', '--json'], { timeoutMs: 5000 })
-    const last = JSON.parse(ran.stdout).last
-    const next: Summary | null = last
-      ? { replaced: last.replaced ?? {}, withheld: last.withheld ?? [], held: last.held ?? null }
-      : null
+    // the wording comes from `hermie status --json` (hermie/explain.py), so every surface says the same
+    const parsed = JSON.parse(ran.stdout)
+    const next: Summary | null = parsed.last_text ? { text: parsed.last_text } : null
     await update($, summary, () => next)
   } catch {
     await update($, summary, () => null)
@@ -39,12 +38,6 @@ async function answer($: any, id: string, value: string) {
   await pollAsks($)
 }
 
-function reasonText(reason: string): string {
-  if (reason.startsWith('smuggling')) return 'looks like encoded data'
-  if (reason === 'judge') return 'judged sensitive'
-  return 'held for review'
-}
-
 export const register: Register = on => {
   on('session.start', async ($, e, next) => {
     $.clock.every(1000, () => pollAsks($))
@@ -60,72 +53,44 @@ export const register: Register = on => {
     const waiting = await read($, asks)
     if (waiting.length > 0) {
       const { Box, Button, Text } = $.ui.resolve(e)
+      // the view (title, why, excerpt, replaced values, options and what each does) comes from `hermie asks --json`
       const a = waiting[0]
-      const more = waiting.length > 1 ? ` (+${waiting.length - 1} more)` : ''
-      if (a.kind === 'rewrite') {
-        const reviewChoices = [
-          { value: 'reject', label: 'Discard', hotkey: '1', note: 'send nothing' },
-          { value: 'again', label: 'Redo', hotkey: '2', note: 'the local model looks again' },
-          { value: 'send', label: 'Send', hotkey: '3', note: 'send exactly this text' },
-        ]
-        return (
-          <Box flexDirection="column" borderStyle="round" borderColor="permission" paddingX={1}>
-            <Text bold color="warning">
-              Message {a.id} with its specifics hidden: this is what would be sent
-            </Text>
-            <Box marginTop={1}>
-              <Text>{a.preview ?? ''}</Text>
-            </Box>
-            <Box flexDirection="column" marginTop={1}>
-              {reviewChoices.map((c, i) => (
-                <Box key={`row-${c.value}`} flexDirection="row" gap={2}>
-                  <Button
-                    key={c.value}
-                    label={`${c.hotkey}. ${c.label}`}
-                    hotkey={c.hotkey}
-                    variant={i === 0 ? 'primary' : 'secondary'}
-                    autoFocus={i === 0 ? true : undefined}
-                    onPress={() => answer($, a.id, c.value)}
-                  />
-                  <Text dimColor>{c.note}</Text>
-                </Box>
-              ))}
-            </Box>
-          </Box>
-        )
-      }
-      const choices = [
-        { value: 'reject', label: 'Reject', hotkey: '1', note: 'keep it on this machine' },
-        { value: 'send', label: 'Send as is', hotkey: '2', note: 'release this one message' },
-        { value: 'session', label: 'Allow session', hotkey: '3', note: 'release judge holds until serve restarts' },
-        ...(a.local
-          ? [{ value: 'local', label: 'Rewrite locally', hotkey: '4', note: 'local model hides the specifics as placeholders, you review' }]
-          : []),
-      ]
-
+      const v = a.view
+      if (!v) return next(e)
+      const left = v.deadline ? Math.max(0, Math.round(v.deadline - Date.now() / 1000)) : null
+      const pairs = v.pairs.map(([d, ph]) => (ph ? (d ? `${d} -> ${ph}` : ph) : d)).join(', ')
       return (
         <Box flexDirection="column" borderStyle="round" borderColor="permission" paddingX={1}>
           <Text bold color="warning">
-            Hermie held a message before it left your machine{more}
+            {v.title}
           </Text>
-          <Text dimColor>
-            id {a.id} · {a.size} chars · {reasonText(a.reason)}
-          </Text>
+          <Text>Why: {v.why}</Text>
+          {v.excerpt ? (
+            <Box marginTop={1}>
+              <Text>"{v.excerpt}"</Text>
+            </Box>
+          ) : null}
+          {pairs ? <Text dimColor>Already replaced: {pairs}</Text> : null}
           <Box flexDirection="column" marginTop={1}>
-            {choices.map((c, i) => (
-              <Box key={`row-${c.value}`} flexDirection="row" gap={2}>
+            {v.options.map((o, i) => (
+              <Box key={`row-${o.value}`} flexDirection="row" gap={2}>
                 <Button
-                  key={c.value}
-                  label={`${c.hotkey}. ${c.label}`}
-                  hotkey={c.hotkey}
+                  key={o.value}
+                  label={`${o.key}. ${o.label}`}
+                  hotkey={o.key}
                   variant={i === 0 ? 'primary' : 'secondary'}
                   autoFocus={i === 0 ? true : undefined}
-                  onPress={() => answer($, a.id, c.value)}
+                  onPress={() => answer($, a.id, o.value)}
                 />
-                <Text dimColor>{c.note}</Text>
+                <Text dimColor>{o.note}</Text>
               </Box>
             ))}
           </Box>
+          {left !== null ? (
+            <Text dimColor>
+              No answer in {Math.floor(left / 60)}:{String(left % 60).padStart(2, '0')} {'->'} Don't send
+            </Text>
+          ) : null}
         </Box>
       )
     }
@@ -136,17 +101,9 @@ export const register: Register = on => {
     }
 
     const { Box, Button, Text } = $.ui.resolve(e)
-    const total = Object.values(s.replaced).reduce((a, b) => a + b, 0)
-    const pending = Array.from(new Set(s.held ? [s.held, ...s.withheld] : s.withheld))
-
     return (
       <Box flexDirection="row" gap={2}>
-        <Text dimColor>Hermie · {total} replaced</Text>
-        {pending.length > 0 ? (
-          <Text color="warning">
-            {pending.length} withheld · hermie allow {pending[0]}
-          </Text>
-        ) : null}
+        <Text dimColor>Hermie · last reply: {s.text}</Text>
         <Button key="hide" label="Hide" plain hotkey="h" onPress={() => update($, isHidden, () => true)} />
       </Box>
     )

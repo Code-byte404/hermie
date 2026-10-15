@@ -1,10 +1,26 @@
-export type Ask = { id: string; kind: string; reason: string; size: number; local?: boolean; preview?: string }
+export type Option = { value: string; key: string; label: string; note: string }
 
-export type Summary = {
-  replaced: Record<string, number>
-  withheld: string[]
-  held: string | null
+export type View = {
+  id: string
+  title: string
+  why: string
+  excerpt: string
+  pairs: [string, string][]
+  options: Option[]
+  deadline: number | null
 }
+
+export type Ask = {
+  id: string
+  kind: string
+  reason: string
+  size: number
+  local?: boolean
+  preview?: string
+  view?: View
+}
+
+export type Summary = { text: string }
 
 declare module 'claude-code' {
   interface PluginState {
