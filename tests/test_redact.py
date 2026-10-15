@@ -79,3 +79,14 @@ def test_non_dict_mapping_file_is_a_store_error(tmp_path):
 def test_counters_keep_numbers_of_forgotten_values():
     red, m = redact("x 555-010-0199", [Finding("PHONE_NUMBER", 2, 14, 0.9)], existing={}, counters={"PHONE_NUMBER": 5})
     assert red == "x <PHONE_NUMBER_6>" and m == {"<PHONE_NUMBER_6>": "555-010-0199"}
+
+
+def test_store_keeps_quiet_placeholders_until_cleared_or_made_loud(tmp_path):
+    s = MappingStore(tmp_path / "m.json")
+    s.update(lambda cur, c: {"<TOPIC_1>": "layoff", "<PERSON_1>": "Alice Chen"}, quiet={"layoff"})
+    assert MappingStore(tmp_path / "m.json").snapshot().quiet == frozenset({"<TOPIC_1>"})
+    s.update(lambda cur, c: {}, loud={"layoff"})
+    assert s.snapshot().quiet == frozenset()
+    s.update(lambda cur, c: {"<TOPIC_2>": "data"}, quiet={"data"})
+    s.clear()
+    assert s.snapshot().quiet == frozenset()

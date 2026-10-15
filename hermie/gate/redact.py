@@ -7,7 +7,7 @@ import re
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable, Optional
+from typing import Callable, Iterable, Optional
 
 from .types import Finding
 
@@ -93,6 +93,7 @@ class StoreState:
     mapping: dict[str, str]
     counters: dict[str, int]   # high-water mark per entity; survives clear() so numbers are never reused
     generation: int            # bumped by clear(); a running gate drops its cache when it changes
+    quiet: frozenset = frozenset()   # placeholders restored in replies but not searched for in later requests
 
 
 _EMPTY = StoreState({}, {}, 0)
@@ -100,7 +101,7 @@ _EMPTY = StoreState({}, {}, 0)
 
 class MappingStore:
     """placeholder -> original, persisted at `path` (mode 0600), shared between processes under flock.
-    File format: {"mapping": {...}, "counters": {...}, "generation": n}; the old flat {placeholder: value} file is
+    File format: {"mapping": {...}, "counters": {...}, "generation": n, "quiet": [...]}; the old flat {placeholder: value} file is
     read as generation 0 and rewritten in the new format on the next write."""
 
     def __init__(self, path: Path):
@@ -117,12 +118,13 @@ class MappingStore:
             mapping = data["mapping"]
             counters = data.get("counters") or {}
             generation = data.get("generation", 0)
-            if not isinstance(counters, dict) or not isinstance(generation, int):
+            quiet = data.get("quiet") or []
+            if not isinstance(counters, dict) or not isinstance(generation, int) or not isinstance(quiet, list):
                 raise MappingStoreError(f"{self.path.name} does not hold a mapping")
         else:   # the old flat format
-            mapping, counters, generation = data, {}, 0
+            mapping, counters, generation, quiet = data, {}, 0, []
         counters = _max_counters({k: int(v) for k, v in counters.items()}, counters_of(mapping))
-        return StoreState(mapping, counters, generation)
+        return StoreState(mapping, counters, generation, frozenset(q for q in quiet if q in mapping))
 
     def snapshot(self) -> StoreState:
         """The file's state, re-read only when the file changed (stat), so it is cheap to call per scan."""
@@ -160,15 +162,17 @@ class MappingStore:
         fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
         with os.fdopen(fd, "w", encoding="utf-8") as f:
             f.write(json.dumps({"mapping": state.mapping, "counters": state.counters,
-                                "generation": state.generation}, ensure_ascii=False))
+                                "generation": state.generation, "quiet": sorted(state.quiet)}, ensure_ascii=False))
         os.chmod(tmp, 0o600)
         os.replace(tmp, self.path)
         os.chmod(self.path, 0o600)
 
-    def update(self, fn: Callable[[dict[str, str], dict[str, int]], dict[str, str]]) -> dict[str, str]:
+    def update(self, fn: Callable[[dict[str, str], dict[str, int]], dict[str, str]],
+               quiet: Iterable[str] = (), loud: Iterable[str] = ()) -> dict[str, str]:
         """Atomically: under the flock read the file, let `fn(current mapping, counters)` return the NEW entries,
         refuse a key that already maps to a different value, write the merge (and the raised counters) and return
-        the merged mapping."""
+        the merged mapping. New entries whose value is in `quiet` are marked quiet; entries whose value is in `loud`
+        stop being quiet."""
         try:
             self.path.parent.mkdir(parents=True, exist_ok=True)
             with open(self.path.with_suffix(".lock"), "w") as lf:
@@ -180,9 +184,12 @@ class MappingStore:
                     if k in current and current[k] != v:
                         raise MappingStoreError(f"placeholder {k} already maps to another value")
                 merged = current | new
-                if new:
+                quiet, loud = set(quiet), set(loud)
+                marks = (state.quiet | {k for k, v in new.items() if v in quiet}) - {k for k, v in merged.items()
+                                                                                       if v in loud}
+                if new or marks != state.quiet:
                     self._replace(StoreState(merged, _max_counters(state.counters, counters_of(new)),
-                                             state.generation))
+                                             state.generation, frozenset(marks)))
                 return merged
         except MappingStoreError:
             raise

@@ -303,3 +303,20 @@ def test_local_spans_match_whole_words_and_never_inside_a_placeholder(gate):
 def test_local_spans_in_chinese_text_need_no_word_boundary(gate):
     red = gate.redact_spans("同事王芳明天请假", [("王芳", "PERSON")])
     assert "王芳" not in red and "<PERSON_" in red
+
+
+def test_generic_word_span_restores_but_is_not_searched_later(gate, tmp_path):
+    red = gate.redact_spans("the layoff hits Alice Chen", [("layoff", "TOPIC"), ("Alice Chen", "PERSON")])
+    assert "layoff" not in red and "Alice Chen" not in red
+    ph = next(k for k, v in gate.store.mapping.items() if v == "layoff")
+    assert gate.restore(f"about {ph}")[0] == "about layoff"
+    for g in (gate, Gate(gate.c, analyzer=gate._analyzer, store=MappingStore(gate.c.mapping_path))):   # and after a restart
+        r = g.scan("no layoff talk; ask Alice Chen", Origin.TOOL)
+        assert "layoff" in r.text and "Alice Chen" not in r.text
+
+
+def test_hide_makes_a_quiet_value_searched_again(gate, tmp_path):
+    from hermie import cli
+    gate.redact_spans("the layoff", [("layoff", "TOPIC")])
+    assert cli.main(["hide", "layoff", "--data-dir", str(tmp_path)]) == 0
+    assert "layoff" not in gate.scan("a layoff", Origin.TOOL).text

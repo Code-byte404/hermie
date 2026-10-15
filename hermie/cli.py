@@ -263,7 +263,7 @@ def _hide(config: Config, args) -> int:
         return new
 
     try:
-        MappingStore(config.mapping_path).update(mint)
+        MappingStore(config.mapping_path).update(mint, loud=values)   # a quiet value is searched again
     except MappingStoreError as e:
         print(f"hermie: {e}", file=sys.stderr)
         return 1

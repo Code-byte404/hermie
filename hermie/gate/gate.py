@@ -91,6 +91,11 @@ def _ascii_word(ch: str) -> bool:
     return ch.isascii() and (ch.isalnum() or ch == "_")
 
 
+# A local-model span that is one lower-case English word (`layoff`, `data`) is sensitive in that message, not
+# everywhere: its placeholder is restored in replies but the value is not searched for in later requests.
+_GENERIC_WORD = re.compile(r"[a-z]+(?:-[a-z]+)*")
+
+
 class Gate:
     def __init__(self, config, analyzer=None, judge=None, store: MappingStore | None = None):
         self.c = config
@@ -101,6 +106,7 @@ class Gate:
         snap = self.store.snapshot()
         self._mapping = dict(snap.mapping)
         self._gen = snap.generation
+        self._quiet = snap.quiet
         # cache value: (result, generation, number of mapping entries already searched for literally)
         self._cache: OrderedDict[str, tuple[ScanResult, int, int]] = OrderedDict()
         self.cache_bytes = 0
@@ -131,13 +137,16 @@ class Gate:
         entries another process added are picked up."""
         snap = self.store.snapshot()
         with self._lock:
-            if snap.generation != self._gen:
+            if snap.generation != self._gen or not snap.quiet >= self._quiet:
+                # a new generation, or a quiet value searched again (`hermie hide`): cached results did not look
+                # for it
                 self._cache.clear()
                 self.cache_bytes = 0
                 self._gen = snap.generation
                 self._mapping = dict(snap.mapping)
             elif len(snap.mapping) > len(self._mapping):
                 self._mapping = dict(snap.mapping)
+            self._quiet = snap.quiet
 
     def scan(self, text: str, origin: Origin, path_hint: str | None = None) -> ScanResult:
         self._sync()   # MappingStoreError propagates on purpose
@@ -185,6 +194,7 @@ class Gate:
                 if not any(s < m.end() and m.start() < e for s, e in taken):
                     findings.append(Finding(entity, m.start(), m.end(), 1.0))
         findings = _merge_overlaps(findings)
+        generic = {text[f.start:f.end] for f in findings if _GENERIC_WORD.fullmatch(text[f.start:f.end])}
         out: dict = {}
 
         def mint(current: dict[str, str], counters: dict[str, int]) -> dict[str, str]:
@@ -192,9 +202,11 @@ class Gate:
             return new
 
         with self._mint_lock:
-            merged = self.store.update(mint)
+            merged = self.store.update(mint, quiet=generic)
+            quiet = self.store.snapshot().quiet
             with self._lock:
                 self._mapping = merged
+                self._quiet = quiet
         return out["red"]
 
     _VERDICT_KEEP = 50_000
@@ -267,8 +279,8 @@ class Gate:
 
     def _known_regex(self, mapping: dict[str, str]) -> tuple[re.Pattern | None, dict[str, str]]:
         """Compiled search for every mapping value (value -> entity). Mappings only grow within a generation and a
-        placeholder name is never reused, so (size, last name) identifies the content."""
-        ident = (len(mapping), next(reversed(mapping), None))
+        placeholder name is never reused, so (size, last name, quiet names) identifies the content."""
+        ident = (len(mapping), next(reversed(mapping), None), self._quiet)
         known = self._known
         if known is not None and known[0] == ident:
             return known[1], known[2]
@@ -280,7 +292,8 @@ class Gate:
         entity: dict[str, str] = {}
         for ph, value in items:
             m = PLACEHOLDER.fullmatch(ph)
-            if m and isinstance(value, str) and len(value) >= MIN_KNOWN_LEN and value not in self.c.allow_values:
+            if (m and ph not in self._quiet and isinstance(value, str) and len(value) >= MIN_KNOWN_LEN
+                    and value not in self.c.allow_values):
                 entity.setdefault(value, m.group(1))
         return _compile_known(list(entity)), entity
 
