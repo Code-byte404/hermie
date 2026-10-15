@@ -366,4 +366,16 @@ def test_dropped_note_has_no_text_and_plain_label(tmp_path, analyzer):
     approvals.dropped.add(first.held.hash)
     again = walk_request({"messages": [body["messages"][0], {"role": "user", "content": "ok"}]}, gate, approvals, cfg)
     note = again.body["messages"][0]["content"]
-    assert "night team" not in note and "chose not to send" in note and "rejected" not in note.lower()
+    assert "night team" not in note and "did not send" in note and "rejected" not in note.lower()
+
+
+def test_withheld_file_name_with_a_finding_is_not_recorded(tmp_path, analyzer):
+    cfg, gate = _gate(tmp_path, analyzer, judge=AlwaysJudge())
+    gate.store.add({"<PERSON_1>": "Alice Chen"})
+    body = {"messages": [
+        {"role": "assistant", "content": [{"type": "tool_use", "id": "t1", "name": "Read",
+                                           "input": {"file_path": "/tmp/Alice Chen notes.txt"}}]},
+        {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "t1", "content": "rows"}]}]}
+    out = walk_request(body, gate, Allow(), cfg)
+    [d] = [d for d in out.decisions if d.kind == "withhold"]
+    assert d.file is None

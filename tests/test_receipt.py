@@ -155,3 +155,11 @@ def test_receipt_line_without_new_fields_still_parses(tmp_path):
         f.write(json.dumps(old) + "\n")
     [got] = list(r.iter())
     assert got.placeholders == [] and got.withheld_items == []
+
+
+def test_receipt_held_why_is_a_fixed_label(tmp_path):
+    r = Receipt(Config(data_dir=tmp_path))
+    r.write(_line(held="ab12", held_why="could not be scanned"))
+    r.write(_line(held="ab13", held_why="detector_error: secret text"))
+    a, b = list(r.iter())
+    assert a.held_why == "could not be scanned" and b.held_why == "held for review"

@@ -202,6 +202,7 @@ class _Rec:
     new_parts: list[dict] = field(default_factory=list)
     placeholders: list[str] = field(default_factory=list)
     withheld_items: list[dict] = field(default_factory=list)
+    held_why: str | None = None
     tally: _JudgeTally = field(default_factory=_JudgeTally)
 
     def line(self) -> ReceiptLine:
@@ -211,7 +212,7 @@ class _Rec:
             replaced=dict(self.replaced), withheld=list(self.withheld), held=self.held, approved_by=self.approved_by,
             unrestored=self.unrestored, judge_calls=self.tally.calls, judge_ms=int(self.tally.ms),
             status=self.status, upstream_error=self.upstream_error, mode=self.mode, new_parts=list(self.new_parts),
-            restored=self.restored, placeholders=list(self.placeholders), withheld_items=list(self.withheld_items))
+            restored=self.restored, placeholders=list(self.placeholders), withheld_items=list(self.withheld_items), held_why=self.held_why)
 
 
 def _part(d: Decision) -> dict:
@@ -261,6 +262,8 @@ def create_app(config: Config, gate: Gate | None = None, upstream_client: httpx.
             if result.held is None or config.mode == "observe":
                 return result
             d = result.held
+            if rec.held is None:
+                rec.held_why = explain.short_reason(d.reason)
             if d.reason.startswith("detector_error"):   # never offered for release: only reject
                 rec.held = rec.held or d.id
                 return _error(422, "hermie_blocked", explain.UNSCANNED_ERROR, rec.rid, d.id)

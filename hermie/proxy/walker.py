@@ -366,7 +366,15 @@ class _Walker:
                 return None
             if isinstance(node, dict) and node.get("type") == "tool_result":
                 self._tool_names()
-                return self._files.get(node.get("tool_use_id"))
+                name = self._files.get(node.get("tool_use_id"))
+                if name is None:
+                    return None
+                # the name comes from the raw body and goes into the receipt: drop it if anything in it is sensitive
+                try:
+                    res = self.gate.scan(name, Origin.OTHER)
+                except Exception:
+                    return None
+                return None if res.findings or res.sensitive else name
         return None
 
     def _tool_name(self, path) -> str | None:

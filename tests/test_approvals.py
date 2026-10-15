@@ -399,3 +399,36 @@ async def test_terminal_prompt_uses_the_same_words():
     assert await p.ask(item) == "reject"
     text = out.getvalue()
     assert "[n] Don't send" in text and "[s] Send this one" in text and "kind:" not in text
+
+
+async def test_dialog_does_not_remember_a_timeout():
+    item = PendingItem(hash="cafe" + "0" * 60, kind="message", reason="judge", size=40, excerpt="x", id="cafe")
+    run, seen = _dialog([None, "Send this one"])
+    p = DialogPrompter(5, runner=run)
+    assert await p.ask(item) == "timeout"
+    assert await p.ask(item) == "send" and len(seen) == 2
+
+
+async def test_osascript_dialog_text_is_not_in_the_process_arguments(monkeypatch):
+    from hermie.proxy import approvals
+    seen = {}
+
+    class Proc:
+        async def communicate(self):
+            return b"Don't send\n", b""
+
+    async def fake_exec(*argv, **kw):
+        seen["argv"] = argv
+        return Proc()
+    monkeypatch.setattr(approvals.asyncio, "create_subprocess_exec", fake_exec)
+    out = await approvals._osascript_dialog("Hermie stopped a message", "Already replaced: Alice Chen -> <PERSON_1>",
+                                            ["Send this one", "Don't send"], 5)
+    assert out == "Don't send" and not any("Alice Chen" in str(a) for a in seen["argv"])
+
+
+def test_read_asks_drops_expired_rows(tmp_path):
+    import time as _t
+    from hermie.proxy.approvals import read_asks
+    (tmp_path / "asks.json").write_text(json.dumps([{"id": "ab12", "kind": "message", "reason": "judge", "size": 1,
+                                                     "deadline": _t.time() - 60}]))
+    assert read_asks(tmp_path) == []

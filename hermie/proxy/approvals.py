@@ -7,6 +7,7 @@ import json
 import os
 import re
 import sys
+import tempfile
 import threading
 import time
 from dataclasses import dataclass, field
@@ -338,7 +339,8 @@ class TtyPrompter:
 
 
 _DIALOG_SCRIPT = ('on run argv\n'
-                  'set r to display dialog (item 2 of argv) with title (item 1 of argv) '
+                  'set t to read (POSIX file (item 2 of argv)) as «class utf8»\n'
+                  'set r to display dialog t with title (item 1 of argv) '
                   'buttons (items 4 thru -1 of argv) default button (item -1 of argv) '
                   'with icon caution giving up after ((item 3 of argv) as integer)\n'
                   'if gave up of r then return ""\n'
@@ -347,11 +349,21 @@ _DIALOG_SCRIPT = ('on run argv\n'
 
 
 async def _osascript_dialog(title: str, text: str, buttons: list[str], timeout_s: float) -> str | None:
-    """Show a macOS dialog over whatever is in front; the clicked button, or None on timeout / close / error."""
-    proc = await asyncio.create_subprocess_exec(
-        "osascript", "-e", _DIALOG_SCRIPT, title, text, str(int(timeout_s)), *buttons,
-        stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL)
-    out, _ = await proc.communicate()
+    """Show a macOS dialog over whatever is in front; the clicked button, or None on timeout / close / error.
+    The text (it can hold real values) goes through a 0600 file, not the arguments, which `ps` shows to every user."""
+    fd, path = tempfile.mkstemp(prefix="hermie-dialog-", suffix=".txt")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.write(text)
+        proc = await asyncio.create_subprocess_exec(
+            "osascript", "-e", _DIALOG_SCRIPT, title, path, str(int(timeout_s)), *buttons,
+            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL)
+        out, _ = await proc.communicate()
+    finally:
+        try:
+            os.unlink(path)
+        except OSError:
+            pass
     return out.decode().strip() or None
 
 
@@ -406,11 +418,13 @@ class DialogPrompter:
                 return "unavailable"
             choice: Choice = ({"Send this one": "send", "Send all this session": "allow_all", "Don't send": "reject"}
                               .get(button, "reject") if button else "timeout")
-            self._answers.append((item.hash, norm, len(item.excerpt) < _EXCERPT_MAX, choice, self._clock()))
+            if choice != "timeout":   # nobody answered: ask again next time
+                self._answers.append((item.hash, norm, len(item.excerpt) < _EXCERPT_MAX, choice, self._clock()))
             return choice
 
 
 _UI_FRESH_S = 90
+_STALE_S = 5   # grace after an ask's deadline before its row counts as left over
 _ANSWERS = {"send": "send", "reject": "reject", "session": "allow_all", "local": "local", "again": "again"}
 _REVIEW = {"send": "send", "again": "again", "reject": "discard"}   # answers to a shown rewrite
 Review = Literal["send", "again", "discard"]
@@ -428,7 +442,12 @@ def read_asks(data_dir: Path) -> list[dict]:
         rows = json.loads((Path(data_dir) / "asks.json").read_text())
     except (OSError, ValueError):
         return []
-    return rows if isinstance(rows, list) else []
+    if not isinstance(rows, list):
+        return []
+    # a row past its deadline is left over from a `hermie serve` that stopped while asking: nobody is waiting for it
+    now = time.time()
+    return [r for r in rows if isinstance(r, dict)
+            and not (isinstance(r.get("deadline"), (int, float)) and r["deadline"] < now - _STALE_S)]
 
 
 def write_answer(data_dir: Path, ask_id: str, answer: str) -> bool:

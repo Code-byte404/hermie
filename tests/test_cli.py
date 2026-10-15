@@ -112,7 +112,7 @@ def test_asks_json_carries_the_view_with_values(tmp_path, capsys):
     MappingStore(Config(data_dir=tmp_path).mapping_path).add({"<PERSON_1>": "Alice Chen"})
     (tmp_path / "asks.json").write_text(json.dumps([{"id": "ab12", "kind": "message", "reason": "judge", "size": 9,
                                                      "excerpt": "hi <PERSON_1>", "placeholders": ["<PERSON_1>"],
-                                                     "deadline": 1.0}]))
+                                                     "deadline": 4e9}]))
     assert cli.main(["asks", "--json", "--data-dir", str(tmp_path)]) == 0
     [row] = json.loads(capsys.readouterr().out)
     assert row["view"]["pairs"] == [["Alice Chen", "<PERSON_1>"]] and row["view"]["options"][0]["label"] == "Don't send"

@@ -60,7 +60,7 @@ def test_notes_for_the_model_carry_no_values_and_ask_to_tell_the_user():
     assert "cannot be released" in explain.note_text("unscanned", "9c21", size="3 B", reason="detector_error: X")
     assert "hermie allow 9c21" in explain.note_text("image", "9c21")
     d = explain.note_text("dropped", "9c21")
-    assert "chose not to send" in d and "rejected" not in d.lower()
+    assert "did not send" in d and "rejected" not in d.lower()
 
 
 def test_error_texts_name_the_cause_and_the_way_out():
@@ -143,10 +143,35 @@ def test_turn_summary_reads_old_lines_without_new_fields():
 
 def test_last_text_separates_held_and_withheld():
     t = explain.last_text(_line(placeholders=["<PERSON_1>", "<PHONE_NUMBER_1>"], withheld=["9c21"], held="ab12"), M)
-    assert t == ("2 replaced (Alice Chen, 555-010-0199) · 1 withheld -> hermie allow 9c21 · "
+    assert t == ("2 replaced (555-010-0199, Alice Chen) · 1 withheld -> hermie allow 9c21 · "
                  "1 held, not sent -> hermie allow ab12")
     assert explain.last_text(_line(), M) == "nothing replaced"
 
 
 def test_last_text_says_how_many_values_were_put_back():
     assert explain.last_text(_line(placeholders=["<PERSON_1>"], restored=2), M) == "1 replaced (Alice Chen) · 2 put back"
+
+
+def test_observe_mode_does_not_claim_replacements():
+    s = explain.turn_summary([_line(mode="observe", replaced={"PERSON": 2})], M)
+    assert "replaced" not in s.split("\n", 1)[1].split("Observe mode")[0] and "Observe mode" in s
+    t = explain.last_text(_line(mode="observe", replaced={"PERSON": 2}), M)
+    assert t == "observe mode, nothing replaced" and "PERSON" not in t
+
+
+def test_unscannable_held_message_offers_no_release():
+    line = _line(held="ab12", held_why="could not be scanned")
+    for text in (explain.turn_summary([line], M), explain.last_text(line, M)):
+        assert "could not be scanned" in text and "hermie allow" not in text
+
+
+def test_newest_values_come_first():
+    phs = [f"<PERSON_{i}>" for i in range(1, 9)]
+    s = explain.turn_summary([_line(placeholders=phs)], {})
+    assert s.index("<PERSON_8>") < s.index("<PERSON_4>") and "<PERSON_1>" not in s
+    assert explain.last_text(_line(placeholders=phs), {}).startswith("8 replaced (<PERSON_8>, <PERSON_7>, <PERSON_6>")
+
+
+def test_not_sent_wording_does_not_claim_a_choice():
+    assert "chose" not in explain.note_text("dropped", "ab12")
+    assert explain.short_reason("rejected earlier") == "not sent"

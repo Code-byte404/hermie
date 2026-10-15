@@ -46,6 +46,7 @@ class ReceiptLine:
     restored: int = 0   # placeholders put back into the reply; lines written before the field exist read as 0
     placeholders: list[str] = field(default_factory=list)     # placeholder names in the outbound body, never values
     withheld_items: list[dict] = field(default_factory=list)  # {id, tool, file (basename), why (a fixed label)}
+    held_why: str | None = None   # why `held` was held: a fixed label from `explain`
 
 
 _FIELDS = {f.name for f in fields(ReceiptLine)}
@@ -108,6 +109,8 @@ def _sanitized(line: ReceiptLine) -> dict:
                       "file": None if not file else Path(str(file)).name[:80],
                       "why": why if why in SHORT_REASONS else "held for review"})
     data["withheld_items"] = items
+    if data["held_why"] is not None and data["held_why"] not in SHORT_REASONS:
+        data["held_why"] = "held for review"
     return data
 
 

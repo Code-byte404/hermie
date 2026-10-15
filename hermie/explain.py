@@ -14,8 +14,8 @@ LONG_VALUE = 20      # a value this long without whitespace is shown shortened, 
 SHOW_MAX = 80        # longest value shown in full
 LIST_LIMIT = 5
 
-SHORT_REASONS = frozenset({"judged private", "encoded data", "image", "could not be scanned",
-                           "you chose not to send it", "held for review"})
+SHORT_REASONS = frozenset({"judged private", "encoded data", "image", "could not be scanned", "not sent",
+                           "held for review"})
 
 
 def short_reason(reason: str) -> str:
@@ -27,8 +27,8 @@ def short_reason(reason: str) -> str:
         return "image"
     if reason.startswith("detector_error"):
         return "could not be scanned"
-    if reason == "rejected earlier":
-        return "you chose not to send it"
+    if reason == "rejected earlier":   # Don't send, a timeout or no prompter: the message stayed home
+        return "not sent"
     return "held for review"
 
 
@@ -37,7 +37,7 @@ _REASON_TEXT = {
     "encoded data": "it contains a long encoded string that could carry data out",
     "image": "it is an image, and Hermie cannot read images",
     "could not be scanned": "Hermie could not scan it",
-    "you chose not to send it": "you chose not to send it",
+    "not sent": "it was not sent earlier",
     "held for review": "Hermie held it for review",
 }
 
@@ -89,7 +89,7 @@ def note_text(kind: str, id: str, size: str = "", reason: str = "", tool: str | 
         return (f"[Hermie withheld an image because Hermie cannot read images. Tell the user, and that they can "
                 f"release it with: hermie allow {id}]")
     if kind == "dropped":
-        return (f"[Hermie withheld a message the user chose not to send (id {id}). If the user asks, it can be "
+        return (f"[Hermie withheld a message the user did not send (id {id}). If the user asks, it can be "
                 f"released with: hermie allow {id}]")
     return (f"[Hermie withheld this tool result{what} because {reason_text(reason)}. Tell the user, and that they "
             f"can release it with: hermie allow {id}]")
@@ -177,8 +177,28 @@ def _placeholders(line) -> list[str]:
     return list(getattr(line, "placeholders", None) or [])
 
 
+def _newest_first(lines) -> list[str]:
+    """Placeholders across requests, the latest first: each request resends the whole conversation, so the values
+    caught most recently sit at the end of the latest body."""
+    return [ph for ln in reversed(list(lines)) for ph in reversed(_placeholders(ln))]
+
+
+def _observe(lines) -> bool:
+    return any(getattr(ln, "mode", "") == "observe" for ln in lines)
+
+
+def _held_part(line) -> str | None:
+    if not getattr(line, "held", None) or getattr(line, "approved_by", None) is not None:
+        return None
+    if getattr(line, "held_why", None) == "could not be scanned":
+        return "1 message could not be scanned, not sent"
+    return f"1 held, not sent -> hermie allow {line.held}"
+
+
 def _replaced_part(lines, mapping) -> str | None:
-    phs = [ph for ln in lines for ph in _placeholders(ln)]
+    if _observe(lines):
+        return None   # observe mode sends everything unchanged: nothing was replaced
+    phs = _newest_first(lines)
     if phs:
         return pairs_text(value_pairs(phs, mapping))
     counts: dict[str, int] = {}
@@ -206,7 +226,7 @@ def _withheld_part(lines) -> str | None:
 
 
 def _closing(lines) -> str:
-    if any(getattr(ln, "mode", "") == "observe" for ln in lines):
+    if _observe(lines):
         return "Observe mode: nothing was replaced, everything was sent."
     if any(getattr(ln, "approved_by", None) in ("user", "session", "allowed") for ln in lines):
         return "Not everything was replaced: items you approved went out as is."
@@ -220,14 +240,19 @@ def turn_summary(lines, mapping: dict) -> str | None:
         rows.append(f"  replaced    {rep}")
     if (wh := _withheld_part(lines)):
         rows.append(f"  withheld    {wh}")
-    held = [ln.held for ln in lines if getattr(ln, "held", None) and getattr(ln, "approved_by", None) is None]
-    if held:
-        rows.append(f"  held        {len(held)} message{'s' if len(held) != 1 else ''} not sent"
-                    f" -> send anyway: hermie allow {held[-1]}")
+    held = [ln for ln in lines if getattr(ln, "held", None) and getattr(ln, "approved_by", None) is None]
+    unscanned = [ln for ln in held if getattr(ln, "held_why", None) == "could not be scanned"]
+    releasable = [ln for ln in held if ln not in unscanned]
+    if releasable:
+        rows.append(f"  held        {len(releasable)} message{'s' if len(releasable) != 1 else ''} not sent"
+                    f" -> send anyway: hermie allow {releasable[-1].held}")
+    if unscanned:
+        rows.append(f"  held        {len(unscanned)} message{'s' if len(unscanned) != 1 else ''} could not be "
+                    f"scanned, not sent")
     restored = sum(getattr(ln, "restored", 0) or 0 for ln in lines)
     if restored:
         rows.append(f"  put back    {restored} real value{'s' if restored != 1 else ''} in the replies")
-    if not rows:
+    if not rows and not (_observe(lines) and any(getattr(ln, "replaced", None) for ln in lines)):
         return None
     n = len(lines)
     return "\n".join([f"Hermie · this turn ({n} request{'s' if n != 1 else ''})", *rows, f"  {_closing(lines)}"])
@@ -235,8 +260,10 @@ def turn_summary(lines, mapping: dict) -> str | None:
 
 def last_text(line, mapping: dict) -> str | None:
     parts = []
-    phs = _placeholders(line)
-    if phs:
+    phs = _newest_first([line])
+    if _observe([line]):
+        parts.append("observe mode, nothing replaced")
+    elif phs:
         pairs = value_pairs(phs, mapping, limit=3)
         n = len(dict.fromkeys(phs))
         parts.append(f"{n} replaced ({names_text(pairs)})")
@@ -245,8 +272,8 @@ def last_text(line, mapping: dict) -> str | None:
     withheld = list(getattr(line, "withheld", None) or [])
     if withheld:
         parts.append(f"{len(withheld)} withheld -> hermie allow {withheld[0]}")
-    if getattr(line, "held", None) and getattr(line, "approved_by", None) is None:
-        parts.append(f"1 held, not sent -> hermie allow {line.held}")
+    if (held := _held_part(line)):
+        parts.append(held)
     if getattr(line, "restored", 0):
         parts.append(f"{line.restored} put back")
     return " · ".join(parts) if parts else "nothing replaced"
