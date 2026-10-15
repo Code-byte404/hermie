@@ -57,3 +57,18 @@ def test_local_model_from_env(tmp_path, monkeypatch):
     assert c.local_model == "ollama:qwen3:8b" and c.local_max_chars == 500
     monkeypatch.setenv("HERMIE_LOCAL_MODEL", "")
     assert Config.load(data_dir=tmp_path).local_model is None
+
+
+@pytest.mark.parametrize("body", ['port = "8787"', 'bodies = "false"', "judge_threshold = true", "cache_mb = 1.5",
+                                  "languages = [1]", "host = 1", "judge = 3", "judge_timeout_s = nan", "data_dir = 5"])
+def test_config_file_values_are_type_checked(tmp_path, body):
+    p = tmp_path / "config.toml"
+    p.write_text(body + "\n")
+    with pytest.raises(ValueError, match="invalid config"):
+        Config.load(p)
+
+
+def test_config_file_accepts_an_int_for_a_float(tmp_path):
+    p = tmp_path / "config.toml"
+    p.write_text("judge_timeout_s = 30\njudge_threshold = 1\n")
+    assert Config.load(p).judge_timeout_s == 30

@@ -1,6 +1,7 @@
 """Proxy configuration: config.toml < HERMIE_* env < explicit overrides."""
 from __future__ import annotations
 
+import math
 import os
 import tomllib
 from dataclasses import dataclass, field, fields
@@ -8,6 +9,10 @@ from pathlib import Path
 from typing import Literal
 
 _TUPLE_FIELDS = ("languages", "deny_words", "allow_values", "allow_paths")
+_INT_FIELDS = ("port", "local_max_chars", "bodies_keep_mb", "hold_timeout_s", "cache_mb")
+_FLOAT_FIELDS = ("judge_threshold", "judge_timeout_s", "local_timeout_s", "presidio_threshold")
+_STR_FIELDS = ("host", "mode", "ollama_url", "images")
+_OPTIONAL_STR_FIELDS = ("judge", "local_model", "custom_upstream")
 
 
 @dataclass
@@ -36,6 +41,7 @@ class Config:
     data_dir: Path | None = field(default_factory=lambda: Path("~/.hermie").expanduser())
 
     def __post_init__(self) -> None:
+        self._check_types()
         for name in _TUPLE_FIELDS:
             value = getattr(self, name)
             if isinstance(value, str):
@@ -44,6 +50,30 @@ class Config:
         if self.data_dir is not None:
             self.data_dir = Path(self.data_dir).expanduser()
         self._validate()
+
+    def _check_types(self) -> None:
+        """A config.toml value of the wrong type (`port = "8787"`, `bodies = "false"`) is an error, not a surprise."""
+        def ok(name: str) -> bool:
+            v = getattr(self, name)
+            if name in _INT_FIELDS:
+                return isinstance(v, int) and not isinstance(v, bool)
+            if name in _FLOAT_FIELDS:
+                return isinstance(v, (int, float)) and not isinstance(v, bool) and math.isfinite(v)
+            if name in _STR_FIELDS:
+                return isinstance(v, str)
+            if name in _OPTIONAL_STR_FIELDS:
+                return v is None or isinstance(v, str)
+            if name in _TUPLE_FIELDS:
+                return isinstance(v, str) or (isinstance(v, (list, tuple)) and all(isinstance(x, str) for x in v))
+            if name == "bodies":
+                return isinstance(v, bool)
+            if name == "data_dir":
+                return v is None or isinstance(v, (str, os.PathLike))
+            return True
+
+        for f in fields(self):
+            if not ok(f.name):
+                raise ValueError(f"invalid config: {f.name}={getattr(self, f.name)!r} (wrong type)")
 
     def _validate(self) -> None:
         def bad(name: str):
