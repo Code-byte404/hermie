@@ -1,5 +1,7 @@
 """Claude Code integration: the status line (`hermie status`), hook events (`hermie hook`) and their installation
 (`hermie install-hooks`). Everything here reads the receipt and the mapping file; nothing here sees request text.
+Real values come from the local mapping and are shown only to the person: a `systemMessage` and the status line
+never reach the model. The wording lives in `explain`.
 
 Claude Code calls `hermie hook` with one JSON object on stdin per event. `UserPromptSubmit` stores a turn marker
 (the time, under the session id); `Stop` sums the receipt lines since that marker into one `systemMessage`;
@@ -15,8 +17,8 @@ import shlex
 import socket
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Iterable
 
+from hermie import explain
 from hermie.config import Config
 from hermie.gate.redact import MappingStore, MappingStoreError
 from hermie.proxy.receipt import Receipt, ReceiptLine
@@ -98,51 +100,33 @@ def _last_line(config: Config) -> ReceiptLine | None:
     return last
 
 
-def summarize(lines: Iterable[ReceiptLine]) -> str | None:
-    """`16 PERSON, 2 SECRET replaced; 1 restored; 1 held` or None when nothing happened. Entity names and counts
-    only; the receipt holds nothing else. Requests in one turn resend the same context, so the replaced counts are
-    the largest single request's, not a sum; restored / held / withheld are summed."""
-    replaced: dict[str, int] = {}
-    restored = held = withheld = 0
-    for ln in lines:
-        for k, v in ln.replaced.items():
-            replaced[k] = max(replaced.get(k, 0), int(v))
-        restored += ln.restored or 0
-        held += 1 if ln.held else 0
-        withheld += len(ln.withheld)
-    parts = []
-    if replaced:
-        top = sorted(replaced.items(), key=lambda kv: (-kv[1], kv[0]))
-        shown = ", ".join(f"{n} {k}" for k, n in top[:3])
-        more = f" and {len(top) - 3} more" if len(top) > 3 else ""
-        parts.append(f"{shown}{more} replaced")
-    if restored:
-        parts.append(f"{restored} restored")
-    if held:
-        parts.append(f"{held} held")
-    if withheld:
-        parts.append(f"{withheld} withheld")
-    return "; ".join(parts) if parts else None
+def _mapping(config: Config) -> dict:
+    try:
+        return MappingStore(config.mapping_path).mapping
+    except MappingStoreError:
+        return {}
 
 
 def status_json(config: Config) -> dict:
     last = _last_line(config)
     up = serving(config)
-    return {"running": up is not None, "serve": up, "kept": kept_values(config),
-            "last": None if last is None else last.__dict__}
+    hidden = kept_values(config)
+    return {"running": up is not None, "serve": up, "kept": hidden, "hidden": hidden,
+            "last": None if last is None else last.__dict__,
+            "last_text": None if last is None else explain.last_text(last, _mapping(config))}
 
 
 def status_text(config: Config) -> str:
-    """One line for a status bar: whether the proxy answers, how many values stay local, the last request."""
+    """One line for a status bar: whether the proxy answers, how many values are hidden, the last request."""
     up = serving(config)
     kept = kept_values(config)
-    kept_text = "mapping unreadable" if kept is None else f"{kept} value{'s' if kept != 1 else ''} kept local"
+    kept_text = "mapping unreadable" if kept is None else f"{kept} value{'s' if kept != 1 else ''} hidden so far"
     state = f":{up['port']}" if up else f"not running (expected :{config.port})"
     head = f"hermie {'●' if up else '○'} {state} · {kept_text}"
     last = _last_line(config)
     if last is None:
         return head
-    return f"{head} · last: {summarize([last]) or 'nothing replaced'}"
+    return f"{head} · last: {explain.last_text(last, _mapping(config))}"
 
 
 # --- hooks ---
@@ -175,15 +159,7 @@ def _turn_lines(config: Config, session_id) -> list[ReceiptLine]:
 
 
 def _stop_message(config: Config, event: dict) -> str | None:
-    lines = _turn_lines(config, event.get("session_id"))
-    summary = summarize(lines)
-    if summary is None:
-        return None
-    n = len(lines)
-    msg = f"Hermie: {summary} in {n} request{'s' if n != 1 else ''} this turn. Only placeholders left this machine."
-    if any(ln.held or ln.withheld for ln in lines):
-        msg += " Release a held or withheld item with `hermie allow ID` (`hermie tail` lists them)."
-    return msg
+    return explain.turn_summary(_turn_lines(config, event.get("session_id")), _mapping(config))
 
 
 def _post_tool_message(config: Config, event: dict) -> str | None:
@@ -196,8 +172,7 @@ def _post_tool_message(config: Config, event: dict) -> str | None:
     n = restored[-1].restored
     target = (event.get("tool_input") or {}).get("file_path") if isinstance(event.get("tool_input"), dict) else None
     where = f" ({Path(str(target)).name})" if target else ""
-    return (f"Hermie: {n} placeholder{'s' if n != 1 else ''} restored before this {tool}{where} ran. "
-            f"The real value{'s' if n != 1 else ''} never left this machine.")
+    return explain.post_tool_text(n, tool, where)
 
 
 def handle_hook(event: dict, config: Config) -> dict | None:

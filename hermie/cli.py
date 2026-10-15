@@ -17,7 +17,7 @@ import uvicorn
 
 from hermie import __version__
 from hermie.config import Config
-from hermie import claude_code
+from hermie import claude_code, explain
 from hermie.gate.redact import PLACEHOLDER, MappingStore, MappingStoreError
 from hermie.proxy.approvals import (AllowStore, DialogPrompter, ModPrompter, NoPrompter, TtyPrompter, read_asks,
                                     touch_ui, write_answer)
@@ -159,11 +159,19 @@ def _allow(config: Config, args) -> int:
 def _asks(config: Config, args) -> int:
     touch_ui(config.data_dir)
     rows = read_asks(config.data_dir)
+    try:
+        mapping = MappingStore(config.mapping_path).mapping
+    except MappingStoreError:
+        mapping = {}
     if args.json:
-        print(json.dumps(rows))
+        print(json.dumps([r | {"view": explain.held_view(r, mapping)} for r in rows], ensure_ascii=False))
     else:
         for r in rows:
-            print(f"{r['id']}  {r['kind']}  {r['size']} chars  {r['reason']}")
+            print("\n".join(explain.held_lines(explain.held_view(r, mapping),
+                                               {o: o for o in ("reject", "send", "session", "local", "again")})))
+            answers = "reject|again|send" if r.get("kind") == "rewrite" else \
+                "reject|send|session" + ("|local" if r.get("local") else "")
+            print(f"answer: hermie answer {r['id']} {answers}")
     return 0
 
 

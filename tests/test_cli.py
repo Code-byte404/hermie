@@ -106,3 +106,13 @@ def test_tail_since_too_far_back_is_a_usage_error(tmp_path, capsys):
 def test_stats_rejects_unusable_days(tmp_path, capsys, days):
     assert cli.main(["stats", "--days", days, "--data-dir", str(tmp_path)]) == 2
     assert "--days" in capsys.readouterr().err
+
+
+def test_asks_json_carries_the_view_with_values(tmp_path, capsys):
+    MappingStore(Config(data_dir=tmp_path).mapping_path).add({"<PERSON_1>": "Alice Chen"})
+    (tmp_path / "asks.json").write_text(json.dumps([{"id": "ab12", "kind": "message", "reason": "judge", "size": 9,
+                                                     "excerpt": "hi <PERSON_1>", "placeholders": ["<PERSON_1>"],
+                                                     "deadline": 1.0}]))
+    assert cli.main(["asks", "--json", "--data-dir", str(tmp_path)]) == 0
+    [row] = json.loads(capsys.readouterr().out)
+    assert row["view"]["pairs"] == [["Alice Chen", "<PERSON_1>"]] and row["view"]["options"][0]["label"] == "Don't send"

@@ -247,6 +247,8 @@ def last_text(line, mapping: dict) -> str | None:
         parts.append(f"{len(withheld)} withheld -> hermie allow {withheld[0]}")
     if getattr(line, "held", None) and getattr(line, "approved_by", None) is None:
         parts.append(f"1 held, not sent -> hermie allow {line.held}")
+    if getattr(line, "restored", 0):
+        parts.append(f"{line.restored} put back")
     return " · ".join(parts) if parts else "nothing replaced"
 
 

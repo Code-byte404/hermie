@@ -28,8 +28,8 @@ def test_status_text_when_not_running(tmp_path):
     MappingStore(cfg.mapping_path).add({"<SECRET_1>": "sk-test-abc", "<EMAIL_ADDRESS_1>": "me@example.com"})
     Receipt(cfg).write(_line(replaced={"SECRET": 1, "EMAIL_ADDRESS": 2}, restored=1))
     text = status_text(cfg)
-    assert "not running" in text and "2 values kept local" in text
-    assert "2 EMAIL_ADDRESS, 1 SECRET replaced" in text and "1 restored" in text
+    assert "not running" in text and "2 values hidden so far" in text
+    assert "2 EMAIL_ADDRESS, 1 SECRET replaced" in text and "1 put back" in text
     assert "sk-test-abc" not in text and "me@example.com" not in text
     assert status_json(cfg)["running"] is False and status_json(cfg)["kept"] == 2
 
@@ -42,7 +42,7 @@ def test_status_text_when_serving(tmp_path):
         cfg.serve_path.write_text(json.dumps({"pid": os.getpid(), "host": "127.0.0.1", "port": port, "started": "x"}))
         text = status_text(cfg)
         running = status_json(cfg)["running"]
-    assert f"hermie ● :{port}" in text and "0 values kept local" in text and running is True
+    assert f"hermie ● :{port}" in text and "0 values hidden so far" in text and running is True
     assert status_text(cfg).startswith("hermie ○ not running")        # the socket is closed now
 
 
@@ -63,7 +63,8 @@ def test_hook_prompt_marker_then_stop_summarizes_only_this_turn(tmp_path):
     Receipt(cfg).write(_line(at=_stamp(2), id="b" * 12))                            # a side request, nothing in it
     out = handle_hook({"hook_event_name": "Stop", "session_id": "s-1"}, cfg)
     msg = out["systemMessage"]
-    assert msg.startswith("Hermie:") and "1 SECRET" in msg and "1 restored" in msg and "PHONE_NUMBER" not in msg
+    assert msg.startswith("Hermie · this turn") and "1 SECRET" in msg and "put back    1 real value" in msg
+    assert "PHONE_NUMBER" not in msg
 
 
 def test_hook_stop_is_quiet_when_nothing_was_replaced_or_restored(tmp_path):
@@ -78,7 +79,7 @@ def test_hook_stop_reports_held_and_withheld(tmp_path):
     handle_hook({"hook_event_name": "UserPromptSubmit", "session_id": "s-1"}, cfg)
     Receipt(cfg).write(_line(at=_stamp(1), withheld=["9c21"], held="ab12"))
     msg = handle_hook({"hook_event_name": "Stop", "session_id": "s-1"}, cfg)["systemMessage"]
-    assert "1 held" in msg and "1 withheld" in msg and "hermie allow" in msg
+    assert "1 message not sent" in msg and "hermie allow 9c21" in msg and "hermie allow ab12" in msg
 
 
 def test_hook_post_tool_use_reports_restored_values_for_file_writes(tmp_path):
@@ -88,7 +89,7 @@ def test_hook_post_tool_use_reports_restored_values_for_file_writes(tmp_path):
     ev = {"hook_event_name": "PostToolUse", "session_id": "s-1", "tool_name": "Write",
           "tool_input": {"file_path": "/tmp/proj/.env", "content": "OPENAI_API_KEY=sk-test-abc"}}
     msg = handle_hook(ev, cfg)["systemMessage"]
-    assert "1 placeholder" in msg and "Write" in msg and ".env" in msg and "never left" in msg
+    assert "put back 1 real value" in msg and "Write" in msg and ".env" in msg
     assert "sk-test-abc" not in msg and "/tmp/proj" not in msg
     assert handle_hook(ev | {"tool_name": "Bash", "tool_input": {"command": "ls"}}, cfg) is None
 
@@ -173,14 +174,6 @@ def test_install_cli_writes_project_local_settings(tmp_path, monkeypatch, capsys
     assert "hooks" not in json.loads((tmp_path / ".claude" / "settings.local.json").read_text())
 
 
-def test_summary_takes_the_largest_request_per_entity_and_sums_restored():
-    from hermie.claude_code import summarize
-    lines = [_line(replaced={"PERSON": 16, "SECRET": 2, "EMAIL_ADDRESS": 4, "PHONE_NUMBER": 1}, restored=1),
-             _line(replaced={"PERSON": 16, "SECRET": 1}, restored=2)]
-    assert summarize(lines) == "16 PERSON, 4 EMAIL_ADDRESS, 2 SECRET and 1 more replaced; 3 restored"
-    assert summarize([_line()]) is None
-
-
 def test_install_quotes_paths_with_spaces_and_stays_idempotent(tmp_path):
     import shlex
     path = tmp_path / ".claude" / "settings.local.json"
@@ -202,3 +195,47 @@ def test_install_hooks_cli_writes_an_absolute_data_dir(tmp_path, monkeypatch):
     data = json.loads((tmp_path / ".claude" / "settings.local.json").read_text())
     argv = shlex.split(data["hooks"]["Stop"][0]["hooks"][0]["command"])
     assert argv[-2:] == ["--data-dir", str((tmp_path / "rel dir").resolve())]
+
+
+def _seed_mapping(cfg):
+    MappingStore(cfg.mapping_path).add({"<PERSON_1>": "Alice Chen", "<SECRET_1>": "sk-test-abcdef123456f3a"})
+
+
+def test_stop_summary_shows_values_and_withheld_sources(tmp_path):
+    cfg = Config(data_dir=tmp_path)
+    _seed_mapping(cfg)
+    handle_hook({"hook_event_name": "UserPromptSubmit", "session_id": "s-1"}, cfg)
+    Receipt(cfg).write(_line(at=_stamp(1), replaced={"PERSON": 1, "SECRET": 1}, placeholders=["<PERSON_1>", "<SECRET_1>"],
+                             withheld=["9c21"], withheld_items=[{"id": "9c21", "tool": "Read", "file": "a.csv",
+                                                                 "why": "judged private"}]))
+    msg = handle_hook({"hook_event_name": "Stop", "session_id": "s-1"}, cfg)["systemMessage"]
+    assert "Alice Chen -> <PERSON_1>" in msg and "sk-tes…f3a -> <SECRET_1>" in msg and "sk-test-abcdef123456f3a" not in msg
+    assert "Read a.csv (judged private) -> hermie allow 9c21" in msg and "Only placeholders left this machine." in msg
+
+
+def test_stop_summary_does_not_claim_placeholders_only_after_an_approval(tmp_path):
+    cfg = Config(data_dir=tmp_path)
+    handle_hook({"hook_event_name": "UserPromptSubmit", "session_id": "s-1"}, cfg)
+    Receipt(cfg).write(_line(at=_stamp(1), placeholders=["<PERSON_1>"], replaced={"PERSON": 1}, approved_by="user"))
+    msg = handle_hook({"hook_event_name": "Stop", "session_id": "s-1"}, cfg)["systemMessage"]
+    assert "Only placeholders" not in msg and "you approved" in msg
+
+
+def test_stop_summary_reads_old_lines(tmp_path):
+    cfg = Config(data_dir=tmp_path)
+    handle_hook({"hook_event_name": "UserPromptSubmit", "session_id": "s-1"}, cfg)
+    with open(tmp_path / "receipt.jsonl", "a") as f:
+        old = {k: v for k, v in _line(at=_stamp(1), replaced={"PERSON": 2}).__dict__.items()
+               if k not in ("placeholders", "withheld_items")}
+        f.write(json.dumps(old) + "\n")
+    assert "2 PERSON" in handle_hook({"hook_event_name": "Stop", "session_id": "s-1"}, cfg)["systemMessage"]
+
+
+def test_status_line_shows_values_and_separates_held(tmp_path):
+    cfg = Config(data_dir=tmp_path)
+    _seed_mapping(cfg)
+    Receipt(cfg).write(_line(placeholders=["<PERSON_1>"], replaced={"PERSON": 1}, withheld=["9c21"], held="ab12"))
+    text = status_text(cfg)
+    assert "2 values hidden so far" in text and "1 replaced (Alice Chen)" in text
+    assert "1 withheld -> hermie allow 9c21" in text and "1 held, not sent -> hermie allow ab12" in text
+    assert status_json(cfg)["last_text"].startswith("1 replaced (Alice Chen)")

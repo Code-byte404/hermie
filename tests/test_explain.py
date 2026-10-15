@@ -146,3 +146,7 @@ def test_last_text_separates_held_and_withheld():
     assert t == ("2 replaced (Alice Chen, 555-010-0199) · 1 withheld -> hermie allow 9c21 · "
                  "1 held, not sent -> hermie allow ab12")
     assert explain.last_text(_line(), M) == "nothing replaced"
+
+
+def test_last_text_says_how_many_values_were_put_back():
+    assert explain.last_text(_line(placeholders=["<PERSON_1>"], restored=2), M) == "1 replaced (Alice Chen) · 2 put back"
