@@ -221,12 +221,12 @@ def smuggling_risk_url(payload: str) -> Optional[str]:
     tokens += [part for tok in tokens if "/" in tok for part in tok.split("/") if len(part) >= 20]
     for tok in tokens:
         if _HEX.match(tok):
-            return f"possible hex data: {tok[:24]}..."
+            return f"possible hex data ({len(tok)} chars)"
         core = tok.rstrip("=")
         if len(core) >= 24 and _looks_b64(tok) and _entropy(core) >= 3.8:
-            return f"possible base64-encoded data: {tok[:24]}..."
+            return f"possible base64-encoded data ({len(tok)} chars)"
     if m := _DIGITS.search(scan_text):
-        return f"contains a long digit string: {m.group()}"
+        return f"long digit string ({len(m.group())} digits)"
     return None
 
 
@@ -244,7 +244,7 @@ def smuggling_risk_text(text: str) -> Optional[str]:
         if len(core) < TEXT_MIN_TOKEN or _entropy(core) < TEXT_MIN_ENTROPY or _FS_PATH.match(tok):
             continue
         if _HEX.match(core):
-            return f"possible hex data: {tok[:24]}..."
+            return f"possible hex data ({len(tok)} chars)"
         if _looks_b64(tok):
-            return f"possible base64-encoded data: {tok[:24]}..."
+            return f"possible base64-encoded data ({len(tok)} chars)"
     return None

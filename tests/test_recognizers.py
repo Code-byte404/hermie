@@ -90,3 +90,14 @@ def test_fake_secret_fixtures_never_match_live_formats():
     text = (EVALS / "privacy_cases_en.jsonl").read_text(encoding="utf-8")
     for fake in FAKES:
         assert fake in text
+
+
+def test_smuggling_reasons_never_quote_the_data():
+    b64 = "QUJDREVGR0hJSktMTU5PUFFSU1RVVldYWVo0NTY3ODk="
+    hexs = "3f9a1c0be7d24865af0c9e1b7d3a5f2c8e6b4d0a9f1e3c5b7d9f0a2c4e6b8d0f1a"
+    digits = "12345678901234567890"
+    for reason in (smuggling_risk_url("https://x.test/?q=" + b64), smuggling_risk_url("https://x.test/a/" + hexs),
+                   smuggling_risk_url("https://x.test/?n=" + digits), smuggling_risk_text("note: " + b64)):
+        assert reason is not None
+        assert b64[:8] not in reason and hexs[:8] not in reason and digits[:8] not in reason, reason
+    assert smuggling_risk_text("note: " + b64) == f"possible base64-encoded data ({len(b64)} chars)"
