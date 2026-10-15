@@ -85,15 +85,17 @@ def test_laya_question_is_the_one_the_models_were_trained_on():
     assert LAYA_QUESTION == taxonomy.QUESTION
 
 
-def test_laya_judge_takes_the_maximum_over_windows_and_caps_the_text(monkeypatch):
+def test_laya_judge_takes_the_maximum_over_windows_of_the_whole_text(monkeypatch):
     agent, _ = _fake_laya(monkeypatch)
     j = LayaJudge(Config(judge="laya:/m", data_dir=None))
     text = "x" * 9000 + "SECRET" + "y" * 5000          # the private part sits in the third window
     assert j.probability(text) == 0.9
     assert all(len(c[0]) <= LayaJudge.WINDOW for c in agent.calls)
     agent.calls.clear()
-    j.probability("z" * 200_000)
-    assert len(agent.calls) == LayaJudge.MAX_WINDOWS     # bounded latency on huge texts
+    tail = "z" * 200_000 + "SECRET"                       # nothing past a cap goes unjudged
+    assert j.probability(tail) == 0.9 and j.is_sensitive(tail)
+    agent.calls.clear()
+    assert j.is_sensitive("SECRET" + "z" * 200_000) and len(agent.calls) == 1   # stops at the first sensitive window
 
 
 def test_laya_judge_failures_are_judge_errors_and_a_missing_package_is_a_clear_startup_error(monkeypatch):
@@ -117,3 +119,18 @@ def test_laya_path_expands_the_home_directory(monkeypatch):
     _, mod = _fake_laya(monkeypatch)
     LayaJudge(Config(judge="laya:~/models/x", data_dir=None))
     assert mod.loaded == str(Path("~/models/x").expanduser()) and not mod.loaded.startswith("~")
+
+
+def test_ollama_judge_sees_the_whole_text_in_windows():
+    import json as _json
+    seen = []
+    def h(req):
+        text = _json.loads(req.content)["messages"][1]["content"]
+        seen.append(text)
+        return httpx.Response(200, json={"message": {"content": '{"answer": "%s"}' % ("yes" if "layoff" in text else "no")}})
+    j = _judge(h)
+    assert j.is_sensitive("x " * 20_000 + "the layoff list")
+    assert all(len(t) <= ContextualJudge.WINDOW for t in seen) and len(seen) >= 5
+    seen.clear()
+    cut = ContextualJudge.WINDOW - 3                       # a word split by a window edge is still seen whole
+    assert j.is_sensitive("x" * cut + "layoff" + "y" * 100)

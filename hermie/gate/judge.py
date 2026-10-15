@@ -29,7 +29,20 @@ class JudgeError(Exception):
     """The judge could not produce a usable answer."""
 
 
+OVERLAP = 200   # windows overlap, so a phrase across a window edge is seen whole in one of them
+
+
+def windows(text: str, size: int) -> list[str]:
+    """The whole text in windows of at most `size` characters: nothing past a cap goes unjudged."""
+    step = max(size - OVERLAP, size // 2, 1)
+    return [text[i:i + size] for i in range(0, max(len(text) - (size - step), 1), step)] or [""]
+
+
 class ContextualJudge:
+    """One yes/no chat call per WINDOW characters; the first "yes" decides."""
+
+    WINDOW = 8000
+
     def __init__(self, config: Config, client: httpx.Client | None = None):
         prefix, _, model = (config.judge or "").partition(":")
         if prefix != "ollama" or not model:
@@ -39,11 +52,14 @@ class ContextualJudge:
         self.client = client or httpx.Client()
 
     def probability(self, text: str) -> float:
+        return max((self._ask(w) for w in windows(text, self.WINDOW)), default=0.0)
+
+    def _ask(self, text: str) -> float:
         body = {
             "model": self.model,
             "messages": [
                 {"role": "system", "content": CONTEXTUAL_PRIVACY_QUESTION + ' Answer with JSON {"answer": "yes"|"no"}.'},
-                {"role": "user", "content": text[:8000]},
+                {"role": "user", "content": text},
             ],
             "format": _SCHEMA,
             "think": False,
@@ -64,7 +80,7 @@ class ContextualJudge:
         return 1.0 if answer == "yes" else 0.0
 
     def is_sensitive(self, text: str) -> bool:
-        return self.probability(text) >= self.config.judge_threshold
+        return any(self._ask(w) >= self.config.judge_threshold for w in windows(text, self.WINDOW))
 
 
 # The question the Laya checkpoints were fine-tuned on (evals/judge_data/taxonomy.py holds the same string; a test keeps them equal).
@@ -75,10 +91,9 @@ LAYA_QUESTION = ("Does this text contain private information about a specific pe
 class LayaJudge:
     """A fine-tuned Laya checkpoint answering one yes/no question in a single forward pass (tens of milliseconds, no
     generated text). The model reads about 1,000 tokens, so a longer text is cut into WINDOW-character windows and the
-    highest score wins; at most MAX_WINDOWS windows are scored, which bounds the latency on very large texts."""
+    highest score wins; `is_sensitive` stops at the first window over the threshold."""
 
     WINDOW = 4000
-    MAX_WINDOWS = 8
     _ID = "private"
 
     def __init__(self, config: Config):
@@ -101,18 +116,20 @@ class LayaJudge:
         with self._lock:
             return float(self._agent.predict(text, self._questions)["answers"][self._ID]["noul"])
 
-    def probability(self, text: str) -> float:
-        windows = [text[i:i + self.WINDOW] for i in range(0, len(text), self.WINDOW)][: self.MAX_WINDOWS] or [""]
+    def _checked(self, text: str) -> float:
         try:
-            best = max(self._score(w) for w in windows)
+            score = self._score(text)
         except Exception as e:   # never carry the text or the model's message into the error
             raise JudgeError(f"judge failed: {type(e).__name__}") from e
-        if not 0.0 <= best <= 1.0:   # also false for NaN
+        if not 0.0 <= score <= 1.0:   # also false for NaN
             raise JudgeError("judge returned a score outside 0..1")
-        return best
+        return score
+
+    def probability(self, text: str) -> float:
+        return max(self._checked(w) for w in windows(text, self.WINDOW))
 
     def is_sensitive(self, text: str) -> bool:
-        return self.probability(text) >= self.config.judge_threshold
+        return any(self._checked(w) >= self.config.judge_threshold for w in windows(text, self.WINDOW))
 
 
 def make_judge(config: Config):
