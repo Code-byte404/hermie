@@ -71,6 +71,7 @@ class AllowStore:
         self._mtime: int | None = None
         self._lock = threading.RLock()
         self._persisted: set[str] = set()
+        self._issued: dict[str, str] = {}   # id -> hash for every id written to pending.jsonl: never given to another
         self.pending: dict[str, PendingItem] = self._load_pending()
 
     def _load_pending(self) -> dict[str, PendingItem]:
@@ -88,29 +89,38 @@ class AllowStore:
                 for r in kept:
                     f.write(json.dumps(r) + "\n")
             os.replace(tmp, self.pending_path)
-        out: dict[str, PendingItem] = {}
-        for r in kept:
+        # newest first, so an id written twice (an older file) names the item its latest note showed; then back in
+        # file order, which `_trim` relies on
+        placed: dict[str, tuple[int, PendingItem]] = {}
+        table: dict[str, PendingItem] = {}
+        for n, r in reversed(list(enumerate(kept))):
             try:
                 item = PendingItem(r["hash"], r["kind"], r["reason"], int(r["size"]), "")
             except (KeyError, TypeError, ValueError):
                 continue
+            if item.hash in self._persisted:
+                continue
             want = r.get("id")
-            self._place(out, item, want if isinstance(want, str) else None)
+            key = self._place(table, item, want if isinstance(want, str) else None)
+            placed[key] = (n, item)
+            self._issued[key] = item.hash
             self._persisted.add(item.hash)
-        return out
+        return {k: item for k, (_, item) in sorted(placed.items(), key=lambda kv: kv[1][0])}
 
-    @staticmethod
-    def _place(table: dict[str, PendingItem], item: PendingItem, want: str | None = None) -> str:
+    def _place(self, table: dict[str, PendingItem], item: PendingItem, want: str | None = None) -> str:
         for k, v in table.items():
             if v.hash == item.hash:
                 table[k] = item
                 item.id = k
                 return k
-        if want and len(want) >= 4 and item.hash.startswith(want) and want not in table:
+
+        def free(k: str) -> bool:
+            return k not in table and self._issued.get(k, item.hash) == item.hash
+
+        if want and len(want) >= 4 and item.hash.startswith(want) and free(want):
             key = want
         else:
-            key = next((item.hash[:n] for n in range(4, len(item.hash) + 1, 2) if item.hash[:n] not in table),
-                       item.hash)
+            key = next((item.hash[:n] for n in range(4, len(item.hash) + 1, 2) if free(item.hash[:n])), item.hash)
         table[key] = item
         item.id = key
         return key
@@ -136,6 +146,7 @@ class AllowStore:
             key = self._place(self.pending, item)
             self._trim()
             if again or item.hash not in self._persisted:
+                self._issued[key] = item.hash
                 _append(self.pending_path, {"hash": item.hash, "id": key, "kind": item.kind, "reason": item.reason,
                                             "size": item.size, "at": _now()})
                 self._persisted.add(item.hash)

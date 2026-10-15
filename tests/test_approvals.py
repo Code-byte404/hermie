@@ -329,3 +329,26 @@ async def test_review_without_a_menu_is_a_discard_and_again_needs_a_shown_rewrit
 def test_approvals_rewrites_start_empty(tmp_path):
     from hermie.proxy.approvals import AllowStore, Approvals, SessionAllow
     assert Approvals(AllowStore(tmp_path), SessionAllow()).rewrites == {}
+
+
+def test_an_id_shown_once_never_names_another_item(tmp_path, monkeypatch):
+    import hermie.proxy.approvals as ap
+    monkeypatch.setattr(ap, "KEEP", 2)
+    s = AllowStore(tmp_path)
+    x, y = "abcd" + "0" * 60, "abcd" + "1" * 60
+    assert s.register(PendingItem(x, "hold", "judge", 1, "")) == "abcd"
+    s.assign("1111" + "0" * 60)
+    s.assign("2222" + "0" * 60)                       # x falls out of the in-memory table
+    assert "abcd" not in s.pending
+    idy = s.register(PendingItem(y, "hold", "judge", 1, ""))
+    assert idy != "abcd"
+    cli = AllowStore(tmp_path)
+    assert cli.pending["abcd"].hash == x and cli.pending[idy].hash == y
+
+
+def test_the_newest_row_wins_an_id_in_an_old_pending_file(tmp_path):
+    x, y = "abcd" + "0" * 60, "abcd" + "1" * 60
+    with open(tmp_path / "pending.jsonl", "w") as f:
+        for h in (x, y):
+            f.write(json.dumps({"hash": h, "id": "abcd", "kind": "hold", "reason": "judge", "size": 1, "at": "t"}) + "\n")
+    assert AllowStore(tmp_path).pending["abcd"].hash == y
