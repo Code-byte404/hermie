@@ -279,3 +279,52 @@ def test_cached_rewrite_is_not_judged_again_the_person_approved_it(tmp_path, ana
     approvals.rewrites = {first.held.hash: "[rewritten locally] MARKER plan"}
     out = walk_request(_msg_body("the layoff list is final"), gate, approvals, cfg)
     assert out.held is None and out.body["messages"][0]["content"] == "[rewritten locally] MARKER plan"
+
+
+# --- image-shaped data and Responses tool outputs (review 2026-10-15) ------------------------------
+
+PNG = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg=="
+
+
+def _tool_use(inp):
+    return {"model": "m", "messages": [
+        {"role": "user", "content": "go"},
+        {"role": "assistant", "content": [{"type": "tool_use", "id": "t1", "name": "save", "input": inp}]}]}
+
+
+@pytest.mark.parametrize("images", ["pass", "withhold"])
+def test_a_dict_that_only_looks_like_an_image_is_scanned(tmp_path, analyzer, images):
+    cfg, gate = _gate(tmp_path, analyzer, images=images)
+    for fake in ({"type": "image", "content": "mail me@example.com"},
+                 {"inlineData": "me@example.com"},
+                 {"type": "image", "source": {"type": "base64", "media_type": "image/png", "data": PNG},
+                  "caption": "mail me@example.com"}):
+        out = walk_request(_tool_use({"note": fake}), gate, Allow(), cfg)
+        dumped = json.dumps(out.body)
+        assert "me@example.com" not in dumped, fake
+        assert "withheld an image" not in dumped
+
+
+def test_a_real_image_in_a_tool_result_is_still_an_image(tmp_path, analyzer):
+    cfg, gate = _gate(tmp_path, analyzer)
+    body = {"model": "m", "messages": [{"role": "user", "content": [{"type": "tool_result", "tool_use_id": "t1", "content": [
+        {"type": "image", "source": {"type": "base64", "media_type": "image/png", "data": PNG}}]}]}]}
+    out = walk_request(body, gate, Allow(), cfg)
+    assert "withheld an image" in json.dumps(out.body)
+    assert [d.reason for d in out.decisions] == ["image"]
+
+
+@pytest.mark.parametrize("kind", ["custom_tool_call_output", "local_shell_call_output", "mcp_call", "custom_tool_call"])
+def test_responses_tool_items_count_as_tool_output(kind):
+    field = {"custom_tool_call_output": "output", "local_shell_call_output": "output", "mcp_call": "output",
+             "custom_tool_call": "input"}[kind]
+    body = {"model": "m", "input": [{"type": kind, "call_id": "c1", field: "some text"}]}
+    want = Origin.ASSISTANT if kind == "custom_tool_call" else Origin.TOOL
+    assert classify(("input", 0, field), body) is want
+
+
+def test_a_flagged_custom_tool_output_is_withheld(tmp_path, analyzer):
+    cfg, gate = _gate(tmp_path, analyzer, judge=SensitiveToolJudge())
+    body = {"model": "m", "input": [{"type": "custom_tool_call_output", "call_id": "c1", "output": "key AKIA in the log"}]}
+    out = walk_request(body, gate, Allow(), cfg)
+    assert out.body["input"][0]["output"].startswith("[hermie withheld this tool result")

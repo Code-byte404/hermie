@@ -27,7 +27,8 @@ MIN_NUMBER_DIGITS = 6   # inside tool payloads, numbers with this many digits ar
 _MESSAGE_ROOTS = ("messages", "contents", "input")
 _SYSTEM_ROOTS = ("system", "systemInstruction", "instructions")
 _IMAGE_TYPES = ("image", "input_image", "image_url")
-_TOOL_TYPES = ("tool_result", "function_call_output")
+_TOOL_TYPES = ("tool_result", "function_call_output", "custom_tool_call_output", "local_shell_call_output")
+_CALL_TYPES = ("function_call", "custom_tool_call", "local_shell_call", "mcp_call")   # model-authored (Responses)
 _PATH_LINE = re.compile(r"^\s*[\w./-]*\.\w+\s*$")
 
 
@@ -55,8 +56,28 @@ class WalkResult:
     held_text: str | None = None
 
 
+def _strs(d, keys: set) -> bool:
+    return isinstance(d, dict) and set(d) <= keys and all(isinstance(v, str) for v in d.values())
+
+
 def _is_image(node: dict) -> bool:
-    return node.get("type") in _IMAGE_TYPES or "inlineData" in node
+    """A real image block of one of the wire formats, and nothing else in it: its strings are never scanned, so a dict
+    that only looks like one (an image `type` beside a text field, a tool's own `inlineData` key) is walked as text."""
+    kind = node.get("type")
+    if kind == "image":
+        src = node.get("source")
+        return (set(node) <= {"type", "source", "cache_control"} and _strs(src, {"type", "media_type", "data", "url", "file_id"})
+                and any(k in src for k in ("data", "url", "file_id")))
+    if kind == "image_url":
+        url = node.get("image_url")
+        return set(node) <= {"type", "image_url"} and (isinstance(url, str) or _strs(url, {"url", "detail"}) and "url" in url)
+    if kind == "input_image":
+        return (set(node) <= {"type", "image_url", "file_id", "detail"} and ("image_url" in node or "file_id" in node)
+                and all(isinstance(node[k], str) for k in node))
+    if "inlineData" in node:
+        data = node["inlineData"]
+        return set(node) <= {"inlineData", "thoughtSignature"} and _strs(data, {"mimeType", "data", "displayName"}) and "data" in data
+    return False
 
 
 def classify(path: tuple[str | int, ...], body: dict) -> Origin:
@@ -83,9 +104,10 @@ def classify(path: tuple[str | int, ...], body: dict) -> Origin:
         return Origin.BINARY
     keys = {p for p in path if isinstance(p, str)}
     if (keys & {"functionResponse", "tool_result"}
-            or any(a.get("type") in _TOOL_TYPES or a.get("role") == "tool" for a in ancestors)):
+            or any(a.get("type") in _TOOL_TYPES or a.get("role") == "tool" for a in ancestors)
+            or any(a.get("type") == "mcp_call" for a in ancestors) and "output" in keys):
         return Origin.TOOL
-    if any(a.get("role") in ("assistant", "model") or a.get("type") == "function_call" for a in ancestors):
+    if any(a.get("role") in ("assistant", "model") or a.get("type") in _CALL_TYPES for a in ancestors):
         return Origin.ASSISTANT
     if any(a.get("role") in ("user", "system", "developer") for a in ancestors):
         return Origin.USER
@@ -172,8 +194,9 @@ class _Walker:
                 or (key == "args" and parent_key == "functionCall")
                 or (key == "content" and kind == "tool_result")
                 or (key == "input" and kind == "tool_use")
-                or (key == "output" and kind == "function_call_output")
-                or (key == "arguments" and kind == "function_call"))
+                or (key == "output" and kind in _TOOL_TYPES + ("mcp_call",))
+                or (key == "input" and kind == "custom_tool_call")
+                or (key == "arguments" and kind in ("function_call", "mcp_call")))
 
     def visit(self, node, path, payload=False) -> bool:
         """Return False to stop the walk (a held leaf)."""
@@ -340,11 +363,11 @@ class _Walker:
             if not isinstance(node, dict):
                 continue
             kind = node.get("type")
-            if kind in ("tool_use", "function_call") or "name" in node and p in ("functionCall", "functionResponse"):
+            if kind in ("tool_use",) + _CALL_TYPES or "name" in node and p in ("functionCall", "functionResponse"):
                 found = node.get("name")
             elif kind == "tool_result":
                 found = self._tool_names().get(node.get("tool_use_id"))
-            elif kind == "function_call_output":
+            elif kind in _TOOL_TYPES:
                 found = self._tool_names().get(node.get("call_id"))
             elif node.get("role") == "tool":
                 found = self._tool_names().get(node.get("tool_call_id"))
