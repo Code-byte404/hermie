@@ -254,25 +254,45 @@ def _strip_ours(data: dict) -> dict:
     return data
 
 
-def install(path: Path, command: str | list[str], data_dir: str | None = None) -> list[str]:
-    """Add the three hooks and the status line to the settings file at `path` (merged, idempotent). `command`
-    is how Claude Code should start hermie (an executable, or argv); every part is shell-quoted. Returns notes."""
+def hook_settings(command: str | list[str], data_dir: str | None = None) -> dict:
+    """The three hooks and the status line as a Claude Code settings object. `command` is how Claude Code should
+    start hermie (an executable, or argv); every part is shell-quoted."""
     command = shlex.join([command] if isinstance(command, str) else command)
     suffix = f" --data-dir {shlex.quote(data_dir)}" if data_dir else ""
-    data = _strip_ours(_load(path))
-    hooks = data.setdefault("hooks", {})
+    hooks: dict = {}
     for event, matcher in HOOK_EVENTS.items():
         entry: dict = {}
         if matcher:
             entry["matcher"] = matcher
         entry["hooks"] = [{"type": "command", "command": f"{command} hook{suffix}"}]
-        hooks.setdefault(event, []).append(entry)
+        hooks[event] = [entry]
+    return {"hooks": hooks, "statusLine": {"type": "command", "command": f"{command} status{suffix}"}}
+
+
+def has_hooks(path: Path) -> bool:
+    """Whether the settings file at `path` already runs `hermie hook` (written by `hermie install-hooks`)."""
+    try:
+        hooks = _load(path).get("hooks")
+    except (OSError, ValueError):
+        return False
+    return isinstance(hooks, dict) and any(
+        isinstance(entries, list) and any(_entry_is_ours(e) for e in entries) for entries in hooks.values())
+
+
+def install(path: Path, command: str | list[str], data_dir: str | None = None) -> list[str]:
+    """Add the three hooks and the status line to the settings file at `path` (merged, idempotent). Returns notes."""
+    ours = hook_settings(command, data_dir)
+    data = _strip_ours(_load(path))
+    hooks = data.setdefault("hooks", {})
+    for event, entries in ours["hooks"].items():
+        hooks.setdefault(event, []).extend(entries)
     notes = []
+    status = ours["statusLine"]["command"]
     if "statusLine" in data:
         notes.append(f"kept your status line ({data['statusLine'].get('command')}); "
-                     f"call `{command} status{suffix}` from it to show Hermie there too")
+                     f"call `{status}` from it to show Hermie there too")
     else:
-        data["statusLine"] = {"type": "command", "command": f"{command} status{suffix}"}
+        data["statusLine"] = ours["statusLine"]
     _save(path, data)
     return notes
 

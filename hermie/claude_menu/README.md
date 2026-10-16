@@ -7,8 +7,10 @@ A Claude Code mod (needs a build with mods, tested on 2.1.295). It does two thin
 
 It polls `hermie asks --json` once a second and answers with `hermie answer ID send|reject|session|local|again`; the band reads `hermie status --json`. All wording comes from those commands (`hermie/explain.py`), so the menu, the terminal prompt, the dialog and the turn summary say the same thing. The ask file holds the opening of the held message only while it waits for your answer. Without this mod (or when it is not polling) `hermie serve` falls back to the macOS dialog.
 
+`hermie claude` loads it for you. By hand:
+
 ```bash
-claude --plugin-dir /path/to/hermie/integrations/claude-code-menu
+claude --plugin-dir /path/to/hermie/hermie/claude_menu
 ```
 
-Run `hermie serve` without a terminal (for example `hermie serve --judge ... < /dev/null`): in a terminal it asks there instead. If `hermie` is not on Claude Code's PATH, set `HERMIE` at the top of `hooks/register.tsx` to its full path.
+Then run `hermie serve` without a terminal (for example `hermie serve --judge ... < /dev/null`): in a terminal it asks there instead. If `hermie` is not on Claude Code's PATH, set `HERMIE` at the top of `hooks/register.tsx` to its full path (`hermie claude` puts one on the PATH itself).

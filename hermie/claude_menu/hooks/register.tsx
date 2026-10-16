@@ -8,7 +8,8 @@ const isHidden = atom({ plugin: 'hermie', key: 'isHidden' } as const, false)
 
 const asks = atom({ plugin: 'hermie', key: 'asks' } as const, [] as Ask[])
 
-// Claude Code's own PATH must find `hermie`; otherwise put the full path here (for example a conda env's bin/hermie).
+// `hermie claude` puts its own `hermie` first on Claude Code's PATH. Started another way, Claude Code's PATH must
+// find `hermie`; otherwise put the full path here (for example a conda env's bin/hermie).
 const HERMIE = 'hermie'
 
 async function refresh($: any) {

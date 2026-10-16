@@ -339,6 +339,7 @@ def _parser() -> argparse.ArgumentParser:
         sp.set_defaults(fn=fn)
         return sp
 
+    sub.add_parser("claude", help="open Claude Code through Hermie (starts the proxy when needed)")
     sp = add("serve", _serve, "run the proxy")
     sp.add_argument("--host")
     sp.add_argument("--port", type=int)
@@ -376,7 +377,35 @@ def _parser() -> argparse.ArgumentParser:
     return p
 
 
+def _claude(argv: list[str]) -> int:
+    """`hermie claude [--data-dir DIR] [--config PATH] [CLAUDE ARGS...]`: everything after Hermie's own two
+    options goes to Claude Code unchanged (argparse would try to read `-p` and friends itself)."""
+    from hermie import launch
+
+    if argv[:1] in (["-h"], ["--help"]):
+        print("usage: hermie claude [--data-dir DIR] [--config PATH] [claude arguments ...]\n\n"
+              "Open Claude Code through Hermie: starts the proxy when none runs (and stops it when the last such\n"
+              "window closes), with Hermie's menu, status line and per-turn summary for this session.")
+        return 0
+    opts: dict[str, str] = {}
+    while len(argv) >= 2 and argv[0] in ("--data-dir", "--config"):
+        opts[argv[0]] = argv[1]
+        argv = argv[2:]
+    try:
+        config = Config.load(Path(opts["--config"]) if "--config" in opts else None,
+                             **({"data_dir": Path(opts["--data-dir"])} if "--data-dir" in opts else {}))
+    except (ValueError, OSError) as e:
+        print(f"hermie: {e}", file=sys.stderr)
+        return 2
+    data_dir = str(config.data_dir) if "--data-dir" in opts else None
+    return launch.run(config, argv, serve_cmd=launch.serve_command(opts.get("--config"), data_dir),
+                      data_dir_given=data_dir is not None)
+
+
 def main(argv=None) -> int:
+    argv = sys.argv[1:] if argv is None else list(argv)
+    if argv[:1] == ["claude"]:
+        return _claude(argv[1:])
     args = _parser().parse_args(argv)
     overrides: dict = {}
     if args.data_dir:

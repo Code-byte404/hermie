@@ -34,7 +34,7 @@ You do not have to know how to set up environment variables, and you do not have
 3. **Claude writes** `OPENAI_API_KEY=<SECRET_1>` into its Write call. It never saw a key, so it does not warn you about one.
 4. **Hermie swaps it back** inside the tool call, and your `.env` gets the real key.
 
-Claude Code tells you each time it happens (`hermie install-hooks`):
+Claude Code tells you each time it happens (`hermie claude`, or `hermie install-hooks`):
 
 ```text
 ⏺ Write(.env)
@@ -75,17 +75,26 @@ The numbering continues from earlier placeholders in the same request (Claude Co
 
 ```bash
 pip install git+https://github.com/Code-byte404/hermie && python -m spacy download en_core_web_lg
-hermie serve                                   # prints the base URLs
-ANTHROPIC_BASE_URL=http://127.0.0.1:8787/anthropic claude
-hermie tail                                    # in another terminal
-hermie install-hooks                           # optional: Claude Code status line + per-turn notices (see below)
+hermie claude                                  # Claude Code through Hermie
 ```
 
 After 0.3.0 is published on PyPI, the first line becomes `pip install hermie && python -m spacy download en_core_web_lg`.
 
+`hermie claude` is the whole setup. It starts the proxy in the background when none is running (its log goes to `~/.hermie/serve.log`), then opens Claude Code through it with Hermie's menu for held messages, the status line and the per-turn summary, for that session only (your settings files are not changed). Arguments after `claude` go to Claude Code unchanged (`hermie claude -p "..." --model opus`). A proxy it started stops when the last `hermie claude` window closes; if the proxy does not start, Claude Code is not opened. To turn on the local judge, add `judge = "ollama:MODEL"` to `~/.hermie/config.toml` (see [When the judge flags something](#when-the-judge-flags-something)). `hermie tail` in another terminal follows the receipt.
+
+Other clients, or a proxy that keeps running on its own:
+
+```bash
+hermie serve                                   # prints the base URLs
+ANTHROPIC_BASE_URL=http://127.0.0.1:8787/anthropic claude
+hermie install-hooks                           # optional: Claude Code status line + per-turn notices (see below)
+```
+
+A `hermie serve` you start yourself is reused by `hermie claude` and never stopped by it.
+
 `hermie serve` listens on `127.0.0.1:8787` and prints one base URL per upstream: `/anthropic` (api.anthropic.com), `/openai/v1` (api.openai.com), `/gemini` (generativelanguage.googleapis.com) and `/custom` (any upstream you name with `--upstream`). Your API key or login token is forwarded to the upstream as the client sends it; Hermie never stores it.
 
-Other commands: `hermie show ID` (the stored outbound body of a request), `hermie allow ID` (release a held or withheld item), `hermie asks` and `hermie answer ID send|reject|session|local|again` (what the Claude Code menu uses), `hermie hide VALUE` (put a value in the mapping by hand), `hermie stats [--days N]` (totals from the receipt), `hermie status` (one line: proxy up, values kept local, last request), `hermie install-hooks` (Claude Code status line and hooks), `hermie forget` (clear the placeholder mapping). `hermie COMMAND --help` lists the options.
+Other commands: `hermie claude [ARGS]` (Claude Code through Hermie, see above), `hermie show ID` (the stored outbound body of a request), `hermie allow ID` (release a held or withheld item), `hermie asks` and `hermie answer ID send|reject|session|local|again` (what the Claude Code menu uses), `hermie hide VALUE` (put a value in the mapping by hand), `hermie stats [--days N]` (totals from the receipt), `hermie status` (one line: proxy up, values kept local, last request), `hermie install-hooks` (Claude Code status line and hooks in a settings file, for a plain `claude`), `hermie forget` (clear the placeholder mapping). `hermie COMMAND --help` lists the options.
 
 ## Keys the model never sees
 
@@ -196,7 +205,7 @@ Already replaced: Alice Chen -> <PERSON_1>
 No answer in time means Don't send. Later: hermie allow 3fa2
 ```
 
-Type `n`, `s` or `a` and Enter. No answer within `hold_timeout_s` (60 s) counts as Don't send. Without a terminal (for example under a process manager) the question goes to the Claude Code menu in [`integrations/claude-code-menu`](integrations/claude-code-menu) while that mod is polling, and otherwise to a macOS dialog (macOS only); with neither, held messages are rejected right away. The menu and the macOS dialog show the same text, choices and consequences, with a countdown in the menu (Don't send is the default everywhere); the opening of the held message sits in `asks.json` (0600) only while it waits for your answer. A message you reject stays rejected for the rest of that `hermie serve` run: Claude Code resends its history with every request, and the rejected message comes back as a short withheld note instead of asking again (`/clear` in the client and a restart of `hermie serve` start fresh). A message that is not sent returns HTTP 422 to the agent with a plain reason (you chose Don't send, no answer in time, or no one could be asked) and the command to send it anyway: run `hermie allow ID` in any terminal and resend. A withheld tool result reaches the model as a note that asks it to tell you, so Claude says in the conversation what was withheld and how to release it. Withheld tool results and images show up in `hermie tail` with the same `hermie allow ID` line; once allowed, the next request sends them. `Send all, this session` covers judge and encoded-data decisions only. A text the detectors failed on cannot be released at all, and `hermie allow` refuses an id it does not know.
+Type `n`, `s` or `a` and Enter. No answer within `hold_timeout_s` (60 s) counts as Don't send. Without a terminal (for example under a process manager) the question goes to the Claude Code menu in [`hermie/claude_menu`](hermie/claude_menu) (loaded by `hermie claude`) while that mod is polling, and otherwise to a macOS dialog (macOS only); with neither, held messages are rejected right away. The menu and the macOS dialog show the same text, choices and consequences, with a countdown in the menu (Don't send is the default everywhere); the opening of the held message sits in `asks.json` (0600) only while it waits for your answer. A message you reject stays rejected for the rest of that `hermie serve` run: Claude Code resends its history with every request, and the rejected message comes back as a short withheld note instead of asking again (`/clear` in the client and a restart of `hermie serve` start fresh). A message that is not sent returns HTTP 422 to the agent with a plain reason (you chose Don't send, no answer in time, or no one could be asked) and the command to send it anyway: run `hermie allow ID` in any terminal and resend. A withheld tool result reaches the model as a note that asks it to tell you, so Claude says in the conversation what was withheld and how to release it. Withheld tool results and images show up in `hermie tail` with the same `hermie allow ID` line; once allowed, the next request sends them. `Send all, this session` covers judge and encoded-data decisions only. A text the detectors failed on cannot be released at all, and `hermie allow` refuses an id it does not know.
 
 With `local_model = "ollama:MODEL"` (or `hermie serve --local-model ollama:MODEL`) the Claude Code menu has a fourth choice, "rewrite locally". The held text goes only to your local Ollama model, which lists the specifics in it: names, figures, places, dates, non-public facts. Hermie turns every occurrence into a placeholder (`<PERSON_1>`, `<NUMBER_1>`, the same kind as everywhere else, restored in the reply), so the request keeps its shape and the model can still answer it. A span that is one lower-case English word (`layoff`) is replaced only in that message, not in every later request. The menu then shows you the result, with three choices: Don't send, Redo (the model looks again) or Send this. You decide, so the judge does not weigh it, but the patterns and known values still redact it too. The text sits in `asks.json` (0600) only until you answer, and the version you send is kept in memory; the receipt line says `approved_by: local` and holds no text. If the model fails, times out (`local_timeout_s`), finds nothing, the message is longer than `local_max_chars` or the result is longer than 3000 characters, the message is not sent, as if you had chosen Don't send. The terminal prompt and the macOS dialog do not offer it, and a text the detectors failed on never does.
 

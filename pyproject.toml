@@ -43,6 +43,11 @@ hermie = "hermie.cli:main"
 [tool.setuptools.packages.find]
 include = ["hermie*"]
 
+[tool.setuptools.package-data]
+# the Claude Code menu `hermie claude` loads with --plugin-dir
+hermie = ["claude_menu/README.md", "claude_menu/tsconfig.json", "claude_menu/.claude-plugin/*.json",
+          "claude_menu/hooks/*", "claude_menu/types/*"]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 asyncio_mode = "auto"
