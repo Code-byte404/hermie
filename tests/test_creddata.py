@@ -402,3 +402,48 @@ def test_manual_sample_deterministic(tmp_path):
     first = (run / "manual_sample.csv").read_bytes()
     S.main(["--cred-root", str(cred), "--run", str(run)])
     assert (run / "manual_sample.csv").read_bytes() == first
+
+
+# ---------------------------------------------------------------- review fixes
+
+def test_covered_inexact_span_ignores_structure():
+    v = "k" * 20
+    lines = ['  "key": "' + v + '",']
+    s = lines[0].index(v)
+    r = row(line=1, cols=(s, None))                       # no ValueEnd: the rest of the line is not all value
+    assert not S.span_exact(r)
+    assert S.covered(r, [hit(line=1, cols=(s, s + 20))], lines) == "covered"
+    assert S.covered(r, [hit(line=1, cols=(s, s + 10))], lines) == "partial"
+    jwk = ["{", "  kty: 'RSA',", "  n: '" + v + "',", "}"]
+    m = row(line=2, line_end=3, cols=(2, len(jwk[2]) - 1))
+    n0 = jwk[2].index(v)
+    assert S.covered(m, [hit(line=2, cols=(7, 12)), hit(line=3, cols=(n0, n0 + 20))], jwk) == "covered"
+
+
+def test_covered_exact_span_stays_strict():
+    lines = ["x" * 4 + '"' + "k" * 20 + '"']
+    r = row(line=1, cols=(4, 26))                          # the label includes the quotes
+    assert S.span_exact(r)
+    assert S.covered(r, [hit(line=1, cols=(5, 25))], lines) == "partial"
+
+
+def test_unlabelled_ignores_files_not_in_meta():
+    rows = [row(line=5)]
+    assert S.unlabelled(rows, [hit(line=7), hit(line=3, file="data/r/LICENSE")]) == [("data/r/a.py", 7)]
+
+
+def test_score_reports_incomplete_hermie_and_tool_status(tmp_path):
+    cred, run = _run_dir(tmp_path)
+    files = sorted({h.file for h in hits.read_hits(run / "hermie.jsonl")})
+    (run / "hermie_done.txt").write_text(files[0] + "\n")
+    (run / "tools_manifest.json").write_text(json.dumps({"gitleaks": {
+        "version": "8.30.1", "exit_code": 2, "hits": 0, "column_fallbacks": 3, "parse_error": "ValueError: x"}}))
+    S.main(["--cred-root", str(cred), "--run", str(run)])
+    summary = (run / "summary.md").read_text()
+    assert "INCOMPLETE" in summary
+    assert "exit 2" in summary and "ValueError: x" in summary and "fallbacks 3" in summary
+    # only the finished file's hits count: one T or F row flagged in all
+    assert "| hermie | all | " in summary
+    line = next(s for s in summary.splitlines() if s.startswith("| hermie | all | "))
+    tp, fn, fp = (int(x) for x in line.split("|")[3:6])
+    assert tp + fp == 1

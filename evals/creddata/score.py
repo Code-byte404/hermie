@@ -11,8 +11,10 @@ import argparse
 import csv
 import functools
 import io
+import json
 import math
 import random
+import re
 from collections import Counter, defaultdict
 from dataclasses import dataclass
 from pathlib import Path
@@ -70,22 +72,41 @@ def _value_spans(row: Row, lines: list[str]) -> list[tuple[int, int, int]]:
     return out
 
 
+def span_exact(row: Row) -> bool:
+    """The label gives the value's exact span: one line, both columns."""
+    return row.line_start == row.line_end and row.value_start is not None and row.value_end is not None
+
+
+# In an inexact span (no ValueEnd, several lines, no columns) only these runs can carry part of the secret; quotes,
+# commas, indentation and short key names around the value do not.
+_SECRET_RUN = re.compile(r"[A-Za-z0-9+/=_\-]{4,}")
+
+
 def covered(row: Row, hits: list[Hit], lines: list[str]) -> str:
-    """covered / partial / missed: is the value inside the union of the hits' spans (Hermie's placeholders)?"""
+    """covered / partial / missed: is the value inside the union of the hits' spans (Hermie's placeholders)?
+    Exact spans must be covered character by character; inexact spans only in their 4+ character secret-like runs."""
     spans = _value_spans(row, lines)
     if not spans:
         spans = [(row.line_start, 0, 1)]
+    exact = span_exact(row)
     any_overlap, all_covered = False, True
     for n, s, e in spans:
-        ivs = sorted(_hit_span(h, n) for h in hits if h.file == row.file and h.line_start <= n <= h.line_end)
-        pos = s
-        for a, b in ivs:
-            if a < e and s < b:
-                any_overlap = True
-            if a <= pos:
-                pos = max(pos, b)
-        if pos < e:
-            all_covered = False
+        ivs = [_hit_span(h, n) for h in hits if h.file == row.file and h.line_start <= n <= h.line_end]
+        if any(a < e and s < b for a, b in ivs):
+            any_overlap = True
+        if exact:
+            needed = [(s, e)]
+        else:
+            text = lines[n - 1] if n <= len(lines) else ""
+            needed = [(max(m.start(), s), min(m.end(), e)) for m in _SECRET_RUN.finditer(text)
+                      if m.start() < e and s < m.end()]
+        for ns, ne in needed:
+            pos = ns
+            for a, b in sorted(ivs):
+                if a <= pos:
+                    pos = max(pos, b)
+            if pos < ne:
+                all_covered = False
     return "covered" if all_covered and any_overlap else "partial" if any_overlap else "missed"
 
 
@@ -196,8 +217,10 @@ def per_category(rows: list[Row], hits: list[Hit], split: str | None,
 
 
 def unlabelled(rows: list[Row], hits: list[Hit]) -> list[tuple[str, int]]:
+    """Flagged lines no row covers, in files named by meta/ (only those are scanned by every tool)."""
     labelled = {(r.file, n) for r in rows for n in range(r.line_start, r.line_end + 1)}
-    found = {(h.file, n) for h in hits if h.kind not in WHOLE_FILE_KINDS
+    files = {r.file for r in rows}
+    found = {(h.file, n) for h in hits if h.kind not in WHOLE_FILE_KINDS and h.file in files
              for n in range(h.line_start, h.line_end + 1)}
     return sorted(found - labelled)
 
@@ -261,6 +284,42 @@ def _row_list(title: str, items: list[tuple[Row, list[str]]], cred_root: Path) -
     return "".join(out)
 
 
+def _status(run: Path, cred_root: Path, rows: list[Row], tool_hits: dict[str, list[Hit]]) -> tuple[list[str], list[str]]:
+    """One line per run (version, exit code, errors, counts) and warnings for incomplete or failed runs. Hermie hits
+    of files not in hermie_done.txt are dropped from `tool_hits` (a run cut off halfway)."""
+    status, warnings = [], []
+    manifest = json.loads((run / "tools_manifest.json").read_text()) if (run / "tools_manifest.json").exists() else {}
+    for t in TOOLS:
+        e = manifest.get(t)
+        if e is None:
+            if t in tool_hits:
+                warnings.append(f"{t}: no manifest entry, run status unknown")
+            continue
+        status.append(f"{t} {e.get('version', '?')}: exit {e.get('exit_code')}, {e.get('hits')} hits, "
+                      f"fallbacks {e.get('column_fallbacks', 0)}"
+                      + (f", parse error {e['parse_error']}" if e.get("parse_error") else ""))
+        if e.get("exit_code") not in (0, None) or e.get("parse_error"):
+            warnings.append(f"{t} FAILED (exit {e.get('exit_code')}"
+                            + (f", {e['parse_error']}" if e.get("parse_error") else "") + "): its numbers are not real")
+    if "hermie" in tool_hits:
+        done_path = run / "hermie_done.txt"
+        labelled = {r.file for r in rows}
+        if not done_path.exists():
+            warnings.append("Hermie INCOMPLETE or unknown: no hermie_done.txt")
+        else:
+            done = set(done_path.read_text().split())
+            tool_hits["hermie"] = [h for h in tool_hits["hermie"] if h.file in done]
+            if not labelled <= done:
+                warnings.append(f"Hermie INCOMPLETE: {len(labelled - done)} of {len(labelled)} labelled files not "
+                                f"scanned; their T rows count as misses")
+        m = json.loads((run / "hermie_manifest.json").read_text()) if (run / "hermie_manifest.json").exists() else {}
+        status.append(f"hermie {m.get('git_commit', '?')[:7]}: {m.get('files', '?')} files, detector errors "
+                      f"{m.get('detector_errors', '?')}, held {m.get('held', '?')}, judge {m.get('config', {}).get('judge')}")
+        if m.get("detector_errors"):
+            warnings.append(f"Hermie had {m['detector_errors']} detector errors (counted as flagged, fail closed)")
+    return status, warnings
+
+
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(prog="python -m evals.creddata.score")
     ap.add_argument("--cred-root", type=Path, required=True)
@@ -272,6 +331,7 @@ def main(argv: list[str] | None = None) -> int:
     rows = [r for r in all_rows if r.file not in missing]
 
     tool_hits = {t: read_hits(run / f"{t}.jsonl") for t in ("hermie", *TOOLS) if (run / f"{t}.jsonl").exists()}
+    status, warnings = _status(run, cred_root, rows, tool_hits)
     variants: dict[str, list[Hit]] = {}
     for t, hs in tool_hits.items():
         if t == "hermie":
@@ -285,6 +345,9 @@ def main(argv: list[str] | None = None) -> int:
     md = io.StringIO()
     w = md.write
     w("# CredData benchmark\n\n")
+    for warning in warnings:
+        w(f"**{warning}**\n\n")
+    w("## Runs\n\n" + "".join(f"- {s}\n" for s in status) + "\n")
     labels_by_split = Counter((_split(r.repo), r.label) for r in rows)
     top = Counter(r.repo for r in rows if r.label == "T").most_common(1)
     w(f"Rows scored: {len(rows)} ({dict(sorted(labels_by_split.items()))}). Largest repo by T rows: "
@@ -325,15 +388,19 @@ def main(argv: list[str] | None = None) -> int:
         for h in hs:
             by_file[h.file].append(h)
         w("## Hermie: is the value covered by placeholders (T rows, every finding)\n\n"
-          "| split | covered | partial | missed |\n|---|---|---|---|\n")
-        cov = {s: Counter() for s in ("test", "dev")}
+          "Exact span: one line, both columns, checked character by character. Inexact span (no ValueEnd, several "
+          "lines, or no columns): only the 4+ character secret-like runs inside it must be covered.\n\n"
+          "| split | span | covered | partial | missed |\n|---|---|---|---|---|\n")
+        cov: dict[tuple[str, str], Counter] = defaultdict(Counter)
         for r in sorted((r for r in rows if r.label == "T"), key=lambda r: r.file):
             lines = _lines(str(cred_root / r.file))
-            cov[_split(r.repo)][covered(r, by_file.get(r.file, []), lines)] += 1
-        for s in ("test", "dev"):
-            w(f"| {s} | {cov[s]['covered']} | {cov[s]['partial']} | {cov[s]['missed']} |\n")
-        tot = cov["test"] + cov["dev"]
-        w(f"| all | {tot['covered']} | {tot['partial']} | {tot['missed']} |\n\n")
+            cov[(_split(r.repo), "exact" if span_exact(r) else "inexact")][covered(r, by_file.get(r.file, []),
+                                                                                    lines)] += 1
+        for s in ("test", "dev", "all"):
+            for kind in ("exact", "inexact"):
+                c = cov[(s, kind)] if s != "all" else cov[("test", kind)] + cov[("dev", kind)]
+                w(f"| {s} | {kind} | {c['covered']} | {c['partial']} | {c['missed']} |\n")
+        w("\n")
 
         idx = _Index(hs)
         on_t = Counter(k for r in rows if r.label == "T"
