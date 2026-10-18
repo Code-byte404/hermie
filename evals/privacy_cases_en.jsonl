@@ -68,3 +68,15 @@
 {"text": "primary_key = True  # the key column", "sensitive": false}
 {"text": "Address: Optional[str] = None", "sensitive": false}
 {"text": "api_key = os.environ.get('OPENAI_API_KEY')", "sensitive": false}
+{"text": "POSTGRES_PASSWORD: tulipharbor", "sensitive": true, "layer": "rules", "entities": ["SECRET"]}
+{"text": "CREATE USER 'app'@'localhost' IDENTIFIED BY 'quietmeadow';", "sensitive": true, "layer": "rules", "entities": ["SECRET"]}
+{"text": "nats server report jetstream --user admin --password r4ac4l!", "sensitive": true, "layer": "rules", "entities": ["SECRET"]}
+{"text": "curl_easy_setopt(curl, CURLOPT_PASSWORD, \"maplebrook7\");", "sensitive": true, "layer": "rules", "entities": ["SECRET"]}
+{"text": "heroku config:set SMTP_PASSWORD=silverfernlake", "sensitive": true, "layer": "rules", "entities": ["SECRET"]}
+{"text": "SESSION_SECRET=demo-session-secret-0000", "sensitive": true, "layer": "rules", "entities": ["SECRET"]}
+{"text": "{'Authorization': 'Basic login_and_password_removed', 'User-Agent': 'PyGithub/Python'}", "sensitive": false}
+{"text": "PrivateKey=ALICE_cf_prime239v2_PUB", "sensitive": false}
+{"text": "STATUS_NO_TOKEN = 0xC000007C,", "sensitive": false}
+{"text": "Key = 000102030405060708090A0B0C0D0E0F101112131415161718191A1B", "sensitive": false}
+{"text": "\"FORGOT_PASSWORD\": \"Forgot password?\",", "sensitive": false}
+{"text": "-W, --password             Force password prompt.", "sensitive": false}
