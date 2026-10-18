@@ -151,3 +151,97 @@ def test_hits_jsonl_roundtrip(tmp_path):
     hits.write_hits(tmp_path / "h.jsonl", hs)
     hits.write_hits(tmp_path / "h.jsonl", hs)
     assert hits.read_hits(tmp_path / "h.jsonl") == hs + hs
+
+
+# ---------------------------------------------------------------- Hermie runner
+
+import json  # noqa: E402
+import string  # noqa: E402
+from types import SimpleNamespace  # noqa: E402
+
+from evals.creddata import run_hermie  # noqa: E402
+from hermie.config import Config  # noqa: E402
+from hermie.gate.gate import Gate  # noqa: E402
+from hermie.gate.redact import MappingStore  # noqa: E402
+
+
+def gate_factory(analyzer):
+    return lambda d: Gate(Config(data_dir=d), analyzer=analyzer, store=MappingStore(d / "mapping.json"))
+
+
+def random_alnum(n: int) -> str:
+    rnd = random.Random()
+    return "".join(rnd.choice(string.ascii_letters + string.digits) for _ in range(n))
+
+
+def test_scan_file_secret_hit_columns(tmp_path, analyzer):
+    v = random_alnum(32)
+    make_file(tmp_path, "data/r/src/a.py", 'x = 1\napi_secret = "' + v + '"\n')
+    got = run_hermie.scan_file(gate_factory(analyzer), tmp_path, "data/r/src/a.py", tmp_path / "tmp")
+    assert hits.Hit("hermie", "data/r/src/a.py", 2, 2, 14, 46, "SECRET") in got
+
+
+def test_scan_file_fresh_mapping_per_file(tmp_path, analyzer):
+    word = "tulip" + str(random.Random().randrange(1000, 9999))
+    make_file(tmp_path, "data/r/src/a.py", 'password = "' + word + '"\n')
+    make_file(tmp_path, "data/r/src/b.md", "we planted " + word + " in the garden\n")
+    f = gate_factory(analyzer)
+    a = run_hermie.scan_file(f, tmp_path, "data/r/src/a.py", tmp_path / "tmp")
+    assert any(h.kind == "SECRET" for h in a)
+    assert run_hermie.scan_file(f, tmp_path, "data/r/src/b.md", tmp_path / "tmp") == []
+
+
+def test_scan_file_detector_error_covers_file(tmp_path):
+    make_file(tmp_path, "data/r/src/a.py", "one\ntwo\nthree\n")
+
+    class Broken:
+        def scan(self, text, origin, path_hint=None):
+            return SimpleNamespace(findings=[], sensitive=True, reason="detector_error: X")
+
+    got = run_hermie.scan_file(lambda d: Broken(), tmp_path, "data/r/src/a.py", tmp_path / "tmp")
+    assert got == [hits.Hit("hermie", "data/r/src/a.py", 1, 3, None, None, "DETECTOR_ERROR")]
+
+
+def test_scan_file_held_covers_file(tmp_path):
+    make_file(tmp_path, "data/r/src/a.py", "one\ntwo")
+
+    class Judged:
+        def scan(self, text, origin, path_hint=None):
+            return SimpleNamespace(findings=[], sensitive=True, reason="judge")
+
+    got = run_hermie.scan_file(lambda d: Judged(), tmp_path, "data/r/src/a.py", tmp_path / "tmp")
+    assert got == [hits.Hit("hermie", "data/r/src/a.py", 1, 2, None, None, "HELD")]
+
+
+def test_scan_file_invalid_utf8(tmp_path, analyzer):
+    make_file(tmp_path, "data/r/src/a.bin", b"\xff\xfe\x00junk\nmore\n")
+    run_hermie.scan_file(gate_factory(analyzer), tmp_path, "data/r/src/a.bin", tmp_path / "tmp")
+
+
+def test_resume_skips_done_and_drops_partial(tmp_path):
+    a = hits.Hit("hermie", "data/r/a", 1, 1, 0, 3, "SECRET")
+    b = hits.Hit("hermie", "data/r/b", 2, 2, 0, 3, "SECRET")
+    hits.write_hits(tmp_path / "hermie.jsonl", [a, b])
+    (tmp_path / "hermie_done.txt").write_text("data/r/a\n")
+    assert run_hermie.resume_state(tmp_path) == {"data/r/a"}
+    assert hits.read_hits(tmp_path / "hermie.jsonl") == [a]
+
+
+def test_manifest_fields(tmp_path):
+    cred = tmp_path / "cred"
+    v = random_alnum(32)
+    make_file(cred, "data/r1/src/a.py", 'api_secret = "' + v + '"\n')
+    make_file(cred, "data/r1/src/b.txt", "nothing here\n")
+    write_meta(cred / "meta", "r1", [
+        "1,a,GitHub,r1,data/r1/src/a.py,1,1,T,14,46,,,Secret",
+        "2,b,GitHub,r1,data/r1/src/b.txt,1,1,F,,,,,Password",
+    ])
+    out = tmp_path / "out"
+    assert run_hermie.main(["--cred-root", str(cred), "--out", str(out), "--workers", "1"]) == 0
+    m = json.loads((out / "hermie_manifest.json").read_text())
+    for key in ("git_commit", "config", "files", "files_invalid_utf8", "detector_errors", "held", "seconds",
+                "per_worker_peak_rss_mb", "slowest"):
+        assert key in m
+    assert m["files"] == 2
+    assert any(h.file == "data/r1/src/a.py" and h.kind == "SECRET" for h in hits.read_hits(out / "hermie.jsonl"))
+    assert (out / "hermie_done.txt").read_text().split() == ["data/r1/src/a.py", "data/r1/src/b.txt"]
