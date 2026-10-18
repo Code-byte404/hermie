@@ -286,3 +286,119 @@ def test_run_records_failure(tmp_path, monkeypatch):
     assert m["gitleaks"]["exit_code"] == 2 and m["gitleaks"]["hits"] == 0
     assert m["detect_secrets"]["exit_code"] == 0
     assert "/b/detect-secrets" in calls
+
+
+# ---------------------------------------------------------------- scorer
+
+from evals.creddata import score as S  # noqa: E402
+
+
+def row(label="T", line=5, cols=(10, 30), file="data/r/a.py", categories=("Secret",), line_end=None, rid=1):
+    return labels.Row(rid, file.split("/")[1], file, line, line_end or line, label, cols[0], cols[1], categories)
+
+
+def hit(line=5, cols=(None, None), file="data/r/a.py", line_end=None, kind="SECRET", tool="hermie"):
+    return hits.Hit(tool, file, line, line_end or line, cols[0], cols[1], kind)
+
+
+def test_matches_column_vs_line():
+    r = row()
+    assert not S.matches(r, hit(cols=(0, 5)))
+    assert S.matches(r, hit(cols=(0, 5)), line_only=True)
+    assert S.matches(r, hit())
+    assert S.matches(r, hit(line=4, line_end=6))
+    assert not S.matches(r, hit(line=6))
+    assert not S.matches(r, hit(file="data/r/b.py"))
+
+
+def test_shared_line_counts_each_row():
+    rows = [row("T", cols=(10, 30), rid=1), row("F", cols=(40, 50), rid=2)]
+    c = S.score(rows, [hit(cols=(12, 20))], split=None, scope=False, line_only=False)
+    assert (c.tp, c.fp) == (1, 0)
+    c = S.score(rows, [hit()], split=None, scope=False, line_only=False)
+    assert (c.tp, c.fp) == (1, 1)
+
+
+def test_counts_x_apart():
+    rows = [row("T", rid=1), row("X", line=9, rid=2)]
+    c = S.score(rows, [hit(), hit(line=9)], split=None, scope=False, line_only=False)
+    assert (c.tp, c.fn, c.fp, c.x) == (1, 0, 0, 1)
+    assert c.precision == 1.0 and c.precision_x_as_fp == 0.5
+
+
+def test_scope_filter():
+    rows = [row("T", categories=("UUID",))]
+    assert S.score(rows, [], split=None, scope=False, line_only=False).recall == 0.0
+    c = S.score(rows, [], split=None, scope=True, line_only=False)
+    assert (c.tp, c.fn) == (0, 0)
+
+
+def test_split_filter():
+    a = "data/" + next(f"{i:08x}" for i in range(1000) if labels.split_of(f"{i:08x}") == "dev") + "/x.py"
+    b = "data/" + next(f"{i:08x}" for i in range(1000) if labels.split_of(f"{i:08x}") == "test") + "/x.py"
+    rows = [row(file=a, rid=1), row(file=b, rid=2)]
+    assert S.score(rows, [], split="dev", scope=False, line_only=False).fn == 1
+    assert S.score(rows, [], split=None, scope=False, line_only=False).fn == 2
+
+
+def test_covered_partial_missed():
+    lines = ["x"] * 4 + ["k" * 40] + ["y"] * 5
+    r = row(cols=(10, 30))
+    assert S.covered(r, [hit(cols=(10, 30))], lines) == "covered"
+    assert S.covered(r, [hit(cols=(10, 20))], lines) == "partial"
+    assert S.covered(r, [hit(cols=(10, 20)), hit(cols=(20, 30))], lines) == "covered"
+    assert S.covered(r, [], lines) == "missed"
+    assert S.covered(row(cols=(10, None)), [hit(cols=(10, 40))], lines) == "covered"
+    multi = row(line=3, line_end=5, cols=(0, 1))
+    assert S.covered(multi, [hit(line=3, line_end=6, cols=(0, 0))], lines) == "covered"
+    assert S.covered(multi, [hit(line=3, line_end=4, cols=(0, 1))], lines) == "partial"
+
+
+def test_unlabelled_excludes_row_lines_and_whole_file():
+    rows = [row(line=5)]
+    got = S.unlabelled(rows, [hit(line=5), hit(line=7), hit(line=1, line_end=20, kind="HELD")])
+    assert got == [("data/r/a.py", 7)]
+
+
+def test_missing_files_excluded(tmp_path):
+    make_file(tmp_path, "data/r/a.py", "x\n")
+    rows = [row(file="data/r/a.py", rid=1), row(file="data/r/gone.py", rid=2)]
+    assert S.missing_files(rows, tmp_path) == {"data/r/gone.py"}
+
+
+def _run_dir(tmp_path):
+    cred = tmp_path / "cred"
+    rnd = random.Random(3)
+    meta = []
+    for i in range(60):
+        repo = f"{rnd.getrandbits(32):08x}"
+        rel = f"data/{repo}/src/f{i}.py"
+        make_file(cred, rel, f"a = 1\npassword = \"{random_alnum(12)}\"\nb = 2\nc = 3\n")
+        meta.append(f"{i},f{i},GitHub,{repo},{rel},2,2,{'T' if i % 2 else 'F'},12,24,,,Password")
+        run = tmp_path / "run"
+        run.mkdir(exist_ok=True)
+        for tool in ("hermie", "gitleaks"):
+            hits.write_hits(run / f"{tool}.jsonl", [hit(file=rel, line=2, tool=tool, cols=(12, 24)),
+                                                     hit(file=rel, line=4, tool=tool)])
+    write_meta(cred / "meta", "all", meta)
+    (tmp_path / "run" / "hermie_files.jsonl").write_text('{"file": "x", "seconds": 1}\n')
+    return cred, tmp_path / "run"
+
+
+def test_score_cli_outputs(tmp_path):
+    cred, run = _run_dir(tmp_path)
+    assert S.main(["--cred-root", str(cred), "--run", str(run)]) == 0
+    summary = (run / "summary.md").read_text()
+    assert "hermie" in summary and "gitleaks" in summary and "CredSweeper's ML model" in summary
+    assert (run / "dev_misses.md").exists() and (run / "dev_false_alarms.md").exists()
+    sample = (run / "manual_sample.csv").read_text().splitlines()
+    assert sample[0] == "tool,file,line,line_text,kinds,claude_label,claude_reason,user_label"
+    assert all(",4," in s for s in sample[1:])   # only unlabelled lines (line 4) are sampled
+
+
+def test_manual_sample_deterministic(tmp_path):
+    cred, run = _run_dir(tmp_path)
+    S.main(["--cred-root", str(cred), "--run", str(run)])
+    first = (run / "manual_sample.csv").read_bytes()
+    S.main(["--cred-root", str(cred), "--run", str(run)])
+    assert (run / "manual_sample.csv").read_bytes() == first
