@@ -447,3 +447,39 @@ def test_score_reports_incomplete_hermie_and_tool_status(tmp_path):
     line = next(s for s in summary.splitlines() if s.startswith("| hermie | all | "))
     tp, fn, fp = (int(x) for x in line.split("|")[3:6])
     assert tp + fp == 1
+
+
+# ---------------------------------------------------------------- quick dev loop
+
+from evals.creddata import quick  # noqa: E402
+
+
+def _repo_in(split: str, seed: int) -> str:
+    rnd = random.Random(seed)
+    while True:
+        repo = f"{rnd.getrandbits(32):08x}"
+        if labels.split_of(repo) == split:
+            return repo
+
+
+def test_quick_scans_dev_only_and_reports_delta(tmp_path, monkeypatch):
+    cred, out = tmp_path / "cred", tmp_path / "out"
+    dev, test = _repo_in("dev", 1), _repo_in("test", 2)
+    secret = random_alnum(12) + "7"
+    meta = []
+    for i, repo in enumerate((dev, test)):
+        rel = f"data/{repo}/src/f{i}.py"
+        make_file(cred, rel, f"a = 1\npassword = \"{secret}\"\n")
+        meta.append(f"{i},f{i},GitHub,{repo},{rel},2,2,T,12,{12 + len(secret)},,,Password")
+    write_meta(cred / "meta", "all", meta)
+    read = []
+    real = quick.scan_file_info
+    monkeypatch.setattr(quick, "scan_file_info", lambda f, root, rel, tmp: read.append(rel) or real(f, root, rel, tmp))
+    assert quick.main(["--cred-root", str(cred), "--out", str(out), "--workers", "1"]) == 0
+    assert read == [f"data/{dev}/src/f0.py"]                       # the test-split file is never opened
+    assert json.loads((out / "quick_flags.json").read_text()) == {"0": True}
+    make_file(cred, f"data/{dev}/src/f0.py", "a = 1\npassword = None\n")
+    assert quick.main(["--cred-root", str(cred), "--out", str(out), "--workers", "1"]) == 0
+    delta = (out / "quick_delta.md").read_text()
+    assert "# lost (dev)\n1 rows." in delta and "# gained (dev)\n0 rows." in delta
+    assert len((out / "quick_history.tsv").read_text().splitlines()) == 2
