@@ -54,3 +54,100 @@ def test_scope():
     assert not labels.in_scope(_row(("Nonce", "Salt")))
     assert labels.in_scope(_row(("Key", "UUID")))
     assert labels.in_scope(_row(("Password",)))
+
+
+# ---------------------------------------------------------------- hits and parsers
+
+from evals.creddata import hits  # noqa: E402
+
+
+def fake_value(n: int = 16) -> str:
+    rnd = random.Random()
+    return "sk-test-" + "".join(rnd.choice("0123456789abcdef") for _ in range(n))
+
+
+def make_file(root: Path, rel: str, content: str | bytes) -> Path:
+    p = root / rel
+    p.parent.mkdir(parents=True, exist_ok=True)
+    (p.write_bytes if isinstance(content, bytes) else p.write_text)(content)
+    return p
+
+
+def test_offsets_to_hit_single_and_multi_line():
+    text = "a\nkey = sk-test-ab12\nmore\nxyz\n"
+    s = text.index("sk-test")
+    h = hits.offsets_to_hit("hermie", "data/r/a", text, s, s + 12, "SECRET")
+    assert (h.line_start, h.line_end, h.col_start, h.col_end) == (2, 2, 6, 18)
+    end = text.index("xyz") + 3
+    h = hits.offsets_to_hit("hermie", "data/r/a", text, s, end, "SECRET")
+    assert (h.line_start, h.line_end, h.col_start, h.col_end) == (2, 4, 6, 3)
+
+
+def test_split_lines_crlf():
+    assert hits.split_lines("a\r\nb") == ["a", "b"]
+
+
+def test_read_text_invalid_utf8(tmp_path):
+    p = make_file(tmp_path, "x.txt", b"ok\n\xff\xfe\n")
+    text, bad = hits.read_text(p)
+    assert bad is True and text.startswith("ok\n")
+    assert hits.read_text(make_file(tmp_path, "y.txt", "fine\n"))[1] is False
+
+
+def test_parse_gitleaks_recovers_columns(tmp_path):
+    v = fake_value()
+    line = 'github_token = "' + v + '"'
+    make_file(tmp_path, "data/r1/src/a.py", "x = 1\n" + line + "\n")
+    raw = [{"File": "data/r1/src/a.py", "StartLine": 2, "EndLine": 2, "StartColumn": 99, "EndColumn": 120,
+            "RuleID": "generic-api-key", "Secret": v}]
+    got, fallbacks = hits.parse_gitleaks(raw, tmp_path)
+    assert got == [hits.Hit("gitleaks", "data/r1/src/a.py", 2, 2, 16, 16 + len(v), "generic-api-key")]
+    assert fallbacks == 0
+    raw[0]["Secret"] = "not-on-this-line"
+    got, fallbacks = hits.parse_gitleaks(raw, tmp_path)
+    assert got == [hits.Hit("gitleaks", "data/r1/src/a.py", 2, 2, None, None, "generic-api-key")]
+    assert fallbacks == 1
+
+
+def test_parse_trufflehog_jsonl(tmp_path):
+    v = fake_value()
+    make_file(tmp_path, "data/r1/src/b.env", "TOKEN=" + v + "\n")
+    raw = ('{"SourceMetadata":{"Data":{"Filesystem":{"file":"data/r1/src/b.env","line":1}}},'
+           '"DetectorName":"Github","Verified":false,"Raw":"' + v + '"}\n')
+    got, fallbacks = hits.parse_trufflehog(raw, tmp_path)
+    assert got == [hits.Hit("trufflehog", "data/r1/src/b.env", 1, 1, 6, 6 + len(v), "Github")]
+    assert fallbacks == 0
+
+
+def test_parse_detect_secrets(tmp_path):
+    raw = {"results": {"data/r1/src/a.py": [{"type": "Secret Keyword", "filename": "data/r1/src/a.py",
+                                              "hashed_secret": "00", "is_verified": False, "line_number": 3}]}}
+    got, fallbacks = hits.parse_detect_secrets(raw, tmp_path)
+    assert got == [hits.Hit("detect_secrets", "data/r1/src/a.py", 3, 3, None, None, "Secret Keyword")]
+    assert fallbacks == 0
+
+
+def test_parse_credsweeper(tmp_path):
+    raw = [{"rule": "Token", "severity": "medium", "confidence": "moderate", "ml_probability": 0.9,
+            "line_data_list": [{"line": "t = x", "line_num": 4, "path": "data/r1/src/a.py", "value": "x",
+                                "value_start": 16, "value_end": 56},
+                               {"line": "u = y", "line_num": 5, "path": "data/r1/src/a.py", "value": "y",
+                                "value_start": 4, "value_end": 5}]}]
+    got, fallbacks = hits.parse_credsweeper(raw, tmp_path)
+    assert got == [hits.Hit("credsweeper", "data/r1/src/a.py", 4, 4, 16, 56, "Token"),
+                   hits.Hit("credsweeper", "data/r1/src/a.py", 5, 5, 4, 5, "Token")]
+    assert fallbacks == 0
+
+
+def test_file_paths_normalized(tmp_path):
+    raw = {"results": {str(tmp_path / "data/r1/a.py"): [{"type": "T", "line_number": 1}],
+                       "./data/r1/b.py": [{"type": "T", "line_number": 1}]}}
+    got, _ = hits.parse_detect_secrets(raw, tmp_path)
+    assert sorted(h.file for h in got) == ["data/r1/a.py", "data/r1/b.py"]
+
+
+def test_hits_jsonl_roundtrip(tmp_path):
+    hs = [hits.Hit("hermie", "data/r/a", 1, 2, 3, None, "SECRET")]
+    hits.write_hits(tmp_path / "h.jsonl", hs)
+    hits.write_hits(tmp_path / "h.jsonl", hs)
+    assert hits.read_hits(tmp_path / "h.jsonl") == hs + hs
