@@ -115,10 +115,19 @@ _UI_TEXT_NAMES = {"label", "forgot", "title", "placeholder", "hint", "tooltip", 
 
 
 def _low_variety(val: str) -> bool:
-    """00000000, xxxxxx, 0123456789, abcdefgh: too regular to be generated."""
+    """00000000, xxxxxx, 0123456789, abcdefgh, ef012345ef012345, 000102030405...: too regular to be generated."""
     low = val.lower()
-    return len(set(low)) <= (3 if len(low) >= 8 else 2) or (len(low) >= 6 and (low in "0123456789abcdefghijklmnopqrstuvwxyz" or
-                                                     low in "9876543210"))
+    if len(set(low)) <= (3 if len(low) >= 8 else 2):
+        return True
+    if len(low) >= 6 and (low in "0123456789abcdefghijklmnopqrstuvwxyz" or low in "9876543210"):
+        return True
+    if len(low) >= 12 and any(low == (low[:k] * (len(low) // k + 1))[:len(low)] for k in range(2, min(len(low) // 2, 64) + 1)):
+        return True                        # a unit repeated (ef012345ef012345, a vector written twice)
+    if len(low) >= 16 and re.fullmatch(r"(?:[0-9a-f]{2})+", low):
+        b = [int(low[i:i + 2], 16) for i in range(0, len(low), 2)]
+        if len({(y - x) % 256 for x, y in zip(b, b[1:])}) == 1:
+            return True                    # counting bytes: 000102..., 00112233...
+    return False
 
 
 def _self_described_dummy(val: str) -> bool:
@@ -153,9 +162,11 @@ _NOT_A_SECRET_TAIL = {"path", "file", "dir", "directory", "name", "length", "siz
                       "expires", "header", "headers", "url", "uri", "endpoint", "host", "domain", "field", "column", "id_field", "prefix",
                       "format", "algorithm", "alg", "mode", "version", "label", "title", "description", "env", "var", "variable",
                       "error", "errors", "status", "checksum", "hash", "pattern", "regex", "msg", "message", "hint", "tooltip",
-                      "method", "provider", "scheme", "strategy", "backend", "mechanism", "parameter", "param", "params"}
+                      "method", "provider", "scheme", "strategy", "backend", "mechanism", "parameter", "param", "params",
+                      "string"}
 # A name with one of these segments holds something else: a public key, a password hash
-_NOT_A_SECRET_ANY = {"public", "hash", "hashed", "digest", "encrypted"}
+_NOT_A_SECRET_ANY = {"public", "hash", "hashed", "digest", "encrypted", "cache", "sort", "primary", "foreign", "partition",
+                     "topology", "idempotency", "lookup", "routing", "shard", "protobuf"}
 # Names that say the value is a secret (not just `key`, which also names dict keys, primary keys, sort keys).
 _STRONG = {"secret", "secrets", "token", "tokens", "credential", "credentials", "creds", "auth", "apikey", "secretkey",
            "accesskey", "authtoken", "privatekey", "passphrase", "salt"}
@@ -291,6 +302,9 @@ _BIG_TOKEN = re.compile(r"(?<![A-Za-z0-9+/_=-])[A-Za-z0-9+/_-]{40,}={0,2}(?![A-Z
 # hash prefixes, and the base64 starts of JPEG, PNG, GIF, PDF and ZIP files
 _NOT_A_TOKEN_PREFIX = re.compile(r"^(?:sha\d{1,3}|md5)-|^(?:/9j/|iVBORw0KGgo|R0lGOD|JVBERi|UEsDB)")
 _AFTER_B64 = re.compile(r"(?:base64,|(?:integrity|node_id)[\"']?\s*[:=]\s*[\"']?|sha\d{0,3}-)$", re.I)
+# public keys, certificates, CSRs, CRLs and parameters in PEM armor
+_PUBLIC_ARMOR = re.compile(r"-----BEGIN (?:[A-Z0-9 ]*PUBLIC KEY|(?:TRUSTED )?CERTIFICATE(?: REQUEST)?|X509 CRL|[A-Z ]*PARAMETERS)-----"
+                           r"[\s\S]*?-----END [A-Z0-9 ]+-----")
 # crypt(3) / PHC password hashes ($6$..., $2b$..., $argon2id$...): a hash, not the password
 _CRYPT_HASH = re.compile(r"\$(?:argon2(?:id|i|d)|scrypt|pbkdf2[\w-]*|2[abxy]?|[156]|[a-z0-9]{1,4})\$[^\s\"'`]{8,}")
 _PUBLIC_NAME = re.compile(r"public[_-]?key[\w-]*[\"']?\s*[:=]\s*[\"']?$", re.I)
@@ -326,6 +340,8 @@ def _entropy_tokens(text: str) -> list[Finding]:
     blocks = _encoded_blocks(text) if text.count("\n") >= 3 else []
     if "$" in text:
         blocks += [m.span() for m in _CRYPT_HASH.finditer(text)]
+    if "-----BEGIN" in text:
+        blocks += [m.span() for m in _PUBLIC_ARMOR.finditer(text)]
     for m in _BIG_TOKEN.finditer(text):
         if blocks and any(a <= m.start() < b for a, b in blocks):
             continue

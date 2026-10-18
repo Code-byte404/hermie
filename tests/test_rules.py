@@ -547,3 +547,22 @@ def test_neighbours_of_those_shapes_are_left_alone(text):
 ])
 def test_neighbours_of_setters_and_env_values_are_left_alone(text):
     assert rules.find(text) == [], [(text[f.start:f.end], f.entity) for f in rules.find(text)]
+
+
+@pytest.mark.parametrize("text", [
+    "Key = 000102030405060708090A0B0C0D0E0F101112131415161718191A1B",
+    "Key = 00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff",
+    "Key = ef012345ef012345ef012345ef012345",
+    '"key":  "-----BEGIN PUBLIC KEY-----\\n' + r(64, B64) + "\\n" + r(64, B64) + '\\n-----END PUBLIC KEY-----\\n",',
+    '"cert": "-----BEGIN CERTIFICATE-----\\n' + r(64, B64) + "\\n" + r(64, B64) + '\\n-----END CERTIFICATE-----"',
+    "<!-- cache-key: cdktf-0.20.8 input-" + r(64, HEX) + " -->",
+    'TopologyKey:       "k8s.io/zone",',
+    '- match: { aggregations.histo.buckets.0.key_as_string: "2017-01-01T05:00:00.000Z" }',
+])
+def test_test_vectors_public_armor_and_key_names_are_left_alone(text):
+    assert rules.find(text) == [], [(text[f.start:f.end][:50], f.entity) for f in rules.find(text)]
+
+
+def test_a_real_hex_key_under_a_key_name_is_still_found():
+    v = r(64, HEX)
+    assert _found(f"Key = {v}", v) and _found(f"aes_key = '{v}'", v)
