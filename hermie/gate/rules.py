@@ -92,7 +92,8 @@ _TYPED_VALUES = {"credential_assignment", "secret_phrase", "auth_header", "beare
                  "secret_phrase_zh", "db_url_credentials", "oauth_param", "curl_option", "sql_password", "sql_password_bare",
                  "cli_password", "mysql_password", "secure_string"}   # a placeholder or example word there is not a secret
 _DUMMY_CHECKED = {"db_url_credentials", "curl_user", "curl_option", "sql_password", "sql_password_bare", "cli_password",
-                  "mysql_password", "secure_string", "oauth_param"}
+                  "mysql_password", "secure_string", "oauth_param", "url_query_secret", "credential_assignment",
+                  "secret_phrase"}
 
 _COMPILED_SECRETS = [(n, re.compile(rx), s, n in VALUE_ONLY) for n, rx, s in SECRET_PATTERNS]
 
@@ -105,20 +106,23 @@ _CODE_WORDS = {"optional", "none", "null", "true", "false", "string", "str", "in
 # What people write in an example URL or curl command instead of a password (`user:pass@host`, `admin:admin`).
 _DUMMY = {"password", "passwd", "pass", "pwd", "secret", "admin", "root", "user", "username", "test", "guest", "demo",
           "changeme", "example", "foobar", "foo", "bar", "123456", "1234567", "12345678", "123456789", "abcdefgh", "qwerty"}
-_DUMMY_MARKS = ("test", "example", "dummy", "sample", "redacted", "placeholder")
 _UI_TEXT_NAMES = {"label", "forgot", "title", "placeholder", "hint", "tooltip", "msg", "message", "text", "strength", "error"}
 
 
-def _self_described_dummy(val: str) -> bool:
-    """A value that says it is not real: `x-pack-test-password`, `tftest`, `rootpass`, `SECRET2`, `bar123`, `xxx`."""
+def _low_variety(val: str) -> bool:
+    """00000000, xxxxxx, 0123456789, abcdefgh: too regular to be generated."""
     low = val.lower()
-    if low in _DUMMY or low.rstrip("0123456789") in _DUMMY or any(w in low for w in _DUMMY_MARKS):
-        return True
-    if len(set(low)) == 1:
-        return True                        # xxx, ********
-    # rootpass, mypassword, SECRET2, GHTOKEN: the word itself, in one case (hunter2secret mixes digits in: kept)
-    return (len(val) <= 24 and bool(re.fullmatch(r"[a-z_.\-]+|[A-Z0-9_.\-]+", val))
-            and any(w in low for w in ("pass", "secret", "pwd", "token")))
+    return len(set(low)) <= 3 or (len(low) >= 6 and (low in "0123456789abcdefghijklmnopqrstuvwxyz" or
+                                                     low in "9876543210"))
+
+
+def _self_described_dummy(val: str) -> bool:
+    """A stand-in, not a password: `password`, `admin`, `bar123`, `xxx`. Test-looking values (`demo-password-not-real`,
+    `x-pack-test-password`) are still hidden: a placeholder there costs nothing, and people try Hermie with them."""
+    low = val.lower()
+    return low in _DUMMY or (val == low and low.rstrip("0123456789") in _DUMMY) or len(set(low)) == 1
+
+
 _HEX_CONSTANT = re.compile(r"0[xX][0-9a-fA-F]{1,16}")
 
 
@@ -184,8 +188,8 @@ def _secretish(val: str, wordy_ok: bool = False) -> bool:
     pick words plus digits: `Password123`)."""
     if re.fullmatch(r"[+-]?[\d.]+(?:[eE][+-]?\d+)?", val) and "." in val:
         return False                       # a float
-    if _HEX_CONSTANT.fullmatch(val):
-        return False                       # a numeric constant (STATUS_NO_TOKEN = 0xC000007C)
+    if _HEX_CONSTANT.fullmatch(val) or _low_variety(val):
+        return False                       # a numeric constant (STATUS_NO_TOKEN = 0xC000007C), 000000, 0123456789
     if (_wordish_fraction(val) >= 0.6 and not wordy_ok) or (_SNAKE_OR_KEBAB.fullmatch(val) and not _UUID.fullmatch(val)):
         return False                       # CamelCase / snake_case identifiers, model ids, file names
     if any(c.isdigit() for c in val):
@@ -196,6 +200,7 @@ def _secretish(val: str, wordy_ok: bool = False) -> bool:
 
 
 _SNAKE_WORDS = re.compile(r"[a-z]+(?:[_-][a-z]+)+")
+_ENV_NAME = re.compile(r"[A-Z][A-Z0-9]*(?:_[A-Z0-9]+)+")    # SECRET_KEY: the name of a variable, not its value
 # ClientSecret, myAuthID, Force: words, each hump at least three letters (a generated value has shorter humps)
 _CAMEL_WORDS = re.compile(r"[a-z]{2,}(?:[A-Z][a-z]{2,})+(?:[A-Z]{2,4})?|[A-Z][a-z]{2,}(?:[A-Z][a-z]{2,})*(?:[A-Z]{2,4})?")
 _ID_PART = re.compile(r"[a-z][a-z0-9]*|[A-Z][A-Z0-9]*|[A-Z][a-z][a-z0-9]*|\d+")
@@ -217,23 +222,25 @@ def _value_looks_secret(val: str, segs: list[str], literal: bool = False) -> boo
     strong = literal and not passwordish and bool(set(segs) & _STRONG)
     if len(val) < (4 if passwordish and literal else 6 if strong else 8) or _is_placeholder_value(val) or _IDENT_CHAIN.fullmatch(val):
         return False
-    if _HEX_CONSTANT.fullmatch(val):
+    if _HEX_CONSTANT.fullmatch(val) or _low_variety(val) or _self_described_dummy(val):
         return False
+    if not literal and _CAMEL_WORDS.fullmatch(val):
+        return False                       # `pass: PassEvent,`: a name in code
     if val.startswith(("/", "./", "../", "~/", "file:", "http://", "https://")) and "@" not in val and val.count("/") >= 2:
         return False
     if _CODE_VALUE.search(val):
         return False
-    if not passwordish and _identifier_like(val):
-        return False
     if strong:
         # a literal under `secret` / `token` / `credential`: digits or symbols from 6 characters, letters only from 8
-        if not val.isascii() or _self_described_dummy(val) or set(segs) & _UI_TEXT_NAMES:
+        if not val.isascii() or set(segs) & _UI_TEXT_NAMES:
             return False
-        return (len(val) >= (8 if val.isalpha() else 6) and not _identifier_like(val) and not _SNAKE_WORDS.fullmatch(val)
+        return (len(val) >= (8 if val.isalpha() else 6) and not _ENV_NAME.fullmatch(val) and not _SNAKE_WORDS.fullmatch(val)
                 and not _CAMEL_WORDS.fullmatch(val))
     if passwordish and literal:
-        # under a password name a literal is the password, plain words included; UI text and test values are not
-        return val.isascii() and not _self_described_dummy(val) and not set(segs) & _UI_TEXT_NAMES
+        # under a password name a literal is the password, plain words and test values included; UI text is not
+        return val.isascii() and not set(segs) & _UI_TEXT_NAMES
+    if not passwordish and _identifier_like(val):
+        return False                       # under a plain `key` name: ALICE_cf_prime239v2_PUB
     return _secretish(val, wordy_ok=passwordish)
 
 
@@ -246,14 +253,15 @@ def _assignments(text: str):
         yield m.group("name"), m.group(g), m.start(g), True
     for m in _ASSIGN_LINE.finditer(text):
         v = m.group("line")
-        if not m.group("ini") and v.endswith((",", ";")):
-            v = v.rstrip(",;")             # `password: password,` in code: judged without the comma, as code
+        code = v.endswith((",", ";"))      # `password: password,` in code: judged without the comma, as code
+        if code and not m.group("ini"):
+            v = v.rstrip(",;")
         if m.group("ini") is not None:
-            if v.endswith((",", ";")) or re.search(r"[_.(\[]|[a-z][A-Z]", v):
+            if code or re.search(r"[_.(\[]|[a-z][A-Z]", v):
                 continue                   # `password = request.form[...]`: code, which _ASSIGN already sees
             yield m.group("ini"), v, m.start("line"), True
         else:
-            yield m.group("env") or m.group("yaml"), v, m.start("line"), not v.endswith((",", ";"))
+            yield m.group("env") or m.group("yaml"), v, m.start("line"), not code
 
 
 def _name_driven(text: str) -> list[Finding]:
@@ -268,8 +276,11 @@ def _name_driven(text: str) -> list[Finding]:
 
 
 _BIG_TOKEN = re.compile(r"(?<![A-Za-z0-9+/_=-])[A-Za-z0-9+/_-]{40,}={0,2}(?![A-Za-z0-9+/_=-])")
-_NOT_A_TOKEN_PREFIX = re.compile(r"^(?:sha\d{1,3}|md5)-")
-_AFTER_B64 = re.compile(r"(?:base64,|integrity[\"']?\s*[:=]\s*[\"']?|sha\d{0,3}-)$", re.I)
+# hash prefixes, and the base64 starts of JPEG, PNG, GIF, PDF and ZIP files
+_NOT_A_TOKEN_PREFIX = re.compile(r"^(?:sha\d{1,3}|md5)-|^(?:/9j/|iVBORw0KGgo|R0lGOD|JVBERi|UEsDB)")
+_AFTER_B64 = re.compile(r"(?:base64,|(?:integrity|node_id)[\"']?\s*[:=]\s*[\"']?|sha\d{0,3}-)$", re.I)
+# crypt(3) / PHC password hashes ($6$..., $2b$..., $argon2id$...): a hash, not the password
+_CRYPT_HASH = re.compile(r"\$(?:argon2(?:id|i|d)|scrypt|pbkdf2[\w-]*|2[abxy]?|[156]|[a-z0-9]{1,4})\$[^\s\"'`]{8,}")
 _PUBLIC_NAME = re.compile(r"public[_-]?key[\w-]*[\"']?\s*[:=]\s*[\"']?$", re.I)
 
 
@@ -301,6 +312,8 @@ def _entropy_tokens(text: str) -> list[Finding]:
     excluded."""
     out = []
     blocks = _encoded_blocks(text) if text.count("\n") >= 3 else []
+    if "$" in text:
+        blocks += [m.span() for m in _CRYPT_HASH.finditer(text)]
     for m in _BIG_TOKEN.finditer(text):
         if blocks and any(a <= m.start() < b for a, b in blocks):
             continue
@@ -361,7 +374,7 @@ def _secrets(text: str) -> list[Finding]:
                     continue
             if name in _DUMMY_CHECKED:
                 pw = v.rsplit(":", 1)[-1] if name == "curl_option" else v
-                if v.lower() in _DUMMY or _self_described_dummy(pw) or len(pw) < 3:
+                if v.lower() in _DUMMY or _self_described_dummy(pw) or _low_variety(pw) or len(pw) < 3:
                     continue
                 if name == "cli_password" and (_CAMEL_WORDS.fullmatch(v) or _identifier_like(v)):
                     continue               # help text (`--password  Force ...`) or an env var name

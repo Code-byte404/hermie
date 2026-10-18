@@ -347,20 +347,18 @@ def test_real_shapes_next_to_those_false_alarms_are_still_found(text):
 
 
 @pytest.mark.parametrize("text", [
-    "user username: \"admin_user\", password: 'x-pack-test-password', role: \"test\"",
-    'password      = "tftest"',
-    "GOCOMMERCE_MAILER_PASS=super-secret-password",
-    'MYSQL_ROOT_PASSWORD="rootpass"',
     "'PASSWORD': '123456',",
+    "'password': 'admin',",
     '"LABEL_CURRENT_PASSWORD": "現有密碼",',
     '"FORGOT_PASSWORD": "Forgot password?",',
     "password: Hasło",
 ])
-def test_self_described_test_passwords_and_ui_text_are_left_alone(text):
+def test_stand_in_passwords_and_ui_text_are_left_alone(text):
     assert rules.find(text) == [], [(text[f.start:f.end], f.entity) for f in rules.find(text)]
 
 
-@pytest.mark.parametrize("text", ['DB_PASSWORD: "kxdumskx"', "password = 'qn-wcpd'", "POSTGRES_PASSWORD: ombzfz",
+@pytest.mark.parametrize("text", ['DB_PASSWORD: "kxdumskx"', "password: 'x-pack-test-password'", 'password = "tftest"',
+                                  "MAILER_PASS=super-secret-password", 'MYSQL_ROOT_PASSWORD="rootpass"', "password = 'qn-wcpd'", "POSTGRES_PASSWORD: ombzfz",
                                   'password = Some("owlknh"),', "Password = tkeftvoh",
                                   'Password: types.StringValue("qdspcg"),', 'Password: SecretStr("hcctgcx"),'])
 def test_a_plain_word_password_under_a_password_name_is_hidden(text):
@@ -429,11 +427,11 @@ def test_neighbours_of_the_missed_shapes_are_left_alone(text):
 
 
 @pytest.mark.parametrize("text", [
-    'clientSecret: "bar123",', 'ClientSecret = "ClientSecret"', 'authID:      "myAuthID",', "credentials: 'SECRET2',",
-    "oauth_token: OTOKEN", "&oauth_token=test_oauth_token&oauth_token_secret=test_oauth_token_secret",
+    'clientSecret: "bar123",', 'ClientSecret = "ClientSecret"', 'authID:      "myAuthID",', "secret: SECRET_KEY_BASE",
+    "oauth_token: OTOKEN",
     'easy_setopt(curl, CURLOPT_USERPWD, "xxx:yyy");', 'easy_setopt(curl, CURLOPT_USERPWD, "foo:bar");',
     "-password (required) Optional if -force is specified", "--password=NATS_PASSWORD  Password",
-    "-W, --password             Force password prompt.", "CREATE USER myuser WITH PASSWORD 'mypassword';",
+    "-W, --password             Force password prompt.", "CREATE USER myuser WITH PASSWORD 'password';",
     'accessTokenParameter="?access_token=$HelixApiAccessToken"',
 ])
 def test_example_values_in_the_new_shapes_are_left_alone(text):
@@ -486,3 +484,28 @@ def test_an_unterminated_private_key_keeps_its_body():
 
 def test_a_password_variable_passed_on_is_left_alone():
     assert rules.find("    password: password,\n    user: user,") == []
+
+
+@pytest.mark.parametrize("text", [
+    "SASLAUTHD_LDAP_PASSWORD=pass1234",
+    "Key = 00000000000000000000000000000000",
+    "config.oauth_token_secret = '0123456789'",
+    '# secret = "00000000000000000000000000000000"',
+    'password: "$argon2id$v=19$m=131072,p=8$' + r(16) + "$" + r(43, B64) + '"',
+    'ok, err := CheckPassword("password", "$6$rounds=abc$' + r(16) + "$" + r(86, B64.replace("+", ".")) + '")',
+    '{"node_id":"MDM6VGFnMjc5MDE1Mjg2OjJkYmFhMDdhNmUzY2FkNjE0ZTAyNDEwZjVkOWVmNjM5NjFkNjFkYTg=","sha":"x"}',
+    '"ThumbnailPicture": "/9j/4AAQSkZJRgABAQEAYABgAAD/2wBDAAQCAwMDAgQDAwMEBAQEBQkGBQUFBQsICAYJDQsNDQ0LDAwOEBQRDg8T"',
+    "pass: PassEvent,",
+])
+def test_repetitive_example_hash_and_encoded_file_values_are_left_alone(text):
+    assert rules.find(text) == [], [(text[f.start:f.end], f.entity) for f in rules.find(text)]
+
+
+def test_every_value_of_the_demo_env_file_is_found():
+    """The README demo: an agent reads demo/.env. Its fake values describe themselves as fake; they must still go."""
+    from pathlib import Path
+    for line in (Path(__file__).resolve().parent.parent / "demo" / ".env").read_text().splitlines():
+        if "=" in line:
+            value = line.split("=", 1)[1]
+            core = value.split("://")[1].split("@")[0].split(":")[1] if "://" in value else value
+            assert _found(line, core), line
