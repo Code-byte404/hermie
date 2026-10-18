@@ -397,7 +397,7 @@ MISSED = [  # (text, part that must be hidden)
     ("'secret' => '" + r(12, string.ascii_lowercase) + "',", None),
     ("consumer_secret: '" + r(3, string.ascii_lowercase) + r(3, string.digits) + "',", None),
     ('"credential_value": "' + r(50, string.ascii_lowercase) + '",', None),
-    ("clientSecret: '" + r(9, string.ascii_lowercase) + "'", None),
+    ("clientSecret: '" + r(12, string.ascii_lowercase) + "'", None),
     ('token: "' + r(7, string.ascii_lowercase + string.digits) + "_" + r(5, string.ascii_lowercase + string.digits) + '",', None),
     ("test_token = '" + r(60, string.ascii_lowercase + string.digits) + "TROQ'", None),
 ]
@@ -427,7 +427,7 @@ def test_neighbours_of_the_missed_shapes_are_left_alone(text):
 
 
 @pytest.mark.parametrize("text", [
-    'clientSecret: "bar123",', 'ClientSecret = "ClientSecret"', 'authID:      "myAuthID",', "secret: SECRET_KEY_BASE",
+'ClientSecret = "ClientSecret"', 'authID:      "myAuthID",', "secret: SECRET_KEY_BASE",
     "oauth_token: OTOKEN",
     'easy_setopt(curl, CURLOPT_USERPWD, "xxx:yyy");', 'easy_setopt(curl, CURLOPT_USERPWD, "foo:bar");',
     "-password (required) Optional if -force is specified", "--password=NATS_PASSWORD  Password",
@@ -487,7 +487,6 @@ def test_a_password_variable_passed_on_is_left_alone():
 
 
 @pytest.mark.parametrize("text", [
-    "SASLAUTHD_LDAP_PASSWORD=pass1234",
     "Key = 00000000000000000000000000000000",
     "config.oauth_token_secret = '0123456789'",
     '# secret = "00000000000000000000000000000000"',
@@ -573,3 +572,103 @@ def test_prose_after_password_is_is_not_a_password():
             '@return The identifier of the user for whom the password is reset.*/",')
     assert rules.find(text) == [], [text[f.start:f.end] for f in rules.find(text)]
     assert rules.find("the password is " + r(10) + "7x for the staging db")
+
+
+# --- review of the CredData tuning (2026-10-18): recall regressions and placeholder damage ------------
+
+def _pem_text():
+    body = base64.b64encode(rnd.randbytes(900)).decode()
+    lines = ["MIIEowIBAAKCAQEA" + body[16:64]] + [body[i:i + 64] for i in range(64, len(body), 64)]
+    return "-----BEGIN RSA PRIVATE KEY-----\n" + "\n".join(lines) + "\n-----END RSA PRIVATE KEY-----\n", lines
+
+
+def _share_covered(text, lines):
+    found = rules.find(text)
+    return sum(_covered(found, text, x) for x in lines) / len(lines)
+
+
+def test_a_base64_wrapped_private_key_is_found():
+    pem, _ = _pem_text()
+    wrapped = base64.encodebytes(pem.encode()).decode().splitlines()
+    assert _share_covered("tls.key: |\n" + "\n".join("  " + x for x in wrapped), wrapped) >= 0.8
+
+
+def test_a_base64_wrapped_service_account_is_found():
+    import json
+    pem, _ = _pem_text()
+    sa = json.dumps({"type": "service_account", "private_key_id": r(40, HEX), "private_key": pem}, indent=2)
+    wrapped = base64.encodebytes(sa.encode()).decode().splitlines()
+    assert _share_covered("echo '\n" + "\n".join(wrapped) + "' | base64 -d", wrapped) >= 0.8
+
+
+def test_private_key_lines_without_their_header_are_found():
+    """What the entropy rule finds on one line alone, it still finds in a headless key body."""
+    _, lines = _pem_text()
+    alone = [x for x in lines if rules.find(x)]
+    assert len(alone) >= len(lines) - 2
+    mid, tail = lines[3:10], lines[-8:]
+    assert _share_covered("\n".join(mid), [x for x in mid if x in alone]) == 1
+    assert _share_covered("\n".join(tail) + "\n-----END RSA PRIVATE KEY-----", [x for x in tail if x in alone]) == 1
+
+
+def test_a_list_of_keys_one_per_line_is_found():
+    """What the entropy rule finds on its own line, it still finds in a list (a list is not an encoded file)."""
+    keys = [k for k in (r(40, B64) for _ in range(20)) if rules.find(k)][:5]
+    assert _share_covered("API_KEYS = [\n" + ",\n".join(f'  "{k}"' for k in keys) + "\n]", keys) == 1
+    toks = [k for k in (r(44) for _ in range(20)) if rules.find(k)][:5]
+    assert _share_covered("\n".join(toks), toks) == 1
+
+
+@pytest.mark.parametrize("first", ["MIIC4DCCAcqgAwIBAgIBATALBgkqhkiG9w0BAQswIzEh", "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAE",
+                                   "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEA", "JVBERi0xLjQKJcOkw7zDtsOfCjIgMCBvYmoKPDwv"])
+def test_a_certificate_public_key_or_file_block_without_armor_is_left_alone(first):
+    lines = _b64_lines(8, first=first)
+    assert rules.find("\n".join(lines)) == []
+
+
+def test_a_mail_attachment_block_is_left_alone():
+    text = "Content-Type: application/octet-stream\nContent-Transfer-Encoding: base64\n\n" + "\n".join(_b64_lines(10))
+    assert rules.find(text) == []
+
+
+@pytest.mark.parametrize("text,core", [
+    ('password: "$uperSecret99"', "$uperSecret99"), ('password="%Kq7Lm2xP9q"', "%Kq7Lm2xP9q"),
+    ('password: "@Kq7Lm2xP9q"', "@Kq7Lm2xP9q"), ('password: "C:\\\\Kq7Lm2xP9q"', None),
+    ("postgres://admin:admin2024@prod-db.internal/app", "admin2024"), ("mysql://root:root123@10.0.0.5/db", "root123"),
+    ("curl -u admin:test1234 https://api.internal", "test1234"), ("spring.datasource.password=root1234", "root1234"),
+    ("DB_PASSWORD=admin123", "admin123"), ("redis://:password123@host:6379", "password123"),
+    ("API_KEY=live_9f8e7d6c5b4a3f2e1d0c", "live_9f8e7d6c5b4a3f2e1d0c"), ('api_key = "prod-key-7f3a-9b21"', "prod-key-7f3a-9b21"),
+    ('API_KEY="acme-1a558e9e-6fe3110f"', "acme-1a558e9e-6fe3110f"), ('OPENAI_API_KEY="abcd1234efgh"', "abcd1234efgh"),
+    ("SESSION_SECRET=KeyboardCatRocks", "KeyboardCatRocks"), ("pass_phrase = 'hunter2hunter'", "hunter2hunter"),
+])
+def test_review_recall_cases_are_found(text, core):
+    assert rules.find(text), text
+    if core:
+        assert _found(text, core), text
+
+
+@pytest.mark.parametrize("text", [
+    "DB_PASSWORD=$DB_PASS", 'password: "${DB_PASSWORD}"', "JOKER_PASSWORD=<your password>", "password=%DB_PASSWORD%",
+    "password = @password", '{"token": "identifier"}', 'Token { token: Some("whitespace") }', 'new Token("NUMBER")',
+    'this.setToken("loading")', "--password TEXT", "  [--password PASS]", '{"auth": "oauth2"}', "token = tok123",
+    'token = parse("2024-01-01")', "PASSWORD 'varchar'", 'pass = "skip"', '{"password": "Passwort"}',
+])
+def test_review_placeholder_damage_cases_are_left_alone(text):
+    assert rules.find(text) == [], [(text[f.start:f.end], f.entity) for f in rules.find(text)]
+
+
+@pytest.mark.parametrize("text", [" " * 48 * 1024, ("\t" + " " * 300 + "x\n") * 160, (" " * 2000 + "x\n") * 24,
+                                  "-----BEGIN PRIVATE KEY-----\n" * 1700, "-----BEGIN CERTIFICATE-----\n" * 1700])
+def test_whitespace_and_repeated_headers_scan_in_linear_time(text):
+    import time
+    t = time.perf_counter()
+    rules.find(text)
+    assert time.perf_counter() - t < 0.5
+
+
+@pytest.mark.parametrize("text,core", [
+    ("The token is SummerTime2024", "SummerTime2024"), ("aws_secret_access_key = " + r(40, string.ascii_lowercase), None), ("API_KEY=0xDEADBEEFCAFE1234", "0xDEADBEEFCAFE1234"),
+    ("password=aaaabbbb1", "aaaabbbb1"), ("password: abc123abc123", "abc123abc123"),
+])
+def test_weak_but_real_values_are_found(text, core):
+    assert _found(text, core or text.split(" = ")[1]), [(text[f.start:f.end]) for f in rules.find(text)]

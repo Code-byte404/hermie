@@ -273,6 +273,11 @@ class Gate:
             nxt = end - CHUNK_OVERLAP if fixed else end
             # a finding followed only by whitespace up to the cut may continue in the next chunk
             touching = [pos + f.start for f in chunk if pos + f.end >= end or not text[pos + f.end:end].strip()]
+            # a private key whose END line is past the cut: the next chunk starts at its BEGIN line, so the key is
+            # scanned whole (its body lines alone could pass for ordinary text)
+            kb = text.rfind("-----BEGIN", pos, end)
+            if kb >= 0 and "PRIVATE KEY" in text[kb:kb + 64] and "-----END" not in text[kb:end]:
+                touching.append(kb)
             if touching:
                 nxt = min(nxt, min(touching))
             pos = nxt if nxt > pos else end

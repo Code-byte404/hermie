@@ -320,3 +320,24 @@ def test_hide_makes_a_quiet_value_searched_again(gate, tmp_path):
     gate.redact_spans("the layoff", [("layoff", "TOPIC")])
     assert cli.main(["hide", "layoff", "--data-dir", str(tmp_path)]) == 0
     assert "layoff" not in gate.scan("a layoff", Origin.TOOL).text
+
+
+def _key_lines(seed):
+    import base64
+    import random
+    body = base64.b64encode(random.Random(seed).randbytes(1600)).decode()
+    return ["MIIEowIBAAKCAQEA" + body[16:64]] + [body[i:i + 64] for i in range(64, len(body), 64)]
+
+
+def test_chunk_boundary_inside_a_concatenated_or_escaped_key_hides_every_line(tmp_path, analyzer):
+    from hermie.gate import gate as gate_mod
+    g = Gate(Config(data_dir=tmp_path), analyzer=analyzer, store=MappingStore(tmp_path / "m.json"))
+    lines = _key_lines(3)
+    js = '"-----BEGIN RSA PRIVATE KEY-----\\n" +\n' + "".join('"' + x + '\\n" +\n' for x in lines) \
+         + '"-----END RSA PRIVATE KEY-----\\n";\n'
+    esc = "-----BEGIN RSA PRIVATE KEY-----\\n" + "\\n".join(lines) + "\\n-----END RSA PRIVATE KEY-----\\n"
+    for text in [("word " * 15 + "\n") * ((gate_mod.CHUNK_CHARS - 720) // 76) + js,
+                 '{"a": "' + "x y " * ((gate_mod.CHUNK_CHARS - 700) // 4) + esc + '"}']:
+        fs = [f for f in g._pattern_findings(text) if f.entity == "SECRET"]
+        missed = [x for x in lines if not any(f.start <= text.find(x) and text.find(x) + len(x) <= f.end for f in fs)]
+        assert missed == [], len(missed)
