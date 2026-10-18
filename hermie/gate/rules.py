@@ -397,6 +397,8 @@ def _secrets(text: str) -> list[Finding]:
             if name == "azure_storage_key" and _AFTER_B64.search(text[max(0, m.start() - 24):m.start()]):
                 continue
             v = m.group(g)
+            if name == "secret_phrase" and len(v.rstrip(".,;:!?*/)")) < 8:
+                continue                   # "the password is reset.*/": a word ending a sentence
             if name in {"credential_assignment", "secret_phrase", "secret_phrase_zh"}:
                 # after a password word, people pick words plus digits (Password123, SummerTime2024)
                 wordy = bool(_PASSWORD_WORD.search(text, m.start(), m.start(g)))

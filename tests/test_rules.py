@@ -566,3 +566,10 @@ def test_test_vectors_public_armor_and_key_names_are_left_alone(text):
 def test_a_real_hex_key_under_a_key_name_is_still_found():
     v = r(64, HEX)
     assert _found(f"Key = {v}", v) and _found(f"aes_key = '{v}'", v)
+
+
+def test_prose_after_password_is_is_not_a_password():
+    text = ('"getterDocumentation" : "/**<p>The identifier of the user for whom the password is reset.</p>\\n'
+            '@return The identifier of the user for whom the password is reset.*/",')
+    assert rules.find(text) == [], [text[f.start:f.end] for f in rules.find(text)]
+    assert rules.find("the password is " + r(10) + "7x for the staging db")
