@@ -9,7 +9,6 @@ from urllib.parse import urlparse
 
 from . import rules
 from .redact import _merge_overlaps
-from .rules import SECRET_PATTERNS, VALUE_ONLY
 from .types import Finding
 
 SENSITIVE_ENTITIES = {
@@ -36,7 +35,8 @@ def _luhn_ok(s: str) -> bool:
     return total % 10 == 0
 
 
-# Keys / credentials: the patterns live in rules.py (shared with the regex-only detectors); Presidio runs them too.
+# Keys / credentials live in rules.py only: `scan` adds `rules.find`, which applies the value checks. Presidio does not
+# run them (its global flags are case-insensitive and it would skip those checks).
 
 
 def build_analyzer(languages: tuple[str, ...] = ("en",), deny_words: tuple[str, ...] = ()):
@@ -54,33 +54,8 @@ def build_analyzer(languages: tuple[str, ...] = ("en",), deny_words: tuple[str, 
         def validate_result(self, pattern_text: str):
             return _luhn_ok(re.sub(r"\D", "", pattern_text))
 
-    class ValueOnlyRecognizer(PatternRecognizer):
-        """Shrinks each result to the pattern's group 1 (the value), so the key name stays readable."""
-
-        def analyze(self, text, entities, nlp_artifacts=None, regex_flags=None):
-            out = []
-            for r in super().analyze(text, entities, nlp_artifacts, regex_flags):
-                name = getattr(r.analysis_explanation, "pattern_name", None)
-                for p in self.patterns:
-                    if name not in (None, p.name) or p.name not in VALUE_ONLY:
-                        continue
-                    m = re.match(p.regex, text[r.start:r.end], re.IGNORECASE | re.DOTALL | re.MULTILINE)
-                    if m and m.re.groups >= 1 and m.group(1):
-                        r.start, r.end = r.start + m.start(1), r.start + m.end(1)
-                        break
-                out.append(r)
-            return out
-
-    def secret(lang: str):
-        plain = [Pattern(n, rx, s) for n, rx, s in SECRET_PATTERNS if n not in VALUE_ONLY]
-        valued = [Pattern(n, rx, s) for n, rx, s in SECRET_PATTERNS if n in VALUE_ONLY]
-        return [PatternRecognizer(supported_entity="SECRET", supported_language=lang, patterns=plain),
-                ValueOnlyRecognizer(supported_entity="SECRET", supported_language=lang, patterns=valued,
-                                    name="ValueOnlySecretRecognizer")]
-
     recognizers = []
     for lang in languages:
-        recognizers += secret(lang)
         if deny_words:
             recognizers.append(PatternRecognizer(supported_entity="CUSTOM_KEYWORD", supported_language=lang,
                                                  deny_list=list(deny_words)))

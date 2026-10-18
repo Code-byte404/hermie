@@ -313,3 +313,54 @@ def test_url_credentials_still_found_after_scheme_characters():
     pw = r(16)
     text = f"a-b.c+d postgres+psycopg://admin:{pw}@db.example.com/prod"
     assert any(text[f.start:f.end] == pw for f in rules.find(text))
+
+
+# --- CredData dev-split false alarms (2026-10-18) ---------------------------------------------------
+
+@pytest.mark.parametrize("text", [
+    "{'Authorization': 'Basic login_and_password_removed', 'User-Agent': 'PyGithub/Python'}",
+    'type="System.Boolean, mscorlib, Version=4.0.0.0, Culture=neutral, PublicKeyToken=' + r(16, HEX) + '"',
+    '"public-key": "' + r(64, HEX) + '",',
+    "public_key = '" + r(44, B64) + "'",
+    "PrivateKey=ALICE_cf_prime239v2_PUB",
+    "PeerKey=KAS-ECC-CDH_K-571_C2-Peer-PUBLIC",
+    "PrivPubKeyPair = BOB_wap-wsg-idm-ecid-wtls6:BOB_wap-wsg-idm-ecid-wtls6_PUB",
+    "STATUS_NO_TOKEN = 0xC000007C,",
+    "EC_R_PEER_KEY_ERROR:149:peer key error",
+    '"harvester-token-checksum": "' + r(64, HEX) + '",',
+    "sqlalchemy.url = driver://user:pass@localhost/dbname",
+    '{"https://:password@example.net",',
+    "curl http://admin:admin@localhost:3000/api/org",
+])
+def test_creddata_false_alarm_shapes_are_left_alone(text):
+    assert rules.find(text) == [], [(text[f.start:f.end], f.entity) for f in rules.find(text)]
+
+
+@pytest.mark.parametrize("text", [
+    "Authorization: Basic " + base64.b64encode(("admin:" + r(12)).encode()).decode(),
+    "private_key = '" + r(44, B64) + "'",
+    "APP_KEY=base64:" + r(43, B64) + "=",
+    "postgres://app:" + r(10) + "@db.internal/prod",
+])
+def test_real_shapes_next_to_those_false_alarms_are_still_found(text):
+    assert rules.find(text), text
+
+
+@pytest.mark.parametrize("text", [
+    "user username: \"admin_user\", password: 'x-pack-test-password', role: \"test\"",
+    'password      = "tftest"',
+    "GOCOMMERCE_MAILER_PASS=super-secret-password",
+    'MYSQL_ROOT_PASSWORD="rootpass"',
+    "'PASSWORD': '123456',",
+    '"LABEL_CURRENT_PASSWORD": "現有密碼",',
+    '"FORGOT_PASSWORD": "Forgot password?",',
+    "password: Hasło",
+])
+def test_self_described_test_passwords_and_ui_text_are_left_alone(text):
+    assert rules.find(text) == [], [(text[f.start:f.end], f.entity) for f in rules.find(text)]
+
+
+@pytest.mark.parametrize("text", ['DB_PASSWORD: "kxdumskx"', "password = 'qn-wcpd'", "POSTGRES_PASSWORD: ombzfz",
+                                  'password = Some("owlknh"),', "Password = tkeftvoh"])
+def test_a_plain_word_password_under_a_password_name_is_hidden(text):
+    assert rules.find(text), text

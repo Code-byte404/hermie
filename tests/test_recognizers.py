@@ -2,8 +2,8 @@ import json
 import re
 from pathlib import Path
 
-from hermie.gate.recognizers import (SECRET_PATTERNS, build_analyzer, plausible, scan, smuggling_risk_text,
-                                     smuggling_risk_url)
+from hermie.gate.recognizers import build_analyzer, plausible, scan, smuggling_risk_text, smuggling_risk_url
+from hermie.gate.rules import SECRET_PATTERNS
 
 EVALS = Path(__file__).resolve().parent.parent / "evals"
 
@@ -101,3 +101,10 @@ def test_smuggling_reasons_never_quote_the_data():
         assert reason is not None
         assert b64[:8] not in reason and hexs[:8] not in reason and digits[:8] not in reason, reason
     assert smuggling_risk_text("note: " + b64) == f"possible base64-encoded data ({len(b64)} chars)"
+
+
+def test_secret_patterns_run_once_with_the_rules_filters(analyzer):
+    """Presidio used to run SECRET_PATTERNS again, case-insensitively and without the rules' value checks."""
+    for text in ['token: "x-pack-test-token"', "jwt_secret: a_very_important_secret",
+                 "id = sk" + "ab" * 16]:
+        assert "SECRET" not in ents(analyzer, text), text

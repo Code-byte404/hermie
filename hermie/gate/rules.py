@@ -80,6 +80,20 @@ _SNAKE_OR_KEBAB = re.compile(r"[a-z0-9]+(?:[_-][a-z0-9]+)+")
 _UUID = re.compile(r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}")
 _CODE_WORDS = {"optional", "none", "null", "true", "false", "string", "str", "int", "bool", "bytes", "any", "self",
                "undefined", "required", "default", "environ", "changeme", "example", "placeholder"}
+# What people write in an example URL or curl command instead of a password (`user:pass@host`, `admin:admin`).
+_DUMMY = {"password", "passwd", "pass", "pwd", "secret", "admin", "root", "user", "username", "test", "guest", "demo",
+          "changeme", "example", "foobar", "foo", "bar", "123456", "1234567", "12345678", "123456789", "abcdefgh", "qwerty"}
+_DUMMY_MARKS = ("test", "example", "dummy", "fake", "sample", "redacted", "placeholder")
+_UI_TEXT_NAMES = {"label", "forgot", "title", "placeholder", "hint", "tooltip", "msg", "message", "text", "strength", "error"}
+
+
+def _self_described_dummy(val: str) -> bool:
+    """A value that says it is not real: `x-pack-test-password`, `tftest`, `rootpass`, `super-secret-password`."""
+    low = val.lower()
+    if low in _DUMMY or any(w in low for w in _DUMMY_MARKS):
+        return True
+    return bool(re.fullmatch(r"[a-z_.\-]+", val)) and any(w in low for w in ("pass", "secret", "pwd"))
+_HEX_CONSTANT = re.compile(r"0[xX][0-9a-fA-F]{1,16}")
 
 
 def _entropy(s: str) -> float:
@@ -102,17 +116,25 @@ _SENSITIVE = {"key", "keys", "secret", "secrets", "token", "tokens", "password",
 _PASSWORDISH = {"password", "passwd", "pwd", "pass", "passphrase"}
 _NOT_A_SECRET_TAIL = {"path", "file", "dir", "directory", "name", "length", "size", "count", "type", "len", "ttl", "timeout", "expiry",
                       "expires", "header", "headers", "url", "uri", "endpoint", "host", "domain", "field", "column", "id_field", "prefix",
-                      "format", "algorithm", "alg", "mode", "version", "label", "title", "description", "env", "var", "variable"}
+                      "format", "algorithm", "alg", "mode", "version", "label", "title", "description", "env", "var", "variable",
+                      "error", "errors", "status", "checksum", "hash", "pattern", "regex", "msg", "message", "hint", "tooltip"}
 _SEGMENT = re.compile(r"[A-Z]+(?![a-z])|[A-Z]?[a-z]+|\d+")
 _ASSIGN = re.compile(r"""(?P<name>[A-Za-z_][A-Za-z0-9_.\-]{0,63})["']?[ \t]*(?::=|=>|=|:)[ \t]*["']?(?P<val>[^\s"'`,;<>(){}\[\]\\]{8,})""")
 # _ASSIGN stops at the first bracket or semicolon; password managers use those. These two take the whole value: inside
 # quotes, or the rest of the line in an env file (`DB_PASSWORD=k7#Lq;9vX)2m`) or a YAML mapping.
 _ASSIGN_QUOTED = re.compile(r"""(?P<name>[A-Za-z_][A-Za-z0-9_.\-]{0,63})["']?[ \t]*(?::=|=>|=|:)[ \t]*"""
-                            r"""(?:"(?P<dq>[^"\s]{8,128})"|'(?P<sq>[^'\s]{8,128})')""")
-_ASSIGN_LINE = re.compile(r"""(?m)^[ \t]*(?:export[ \t]+)?(?:(?P<env>[A-Z][A-Z0-9_]{0,63})=|(?P<yaml>[A-Za-z_][A-Za-z0-9_.\-]{0,63}):[ \t]+)"""
-                          r"""(?P<line>[^\s"'][^\s]{7,127})[ \t]*$""")
+                            r"""(?:(?:Some|String|SecretStr|SecretString|Secret|str|bytes|\[\]byte)\()?"""
+                            r"""(?:"(?P<dq>[^"\s]{4,128})"|'(?P<sq>[^'\s]{4,128})')""")
+_ASSIGN_LINE = re.compile(r"""(?m)^[ \t]*(?:export[ \t]+)?(?:(?P<env>[A-Z][A-Z0-9_]{0,63})=|(?P<yaml>[A-Za-z_][A-Za-z0-9_.\-]{0,63}):[ \t]+"""
+                          r"""|(?P<ini>[A-Za-z_][A-Za-z0-9_.\-]{0,63})[ \t]+=[ \t]+)"""
+                          r"""(?P<line>[^\s"'][^\s]{3,127})[ \t]*$""")
 # A call, an expansion, a template or a list is code, not a value.
 _CODE_VALUE = re.compile(r"^[A-Za-z_][\w.]*\(.*\)$|\$\{|\$\(|\{\{|^\[")
+
+
+def _passwordish(segs: list[str]) -> bool:
+    """`pass` names a password only at the end (DB_PASS, admin_pass), not in pass_through or pass_count."""
+    return bool(set(segs) & (_PASSWORDISH - {"pass"})) or (bool(segs) and segs[-1] == "pass")
 
 
 def _segments(name: str) -> list[str]:
@@ -132,6 +154,8 @@ def _secretish(val: str, wordy_ok: bool = False) -> bool:
     pick words plus digits: `Password123`)."""
     if re.fullmatch(r"[+-]?[\d.]+(?:[eE][+-]?\d+)?", val) and "." in val:
         return False                       # a float
+    if _HEX_CONSTANT.fullmatch(val):
+        return False                       # a numeric constant (STATUS_NO_TOKEN = 0xC000007C)
     if (_wordish_fraction(val) >= 0.6 and not wordy_ok) or (_SNAKE_OR_KEBAB.fullmatch(val) and not _UUID.fullmatch(val)):
         return False                       # CamelCase / snake_case identifiers, model ids, file names
     if any(c.isdigit() for c in val):
@@ -141,35 +165,62 @@ def _secretish(val: str, wordy_ok: bool = False) -> bool:
     return len(val) >= 32 and any(c.islower() for c in val) and any(c.isupper() for c in val) and _entropy(val) >= 4.2
 
 
-def _value_looks_secret(val: str, segs: list[str]) -> bool:
+_ID_PART = re.compile(r"[a-z][a-z0-9]*|[A-Z][A-Z0-9]*|[A-Z][a-z][a-z0-9]*|\d+")
+
+
+def _identifier_like(val: str) -> bool:
+    """Names joined by `_`, `-` or `:` (ALICE_cf_prime239v2_PUB, KAS-ECC-CDH_K-571_C2): each part one case, at least half
+    of them words. A generated token mixes cases inside its parts; a UUID is not a name."""
+    parts = re.split(r"[_:-]", val)
+    if len(parts) < 2 or _UUID.fullmatch(val) or not all(p and len(p) <= 16 and _ID_PART.fullmatch(p) for p in parts):
+        return False
+    return 2 * sum(p.isalpha() and len(p) >= 2 for p in parts) >= len(parts)
+
+
+def _value_looks_secret(val: str, segs: list[str], literal: bool = False) -> bool:
+    """`literal`: the value is quoted or is the rest of an env / YAML line, so it is data, not a variable."""
     val = val.rstrip(".")
-    if len(val) < 8 or _is_placeholder_value(val) or _IDENT_CHAIN.fullmatch(val):
+    passwordish = _passwordish(segs)
+    if len(val) < (4 if passwordish and literal else 8) or _is_placeholder_value(val) or _IDENT_CHAIN.fullmatch(val):
+        return False
+    if _HEX_CONSTANT.fullmatch(val):
         return False
     if val.startswith(("/", "./", "../", "~/", "file:", "http://", "https://")) and "@" not in val and val.count("/") >= 2:
         return False
     if _CODE_VALUE.search(val):
         return False
-    return _secretish(val, wordy_ok=bool(set(segs) & _PASSWORDISH))
+    if not passwordish and _identifier_like(val):
+        return False
+    if passwordish and literal:
+        # under a password name a literal is the password, plain words included; UI text and test values are not
+        return val.isascii() and not _self_described_dummy(val) and not set(segs) & _UI_TEXT_NAMES
+    return _secretish(val, wordy_ok=passwordish)
 
 
 def _assignments(text: str):
-    """(name, value, value start) for every assignment shape."""
+    """(name, value, value start, literal) for every assignment shape; a line value ending in `,` or `;` is code."""
     for m in _ASSIGN.finditer(text):
-        yield m.group("name"), m.group("val"), m.start("val")
+        yield m.group("name"), m.group("val"), m.start("val"), False
     for m in _ASSIGN_QUOTED.finditer(text):
         g = "dq" if m.group("dq") is not None else "sq"
-        yield m.group("name"), m.group(g), m.start(g)
+        yield m.group("name"), m.group(g), m.start(g), True
     for m in _ASSIGN_LINE.finditer(text):
-        yield m.group("env") or m.group("yaml"), m.group("line"), m.start("line")
+        v = m.group("line")
+        if m.group("ini") is not None:
+            if v.endswith((",", ";")) or re.search(r"[_.(\[]|[a-z][A-Z]", v):
+                continue                   # `password = request.form[...]`: code, which _ASSIGN already sees
+            yield m.group("ini"), v, m.start("line"), True
+        else:
+            yield m.group("env") or m.group("yaml"), v, m.start("line"), not v.endswith((",", ";"))
 
 
 def _name_driven(text: str) -> list[Finding]:
     out = []
-    for name, val, start in _assignments(text):
+    for name, val, start, literal in _assignments(text):
         segs = _segments(name)
-        if not segs or not set(segs) & _SENSITIVE or segs[-1] in _NOT_A_SECRET_TAIL:
+        if not segs or not set(segs) & _SENSITIVE or segs[-1] in _NOT_A_SECRET_TAIL or "public" in segs:
             continue
-        if _value_looks_secret(val, segs):
+        if _value_looks_secret(val, segs, literal):
             out.append(Finding("SECRET", start, start + len(val) - (1 if val.endswith(".") else 0), 0.75))
     return out
 
@@ -177,6 +228,7 @@ def _name_driven(text: str) -> list[Finding]:
 _BIG_TOKEN = re.compile(r"(?<![A-Za-z0-9+/_=-])[A-Za-z0-9+/_-]{40,}={0,2}(?![A-Za-z0-9+/_=-])")
 _NOT_A_TOKEN_PREFIX = re.compile(r"^(?:sha\d{1,3}|md5)-")
 _AFTER_B64 = re.compile(r"(?:base64,|integrity[\"']?\s*[:=]\s*[\"']?|sha\d{0,3}-)$", re.I)
+_PUBLIC_NAME = re.compile(r"public[_-]?key[\w-]*[\"']?\s*[:=]\s*[\"']?$", re.I)
 
 
 def _entropy_tokens(text: str) -> list[Finding]:
@@ -187,6 +239,8 @@ def _entropy_tokens(text: str) -> list[Finding]:
         tok = m.group().rstrip("=")
         if _NOT_A_TOKEN_PREFIX.match(tok) or _AFTER_B64.search(text[max(0, m.start() - 24):m.start()]):
             continue
+        if _PUBLIC_NAME.search(text[max(0, m.start() - 40):m.start()]):
+            continue                       # a public key is meant to be shared
         if not (any(c.islower() for c in tok) and any(c.isupper() for c in tok) and any(c.isdigit() for c in tok)):
             continue
         if (tok.count("/") >= 3 and tok.count("/") * 20 > len(tok)) or _wordish_fraction(tok) >= 0.6:   # a path, words
@@ -211,6 +265,14 @@ def _aws_pair(text: str) -> list[Finding]:
     return out
 
 
+def _name_before(text: str, i: int) -> str:
+    """The identifier characters right before position i (the prefix of `PublicKeyToken` when a pattern matched `Token`)."""
+    j = i
+    while j > max(0, i - 64) and (text[j - 1].isalnum() or text[j - 1] in "_-."):
+        j -= 1
+    return text[j:i]
+
+
 def _secrets(text: str) -> list[Finding]:
     out = []
     for name, rx, score, value_only in _COMPILED_SECRETS:
@@ -223,10 +285,17 @@ def _secrets(text: str) -> list[Finding]:
                 continue
             if name == "azure_storage_key" and _AFTER_B64.search(text[max(0, m.start() - 24):m.start()]):
                 continue
+            v = m.group(g)
             if name in {"credential_assignment", "secret_phrase", "secret_phrase_zh"}:
-                v = m.group(g)
                 if _IDENT_CHAIN.fullmatch(v) or v.lower() in _CODE_WORDS or not _secretish(v):
                     continue
+                if name == "credential_assignment" and ("public" in _segments(_name_before(text, m.start()))
+                                                        or _identifier_like(v)):
+                    continue
+            if name in {"db_url_credentials", "curl_user"} and v.lower() in _DUMMY:
+                continue
+            if name in {"auth_header", "bearer_value"} and _SNAKE_OR_KEBAB.fullmatch(v) and not _UUID.fullmatch(v):
+                continue                   # 'Basic login_and_password_removed': a name, not a credential
             out.append(Finding("SECRET", m.start(g), m.end(g), score))
     if ("=" in text or ":" in text) and len(text) > 12:
         out += _name_driven(text)
