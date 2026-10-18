@@ -245,3 +245,44 @@ def test_manifest_fields(tmp_path):
     assert m["files"] == 2
     assert any(h.file == "data/r1/src/a.py" and h.kind == "SECRET" for h in hits.read_hits(out / "hermie.jsonl"))
     assert (out / "hermie_done.txt").read_text().split() == ["data/r1/src/a.py", "data/r1/src/b.txt"]
+
+
+# ---------------------------------------------------------------- other scanners
+
+from evals.creddata import run_tools  # noqa: E402
+
+
+def test_commands_exact(tmp_path):
+    out, b = tmp_path / "out", Path("/bench/bin")
+    assert run_tools.commands("gitleaks", out, b)[0] == [
+        "gitleaks", "dir", "data", "--report-format", "json", "--report-path", f"{out}/gitleaks.raw.json",
+        "--no-banner", "--exit-code", "0"]
+    th = run_tools.commands("trufflehog", out, b)[0]
+    assert "--no-verification" in th and "--deduplication-cache-size=0" in th
+    assert run_tools.commands("detect_secrets", out, b)[0][0] == "/bench/bin/detect-secrets"
+    assert run_tools.commands("credsweeper", out, b)[0][0] == "/bench/bin/credsweeper"
+    for tool in run_tools.TOOLS:
+        scan, version = run_tools.commands(tool, out, b)
+        assert "data" in scan and version
+
+
+def test_run_records_failure(tmp_path, monkeypatch):
+    calls = []
+
+    def fake_run(argv, cwd, stdout_path):
+        calls.append(argv[0])
+        if "version" in argv or "--version" in argv:
+            return 0, "1.0", ""
+        if argv[0] == "gitleaks":
+            return 2, "", "boom"
+        Path(stdout_path).write_text('{"results": {}}' if "detect-secrets" in argv[0] else "")
+        return 0, "", ""
+
+    monkeypatch.setattr(run_tools, "_run", fake_run)
+    out = tmp_path / "out"
+    assert run_tools.main(["--cred-root", str(tmp_path), "--out", str(out), "--bench-bin", "/b",
+                           "--only", "gitleaks", "detect_secrets"]) == 0
+    m = json.loads((out / "tools_manifest.json").read_text())
+    assert m["gitleaks"]["exit_code"] == 2 and m["gitleaks"]["hits"] == 0
+    assert m["detect_secrets"]["exit_code"] == 0
+    assert "/b/detect-secrets" in calls
