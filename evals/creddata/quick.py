@@ -102,6 +102,7 @@ def main(argv: list[str] | None = None) -> int:
              f"dev all:   P {allc.precision:.3f}  R {allc.recall:.3f}  F1 {allc.f1:.3f}  (TP {allc.tp} FN {allc.fn} "
              f"FP {allc.fp} X {allc.x})",
              f"dev scope: P {scope.precision:.3f}  R {scope.recall:.3f}  F1 {scope.f1:.3f}",
+             f"dev unlabelled flagged lines: {len(S.unlabelled(rows, hits))}",
              "", f"{'category':<34} {'T':>6} {'recall':>7} {'FP':>6}"]
     cats = S.per_category(rows, hits, SPLIT, flagged=flagged)
     for cat, c in sorted(cats.items(), key=lambda kv: -(kv[1].tp + kv[1].fn))[:25]:

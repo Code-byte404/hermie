@@ -462,7 +462,7 @@ def _repo_in(split: str, seed: int) -> str:
             return repo
 
 
-def test_quick_scans_dev_only_and_reports_delta(tmp_path, monkeypatch):
+def test_quick_scans_dev_only_and_reports_delta(tmp_path, monkeypatch, capsys):
     cred, out = tmp_path / "cred", tmp_path / "out"
     dev, test = _repo_in("dev", 1), _repo_in("test", 2)
     secret = random_alnum(12) + "7"
@@ -483,3 +483,4 @@ def test_quick_scans_dev_only_and_reports_delta(tmp_path, monkeypatch):
     delta = (out / "quick_delta.md").read_text()
     assert "# lost (dev)\n1 rows." in delta and "# gained (dev)\n0 rows." in delta
     assert len((out / "quick_history.tsv").read_text().splitlines()) == 2
+    assert "unlabelled flagged lines" in capsys.readouterr().out
