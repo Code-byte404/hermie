@@ -48,7 +48,10 @@ SECRET_PATTERNS = [
     ("telegram_bot", r"(?<![A-Za-z0-9])[0-9]{8,10}:[A-Za-z0-9_-]{35}(?![A-Za-z0-9_-])", 0.85),
     ("sentry_dsn", r"https://([0-9a-f]{32})@[A-Za-z0-9.-]*sentry\.io", 0.9),
     ("azure_storage_key", r"(?<![A-Za-z0-9+/=])[A-Za-z0-9+/]{86}==(?![A-Za-z0-9+/=])", 0.85),
-    ("private_key_block", r"-----BEGIN [A-Z ]*PRIVATE KEY-----(?:[\s\S]*?-----END [A-Z ]*PRIVATE KEY-----|[\s\S]*)", 0.95),
+    # a whole block; without an END line, the header and the base64 / armor-header lines right after it (a header named
+    # in prose does not take the rest of the text)
+    ("private_key_block", r"-----BEGIN [A-Z ]*PRIVATE KEY(?: BLOCK)?-----(?:[\s\S]*?-----END [A-Z ]*PRIVATE KEY(?: BLOCK)?-----"
+                          r"|(?:(?:\\n|\r?\n|[ \t])+(?:[A-Za-z0-9+/=]{4,}|[A-Za-z-]+:[^\n\\]*))*)", 0.95),
     ("jwt", r"(?<![A-Za-z0-9])eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}", 0.8),
     # user:password@ in any URL (the user may be empty: redis://:password@host)
     ("db_url_credentials", r"(?i)(?<![a-z0-9+.-])[a-z][a-z0-9+.-]*://[^\s:/@]*:([^\s@/]{4,})@", 0.9),
@@ -150,7 +153,7 @@ _ASSIGN = re.compile(r"""(?P<name>[A-Za-z_][A-Za-z0-9_.\-]{0,63})["']?[ \t]*(?::
 # _ASSIGN stops at the first bracket or semicolon; password managers use those. These two take the whole value: inside
 # quotes, or the rest of the line in an env file (`DB_PASSWORD=k7#Lq;9vX)2m`) or a YAML mapping.
 _ASSIGN_QUOTED = re.compile(r"""(?P<name>[A-Za-z_][A-Za-z0-9_.\-]{0,63})["']?[ \t]*(?::=|=>|=|:)[ \t]*"""
-                            r"""(?:(?:Some|String|SecretStr|SecretString|Secret|str|bytes|\[\]byte)\()?"""
+                            r"""(?:(?:\[\]byte|str|(?:[A-Za-z_][\w.]*?)?(?:Some|String|Str|Secret|Value|Password|bytes))\()?"""
                             r"""(?:"(?P<dq>[^"\s]{4,128})"|'(?P<sq>[^'\s]{4,128})')""")
 _ASSIGN_LINE = re.compile(r"""(?m)^[ \t]*(?:export[ \t]+)?(?:(?P<env>[A-Z][A-Z0-9_]{0,63})=|(?P<yaml>[A-Za-z_][A-Za-z0-9_.\-]{0,63}):[ \t]+"""
                           r"""|(?P<ini>[A-Za-z_][A-Za-z0-9_.\-]{0,63})[ \t]+=[ \t]+)"""
@@ -243,6 +246,8 @@ def _assignments(text: str):
         yield m.group("name"), m.group(g), m.start(g), True
     for m in _ASSIGN_LINE.finditer(text):
         v = m.group("line")
+        if not m.group("ini") and v.endswith((",", ";")):
+            v = v.rstrip(",;")             # `password: password,` in code: judged without the comma, as code
         if m.group("ini") is not None:
             if v.endswith((",", ";")) or re.search(r"[_.(\[]|[a-z][A-Z]", v):
                 continue                   # `password = request.form[...]`: code, which _ASSIGN already sees
@@ -268,11 +273,37 @@ _AFTER_B64 = re.compile(r"(?:base64,|integrity[\"']?\s*[:=]\s*[\"']?|sha\d{0,3}-
 _PUBLIC_NAME = re.compile(r"public[_-]?key[\w-]*[\"']?\s*[:=]\s*[\"']?$", re.I)
 
 
+# One line of a multi-line base64 body, bare or inside a string literal ("...\n" +), as certificates, public keys,
+# mail attachments and embedded files are written.
+_B64_BODY_LINE = re.compile(r"""(?m)^[ \t]*["'+]*[ \t]*[A-Za-z0-9+/]{40,}={0,2}(?:\\n)?["']?[ \t]*[+,]?[ \t]*\r?$""")
+# The first bytes of a DER private key: RSA (PKCS#1), PKCS#8, EC.
+_DER_PRIVATE = re.compile(r"[ \t\"'+]*M[A-Za-z0-9+/]{2,5}(?:IBAAK|IBADAN|AgEAM|CAQEE)")
+
+
+def _encoded_blocks(text: str) -> list[tuple[int, int]]:
+    """Spans of 4+ consecutive base64 body lines. Such a block is an encoded file: its lines are random by nature, so
+    entropy says nothing; a private key inside one is caught by its armor or by its DER start, kept here."""
+    spans, run = [], []
+    for m in _B64_BODY_LINE.finditer(text):
+        if run and text.count("\n", run[-1][1], m.start()) > 1:
+            run = []
+        run.append((m.start(), m.end()))
+        if len(run) == 4 and not _DER_PRIVATE.match(text, run[0][0]):
+            spans.append([run[0][0], m.end()])
+        elif len(run) > 4 and spans and spans[-1][0] == run[0][0]:
+            spans[-1][1] = m.end()
+    return [(a, b) for a, b in spans]
+
+
 def _entropy_tokens(text: str) -> list[Finding]:
     """A long mixed-case, digit-bearing, high-entropy token that nothing else explained (an AWS secret key, an Azure
-    key, a random session secret). Hashes, integrity strings and inline images are excluded."""
+    key, a random session secret). Hashes, integrity strings, inline images and multi-line encoded blocks are
+    excluded."""
     out = []
+    blocks = _encoded_blocks(text) if text.count("\n") >= 3 else []
     for m in _BIG_TOKEN.finditer(text):
+        if blocks and any(a <= m.start() < b for a, b in blocks):
+            continue
         tok = m.group().rstrip("=")
         if _NOT_A_TOKEN_PREFIX.match(tok) or _AFTER_B64.search(text[max(0, m.start() - 24):m.start()]):
             continue

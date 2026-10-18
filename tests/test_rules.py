@@ -361,7 +361,8 @@ def test_self_described_test_passwords_and_ui_text_are_left_alone(text):
 
 
 @pytest.mark.parametrize("text", ['DB_PASSWORD: "kxdumskx"', "password = 'qn-wcpd'", "POSTGRES_PASSWORD: ombzfz",
-                                  'password = Some("owlknh"),', "Password = tkeftvoh"])
+                                  'password = Some("owlknh"),', "Password = tkeftvoh",
+                                  'Password: types.StringValue("qdspcg"),', 'Password: SecretStr("hcctgcx"),'])
 def test_a_plain_word_password_under_a_password_name_is_hidden(text):
     assert rules.find(text), text
 
@@ -437,3 +438,51 @@ def test_neighbours_of_the_missed_shapes_are_left_alone(text):
 ])
 def test_example_values_in_the_new_shapes_are_left_alone(text):
     assert rules.find(text) == [], [(text[f.start:f.end], f.entity) for f in rules.find(text)]
+
+
+# --- base64 blocks and private key headers in prose (2026-10-18) -------------------------------------
+
+def _b64_lines(n_lines, first=""):
+    body = first + base64.b64encode(rnd.randbytes(48 * n_lines)).decode()
+    return [body[i:i + 64] for i in range(0, 64 * n_lines, 64)]
+
+
+@pytest.mark.parametrize("wrap", ["plain", "java_string", "indented"])
+def test_a_multi_line_base64_block_is_encoded_data_not_a_secret(wrap):
+    lines = _b64_lines(8)
+    fmt = {"plain": "{}", "java_string": '"{}\\n" +', "indented": "    {}"}[wrap]
+    text = "-----BEGIN CERTIFICATE-----\n" + "\n".join(fmt.format(x) for x in lines) + "\n-----END CERTIFICATE-----\n"
+    assert rules.find(text) == [], [text[f.start:f.end][:40] for f in rules.find(text)]
+
+
+def test_a_base64_private_key_body_without_armor_is_still_found():
+    lines = _b64_lines(8, first="MIIEowIBAAKCAQEA")
+    text = "private:\n" + "\n".join(lines) + "\n"
+    assert rules.find(text)
+
+
+def test_a_single_high_entropy_token_is_still_found():
+    v = r(48)
+    assert _found(f"x {v} y", v)
+
+
+def test_a_pgp_private_key_block_is_found_whole():
+    body = "\n".join(_b64_lines(6))
+    text = f"-----BEGIN PGP PRIVATE KEY BLOCK-----\n\n{body}\n-----END PGP PRIVATE KEY BLOCK-----\n"
+    assert _found(text, body)
+
+
+def test_a_private_key_header_named_in_prose_does_not_swallow_the_file():
+    text = ('* PKCS#1 PEM (starts with "-----BEGIN RSA PRIVATE KEY-----")\n'
+            "* PKCS#8 PEM\n\nSystem.out.println(new GsonBuilder().create());\n" + "Some more prose here.\n" * 50)
+    assert all(f.end - f.start < 80 for f in rules.find(text)), [f.end - f.start for f in rules.find(text)]
+
+
+def test_an_unterminated_private_key_keeps_its_body():
+    body = "\n".join(_b64_lines(5))
+    text = f"-----BEGIN RSA PRIVATE KEY-----\n{body}\n"
+    assert _found(text, body)
+
+
+def test_a_password_variable_passed_on_is_left_alone():
+    assert rules.find("    password: password,\n    user: user,") == []

@@ -271,7 +271,8 @@ class Gate:
             if end >= n:
                 break
             nxt = end - CHUNK_OVERLAP if fixed else end
-            touching = [pos + f.start for f in chunk if pos + f.end >= end]
+            # a finding followed only by whitespace up to the cut may continue in the next chunk
+            touching = [pos + f.start for f in chunk if pos + f.end >= end or not text[pos + f.end:end].strip()]
             if touching:
                 nxt = min(nxt, min(touching))
             pos = nxt if nxt > pos else end
