@@ -509,3 +509,41 @@ def test_every_value_of_the_demo_env_file_is_found():
             value = line.split("=", 1)[1]
             core = value.split("://")[1].split("@")[0].split(":")[1] if "://" in value else value
             assert _found(line, core), line
+
+
+MISSED_2 = [
+    "  - TEST_RABBITMQ_URL=amqp://guest:" + "ivive" + "@rabbitmq:5672/",
+    "EMAIL_SERVER=smtps://user@gmail.com:" + r(8, string.ascii_lowercase) + "@smtp.gmail.com:465",
+    "heroku config:set SMTP_PASSWORD=" + r(12, string.ascii_lowercase),
+    "INWX_PASSWORD=" + r(10, string.ascii_lowercase) + " \\",
+    "  - GW_SERVER_JWT_SECRET=" + r(10, string.ascii_lowercase),
+    "password=" + r(6, string.ascii_uppercase),
+    "#     http://rt.example.org/Ticket/Display.html?id=2582&user=guest&pass=" + r(5, string.ascii_lowercase),
+    'setPassword("' + r(5, string.ascii_lowercase) + '");',
+    'details.setClientSecret("' + r(32, HEX) + '");',
+    "key = unhexlify('" + r(64, HEX) + "')",
+    'var keyData = hexStringToUint8Array("' + r(32, HEX) + '");',
+    "Ctrl.hexsalt = hexsalt:" + r(8, HEX),
+    "-out server.p12 -name cert -password pass:" + r(8, string.ascii_lowercase),
+    'Salt = "' + r(36, string.ascii_letters) + '"',
+]
+
+
+@pytest.mark.parametrize("text", MISSED_2, ids=[f"miss2_{i}" for i in range(len(MISSED_2))])
+def test_more_creddata_missed_shapes_are_found(text):
+    assert rules.find(text), text
+
+
+@pytest.mark.parametrize("text", ["x=foo bar", "PATH=/usr/bin:$PATH", "DEBUG=true", "salt: true", "pass: true",
+                                  "setPassword(password);", "MODE=production"])
+def test_neighbours_of_those_shapes_are_left_alone(text):
+    assert rules.find(text) == [], [(text[f.start:f.end], f.entity) for f in rules.find(text)]
+
+
+@pytest.mark.parametrize("text", [
+    "$result = $this->jwtAuth->setToken('foo.bar.baz')->refresh();", 'Credential credential = new Credential("/captain");',
+    "JOKER_PASSWORD=<your password> \\", "self.__pwd = 'C:\\\\'", "details.HashedPassword = hash",
+    "-newkeypass,pass:,,,BLANK,,BLANK,,BLANK", "-kdfopt pass:passwordPASSWORDpassword -kdfopt salt:saltSALT",
+])
+def test_neighbours_of_setters_and_env_values_are_left_alone(text):
+    assert rules.find(text) == [], [(text[f.start:f.end], f.entity) for f in rules.find(text)]

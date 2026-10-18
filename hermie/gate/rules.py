@@ -54,7 +54,7 @@ SECRET_PATTERNS = [
                           r"|(?:(?:\\n|\r?\n|[ \t])+(?:[A-Za-z0-9+/=]{4,}|[A-Za-z-]+:[^\n\\]*))*)", 0.95),
     ("jwt", r"(?<![A-Za-z0-9])eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}", 0.8),
     # user:password@ in any URL (the user may be empty: redis://:password@host)
-    ("db_url_credentials", r"(?i)(?<![a-z0-9+.-])[a-z][a-z0-9+.-]*://[^\s:/@]*:([^\s@/]{4,})@", 0.9),
+    ("db_url_credentials", r"(?i)(?<![a-z0-9+.-])[a-z][a-z0-9+.-]*://[^\s:/@]*(?:@[^\s:/@]+)?:([^\s@/]{4,})@", 0.9),
     # Authorization-style headers and the schemes themselves
     ("auth_header", r"(?i)(?:authorization|proxy-authorization|x-api-key|api-key|x-auth-token|x-access-token|x-token)[\"']?\s*[:=]\s*[\"']?"
                     r"(?:(?:bearer|basic|token|apikey)\s+)?([A-Za-z0-9._~+/=-]{12,})", 0.85),
@@ -66,13 +66,16 @@ SECRET_PATTERNS = [
     ("sql_password", r"(?i)\b(?:IDENTIFIED\s+BY|PASSWORD)\s+['\"]([^'\"\s]{4,64})['\"]", 0.8),
     ("sql_password_bare", r"(?i)\bCREATE\s+(?:USER|ROLE)\b[^;\n]{0,80}?\bPASSWORD\s+(?!['\"])([A-Za-z0-9_!@#%^&*.-]{4,64})", 0.75),
     # command lines: --password x, -Password x, mysql -px, ConvertTo-SecureString 'x', openssl hexkey:...
-    ("cli_password", r"(?i)(?<![\w-])--?(?:password|passwd|pass)(?:\s+|=)['\"]?(?![-(\[])([^\s'\"$<>{}]{3,128})", 0.75),
+    ("cli_password", r"(?i)(?<![\w-])--?(?:password|passwd|pass)(?:\s+|=)['\"]?(?:pass:)?(?![-(\[])([^\s'\"$<>{}]{3,128})", 0.75),
     ("mysql_password", r"\bmysql(?:dump|admin)?\b[^\n]{0,80}?(?<!\S)-p([^\s'\"-][^\s'\"]{2,63})", 0.8),
     ("secure_string", r"(?i)ConvertTo-SecureString\s+(?:-String\s+)?['\"]([^'\"]{4,128})['\"]", 0.85),
-    ("openssl_hex_key", r"(?i)\bhex(?:key|secret|pass|seed|ikm)\s*:\s*([0-9A-Fa-f]{8,})", 0.8),
+    ("openssl_hex_key", r"(?i)\bhex(?:key|secret|pass|seed|ikm|salt)\s*:\s*([0-9A-Fa-f]{8,})", 0.8),
     ("curl_user", r"(?<![A-Za-z0-9])(?:-u|--user)\s+[^\s:]+:([^\s\"']{4,})", 0.8),
-    ("url_query_secret", r"(?i)[?&](?:api[_-]?key|apikey|access[_-]?token|auth[_-]?token|token|secret|client[_-]?secret|sig|signature|password|pwd|key)="
+    ("url_query_secret", r"(?i)[?&](?:api[_-]?key|apikey|access[_-]?token|auth[_-]?token|token|secret|client[_-]?secret|sig|signature|key)="
                          r"([A-Za-z0-9._~+/%=-]{8,})", 0.8),
+    ("url_query_password", r"(?i)[?&](?:password|passwd|pwd|pass)=([A-Za-z0-9._~+/%=!*-]{4,})", 0.8),
+    # setters and constructors given a literal: setPassword("..."), setClientSecret("..."), new Credential("...")
+    ("setter_literal", r"(?:\bset|\bnew\s+)(?:[A-Z]\w*)?(?:Password|Passwd|Secret|Token|ApiKey|Credential)\(\s*[\"']([^\"'\s]{4,128})[\"']\s*\)", 0.8),
     # "the password is hunter2xyz", "my api key = ...", and the Chinese words for password / secret key / token
     ("secret_phrase", r"(?i)\b(?:api[ _-]?key|secret(?: key)?|access token|token|password|passcode|passphrase|credentials?)\s+(?:is|was|=|:)\s+[\"']?"
                       r"([^\s\"',;()\[\]{}<>]{8,})", 0.7),
@@ -87,13 +90,15 @@ SECRET_PATTERNS = [
 ]
 VALUE_ONLY = {"db_url_credentials", "credential_assignment", "slack_webhook", "discord_webhook", "sentry_dsn", "auth_header",
               "bearer_value", "curl_user", "url_query_secret", "secret_phrase", "secret_phrase_zh", "oauth_param", "curl_option",
-              "sql_password", "sql_password_bare", "cli_password", "mysql_password", "secure_string", "openssl_hex_key"}
+              "sql_password", "sql_password_bare", "cli_password", "mysql_password", "secure_string", "openssl_hex_key",
+              "url_query_password", "setter_literal"}
 _TYPED_VALUES = {"credential_assignment", "secret_phrase", "auth_header", "bearer_value", "url_query_secret", "curl_user",
                  "secret_phrase_zh", "db_url_credentials", "oauth_param", "curl_option", "sql_password", "sql_password_bare",
-                 "cli_password", "mysql_password", "secure_string"}   # a placeholder or example word there is not a secret
+                 "cli_password", "mysql_password", "secure_string", "url_query_password",
+                 "setter_literal"}   # a placeholder or example word there is not a secret
 _DUMMY_CHECKED = {"db_url_credentials", "curl_user", "curl_option", "sql_password", "sql_password_bare", "cli_password",
                   "mysql_password", "secure_string", "oauth_param", "url_query_secret", "credential_assignment",
-                  "secret_phrase"}
+                  "secret_phrase", "url_query_password", "setter_literal"}
 
 _COMPILED_SECRETS = [(n, re.compile(rx), s, n in VALUE_ONLY) for n, rx, s in SECRET_PATTERNS]
 
@@ -112,7 +117,7 @@ _UI_TEXT_NAMES = {"label", "forgot", "title", "placeholder", "hint", "tooltip", 
 def _low_variety(val: str) -> bool:
     """00000000, xxxxxx, 0123456789, abcdefgh: too regular to be generated."""
     low = val.lower()
-    return len(set(low)) <= 3 or (len(low) >= 6 and (low in "0123456789abcdefghijklmnopqrstuvwxyz" or
+    return len(set(low)) <= (3 if len(low) >= 8 else 2) or (len(low) >= 6 and (low in "0123456789abcdefghijklmnopqrstuvwxyz" or
                                                      low in "9876543210"))
 
 
@@ -135,8 +140,8 @@ def _entropy(s: str) -> float:
 
 
 def _is_placeholder_value(v: str) -> bool:
-    return (bool(_PLACEHOLDER.search(v)) or v.startswith(("$", "%", "{{", "@", "{")) or v.lower() in _CODE_WORDS
-            or (v.startswith("<") and v.endswith(">")))
+    return (bool(_PLACEHOLDER.search(v)) or v.startswith(("$", "%", "{{", "@", "{", "<")) or v.lower() in _CODE_WORDS
+            or bool(re.match(r"[A-Za-z]:\\", v)))
 
 
 # Variable names: any name with one of these as a segment (ALL_CAPS, snake_case, kebab-case, camelCase) holds a secret.
@@ -149,19 +154,24 @@ _NOT_A_SECRET_TAIL = {"path", "file", "dir", "directory", "name", "length", "siz
                       "format", "algorithm", "alg", "mode", "version", "label", "title", "description", "env", "var", "variable",
                       "error", "errors", "status", "checksum", "hash", "pattern", "regex", "msg", "message", "hint", "tooltip",
                       "method", "provider", "scheme", "strategy", "backend", "mechanism", "parameter", "param", "params"}
+# A name with one of these segments holds something else: a public key, a password hash
+_NOT_A_SECRET_ANY = {"public", "hash", "hashed", "digest", "encrypted"}
 # Names that say the value is a secret (not just `key`, which also names dict keys, primary keys, sort keys).
 _STRONG = {"secret", "secrets", "token", "tokens", "credential", "credentials", "creds", "auth", "apikey", "secretkey",
-           "accesskey", "authtoken", "privatekey", "passphrase"}
+           "accesskey", "authtoken", "privatekey", "passphrase", "salt"}
 _SEGMENT = re.compile(r"[A-Z]+(?![a-z])|[A-Z]?[a-z]+|\d+")
 _ASSIGN = re.compile(r"""(?P<name>[A-Za-z_][A-Za-z0-9_.\-]{0,63})["']?[ \t]*(?::=|=>|=|:)[ \t]*["']?(?P<val>[^\s"'`,;<>(){}\[\]\\]{8,})""")
 # _ASSIGN stops at the first bracket or semicolon; password managers use those. These two take the whole value: inside
 # quotes, or the rest of the line in an env file (`DB_PASSWORD=k7#Lq;9vX)2m`) or a YAML mapping.
 _ASSIGN_QUOTED = re.compile(r"""(?P<name>[A-Za-z_][A-Za-z0-9_.\-]{0,63})["']?[ \t]*(?::=|=>|=|:)[ \t]*"""
-                            r"""(?:(?:\[\]byte|str|(?:[A-Za-z_][\w.]*?)?(?:Some|String|Str|Secret|Value|Password|bytes))\()?"""
+                            r"""(?:(?:\[\]byte|str|(?:[A-Za-z_][\w.]*?)?(?:Some|String|Str|Secret|Value|Password|bytes|unhexlify|fromhex|Uint8Array|"""
+                            r"""HexToBytes|hexToBytes|b64decode|Base64Decode|base64Decode|FromBase64String|decode|parse))\()?"""
                             r"""(?:"(?P<dq>[^"\s]{4,128})"|'(?P<sq>[^'\s]{4,128})')""")
 _ASSIGN_LINE = re.compile(r"""(?m)^[ \t]*(?:export[ \t]+)?(?:(?P<env>[A-Z][A-Z0-9_]{0,63})=|(?P<yaml>[A-Za-z_][A-Za-z0-9_.\-]{0,63}):[ \t]+"""
-                          r"""|(?P<ini>[A-Za-z_][A-Za-z0-9_.\-]{0,63})[ \t]+=[ \t]+)"""
+                          r"""|(?P<ini>[A-Za-z_][A-Za-z0-9_.\-]{0,63})[ \t]*=[ \t]*)"""
                           r"""(?P<line>[^\s"'][^\s]{3,127})[ \t]*$""")
+# NAME=value inside a command or a YAML list item (`heroku config:set SMTP_PASSWORD=...`, `- JWT_SECRET=...`, `... \`)
+_ENV_INLINE = re.compile(r"""(?<![\w.$-])(?P<name>[A-Z][A-Z0-9]*_[A-Z0-9_]{1,62})=(?P<val>[^\s"'`\\$]{3,128})(?=[ \t]|$)""", re.M)
 # A call, an expansion, a template or a list is code, not a value.
 _CODE_VALUE = re.compile(r"^[A-Za-z_][\w.]*\(.*\)$|\$\{|\$\(|\{\{|^\[")
 
@@ -262,13 +272,15 @@ def _assignments(text: str):
             yield m.group("ini"), v, m.start("line"), True
         else:
             yield m.group("env") or m.group("yaml"), v, m.start("line"), not code
+    for m in _ENV_INLINE.finditer(text):
+        yield m.group("name"), m.group("val"), m.start("val"), True
 
 
 def _name_driven(text: str) -> list[Finding]:
     out = []
     for name, val, start, literal in _assignments(text):
         segs = _segments(name)
-        if not segs or not set(segs) & _SENSITIVE or segs[-1] in _NOT_A_SECRET_TAIL or "public" in segs:
+        if not segs or not set(segs) & _SENSITIVE or segs[-1] in _NOT_A_SECRET_TAIL or set(segs) & _NOT_A_SECRET_ANY:
             continue
         if _value_looks_secret(val, segs, literal):
             out.append(Finding("SECRET", start, start + len(val) - (1 if val.endswith(".") else 0), 0.75))
@@ -346,6 +358,9 @@ def _aws_pair(text: str) -> list[Finding]:
     return out
 
 
+_PASSWORD_WORD = re.compile(r"(?i)pass|\u5bc6\u7801|\u53e3\u4ee4")
+
+
 def _name_before(text: str, i: int) -> str:
     """The identifier characters right before position i (the prefix of `PublicKeyToken` when a pattern matched `Token`)."""
     j = i
@@ -367,11 +382,15 @@ def _secrets(text: str) -> list[Finding]:
                 continue
             v = m.group(g)
             if name in {"credential_assignment", "secret_phrase", "secret_phrase_zh"}:
-                if _IDENT_CHAIN.fullmatch(v) or v.lower() in _CODE_WORDS or not _secretish(v):
+                # after a password word, people pick words plus digits (Password123, SummerTime2024)
+                wordy = bool(_PASSWORD_WORD.search(text, m.start(), m.start(g)))
+                if _IDENT_CHAIN.fullmatch(v) or v.lower() in _CODE_WORDS or not _secretish(v, wordy_ok=wordy):
                     continue
                 if name == "credential_assignment" and ("public" in _segments(_name_before(text, m.start()))
                                                         or _identifier_like(v)):
                     continue
+            if name == "setter_literal" and (_IDENT_CHAIN.fullmatch(v) or v.startswith("/")):
+                continue                   # setToken('foo.bar.baz'), new Credential("/captain")
             if name in _DUMMY_CHECKED:
                 pw = v.rsplit(":", 1)[-1] if name == "curl_option" else v
                 if v.lower() in _DUMMY or _self_described_dummy(pw) or _low_variety(pw) or len(pw) < 3:
