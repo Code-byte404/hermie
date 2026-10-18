@@ -19,7 +19,9 @@ from .types import Finding
 SECRET_PATTERNS = [
     ("openai_style_key", r"(?<![A-Za-z0-9])sk-(?:[A-Za-z0-9]+-)?[A-Za-z0-9_-]{16,}", 0.85),
     ("anthropic_key", r"(?<![A-Za-z0-9])sk-ant-[A-Za-z0-9_-]{20,}", 0.9),
-    ("aws_access_key", r"(?<![A-Za-z0-9])(?:AKIA|ASIA)[0-9A-Z]{16}(?![A-Za-z0-9])", 0.85),
+    # access key ids and the other IAM unique-id prefixes (user, role, SSH key, group, ...)
+    ("aws_access_key", r"(?<![A-Za-z0-9])(?:AKIA|ASIA|AIDA|AROA|AIPA|ANPA|ANVA|APKA|AGPA)[0-9A-Z]{16,17}(?![A-Za-z0-9])", 0.85),
+    ("nkey_seed", r"(?<![A-Z2-7])S[UANOCPX][A-Z2-7]{56}(?![A-Z2-7])", 0.9),
     ("github_token", r"(?<![A-Za-z0-9])gh[pousr]_[A-Za-z0-9]{30,}", 0.85),
     ("github_fine_grained", r"(?<![A-Za-z0-9])github_pat_[A-Za-z0-9_]{22,}", 0.9),
     ("gitlab_token", r"(?<![A-Za-z0-9])gl(?:pat|dt|rt|ptt|cbt|oas|soat)-[A-Za-z0-9_-]{20,}", 0.9),
@@ -53,7 +55,18 @@ SECRET_PATTERNS = [
     # Authorization-style headers and the schemes themselves
     ("auth_header", r"(?i)(?:authorization|proxy-authorization|x-api-key|api-key|x-auth-token|x-access-token|x-token)[\"']?\s*[:=]\s*[\"']?"
                     r"(?:(?:bearer|basic|token|apikey)\s+)?([A-Za-z0-9._~+/=-]{12,})", 0.85),
-    ("bearer_value", r"(?i)\b(?:bearer|basic)\s+([A-Za-z0-9._~+/=-]{16,})", 0.8),
+    ("bearer_value", r"(?i)\b(?:bearer|basic|ntlm|negotiate)\s+([A-Za-z0-9._~+/=-]{16,})", 0.8),
+    ("oauth_param", r"(?i)\boauth_(?:consumer_key|token(?:_secret)?|signature|verifier)(?![a-z_])[\\\"']*\s*[:=]\s*[\\\"']*"
+                    r"([A-Za-z0-9%._~+/=-]{6,})", 0.8),
+    ("curl_option", r"CURLOPT_(?:PROXY)?(?:PASSWORD|USERPWD|KEYPASSWD|XOAUTH2_BEARER|TLSAUTH_PASSWORD)\s*,\s*\"([^\"]{3,})\"", 0.85),
+    # SQL: IDENTIFIED BY '...', PASSWORD '...', and CREATE USER / ROLE ... PASSWORD bare_value
+    ("sql_password", r"(?i)\b(?:IDENTIFIED\s+BY|PASSWORD)\s+['\"]([^'\"\s]{4,64})['\"]", 0.8),
+    ("sql_password_bare", r"(?i)\bCREATE\s+(?:USER|ROLE)\b[^;\n]{0,80}?\bPASSWORD\s+(?!['\"])([A-Za-z0-9_!@#%^&*.-]{4,64})", 0.75),
+    # command lines: --password x, -Password x, mysql -px, ConvertTo-SecureString 'x', openssl hexkey:...
+    ("cli_password", r"(?i)(?<![\w-])--?(?:password|passwd|pass)(?:\s+|=)['\"]?(?![-(\[])([^\s'\"$<>{}]{3,128})", 0.75),
+    ("mysql_password", r"\bmysql(?:dump|admin)?\b[^\n]{0,80}?(?<!\S)-p([^\s'\"-][^\s'\"]{2,63})", 0.8),
+    ("secure_string", r"(?i)ConvertTo-SecureString\s+(?:-String\s+)?['\"]([^'\"]{4,128})['\"]", 0.85),
+    ("openssl_hex_key", r"(?i)\bhex(?:key|secret|pass|seed|ikm)\s*:\s*([0-9A-Fa-f]{8,})", 0.8),
     ("curl_user", r"(?<![A-Za-z0-9])(?:-u|--user)\s+[^\s:]+:([^\s\"']{4,})", 0.8),
     ("url_query_secret", r"(?i)[?&](?:api[_-]?key|apikey|access[_-]?token|auth[_-]?token|token|secret|client[_-]?secret|sig|signature|password|pwd|key)="
                          r"([A-Za-z0-9._~+/%=-]{8,})", 0.8),
@@ -70,7 +83,13 @@ SECRET_PATTERNS = [
      r"([A-Za-z0-9_\-/+=.@#$%!&*^~?]{8,})", 0.7),
 ]
 VALUE_ONLY = {"db_url_credentials", "credential_assignment", "slack_webhook", "discord_webhook", "sentry_dsn", "auth_header",
-              "bearer_value", "curl_user", "url_query_secret", "secret_phrase", "secret_phrase_zh"}
+              "bearer_value", "curl_user", "url_query_secret", "secret_phrase", "secret_phrase_zh", "oauth_param", "curl_option",
+              "sql_password", "sql_password_bare", "cli_password", "mysql_password", "secure_string", "openssl_hex_key"}
+_TYPED_VALUES = {"credential_assignment", "secret_phrase", "auth_header", "bearer_value", "url_query_secret", "curl_user",
+                 "secret_phrase_zh", "db_url_credentials", "oauth_param", "curl_option", "sql_password", "sql_password_bare",
+                 "cli_password", "mysql_password", "secure_string"}   # a placeholder or example word there is not a secret
+_DUMMY_CHECKED = {"db_url_credentials", "curl_user", "curl_option", "sql_password", "sql_password_bare", "cli_password",
+                  "mysql_password", "secure_string", "oauth_param"}
 
 _COMPILED_SECRETS = [(n, re.compile(rx), s, n in VALUE_ONLY) for n, rx, s in SECRET_PATTERNS]
 
@@ -83,16 +102,20 @@ _CODE_WORDS = {"optional", "none", "null", "true", "false", "string", "str", "in
 # What people write in an example URL or curl command instead of a password (`user:pass@host`, `admin:admin`).
 _DUMMY = {"password", "passwd", "pass", "pwd", "secret", "admin", "root", "user", "username", "test", "guest", "demo",
           "changeme", "example", "foobar", "foo", "bar", "123456", "1234567", "12345678", "123456789", "abcdefgh", "qwerty"}
-_DUMMY_MARKS = ("test", "example", "dummy", "fake", "sample", "redacted", "placeholder")
+_DUMMY_MARKS = ("test", "example", "dummy", "sample", "redacted", "placeholder")
 _UI_TEXT_NAMES = {"label", "forgot", "title", "placeholder", "hint", "tooltip", "msg", "message", "text", "strength", "error"}
 
 
 def _self_described_dummy(val: str) -> bool:
-    """A value that says it is not real: `x-pack-test-password`, `tftest`, `rootpass`, `super-secret-password`."""
+    """A value that says it is not real: `x-pack-test-password`, `tftest`, `rootpass`, `SECRET2`, `bar123`, `xxx`."""
     low = val.lower()
-    if low in _DUMMY or any(w in low for w in _DUMMY_MARKS):
+    if low in _DUMMY or low.rstrip("0123456789") in _DUMMY or any(w in low for w in _DUMMY_MARKS):
         return True
-    return bool(re.fullmatch(r"[a-z_.\-]+", val)) and any(w in low for w in ("pass", "secret", "pwd"))
+    if len(set(low)) == 1:
+        return True                        # xxx, ********
+    # rootpass, mypassword, SECRET2, GHTOKEN: the word itself, in one case (hunter2secret mixes digits in: kept)
+    return (len(val) <= 24 and bool(re.fullmatch(r"[a-z_.\-]+|[A-Z0-9_.\-]+", val))
+            and any(w in low for w in ("pass", "secret", "pwd", "token")))
 _HEX_CONSTANT = re.compile(r"0[xX][0-9a-fA-F]{1,16}")
 
 
@@ -117,7 +140,11 @@ _PASSWORDISH = {"password", "passwd", "pwd", "pass", "passphrase"}
 _NOT_A_SECRET_TAIL = {"path", "file", "dir", "directory", "name", "length", "size", "count", "type", "len", "ttl", "timeout", "expiry",
                       "expires", "header", "headers", "url", "uri", "endpoint", "host", "domain", "field", "column", "id_field", "prefix",
                       "format", "algorithm", "alg", "mode", "version", "label", "title", "description", "env", "var", "variable",
-                      "error", "errors", "status", "checksum", "hash", "pattern", "regex", "msg", "message", "hint", "tooltip"}
+                      "error", "errors", "status", "checksum", "hash", "pattern", "regex", "msg", "message", "hint", "tooltip",
+                      "method", "provider", "scheme", "strategy", "backend", "mechanism", "parameter", "param", "params"}
+# Names that say the value is a secret (not just `key`, which also names dict keys, primary keys, sort keys).
+_STRONG = {"secret", "secrets", "token", "tokens", "credential", "credentials", "creds", "auth", "apikey", "secretkey",
+           "accesskey", "authtoken", "privatekey", "passphrase"}
 _SEGMENT = re.compile(r"[A-Z]+(?![a-z])|[A-Z]?[a-z]+|\d+")
 _ASSIGN = re.compile(r"""(?P<name>[A-Za-z_][A-Za-z0-9_.\-]{0,63})["']?[ \t]*(?::=|=>|=|:)[ \t]*["']?(?P<val>[^\s"'`,;<>(){}\[\]\\]{8,})""")
 # _ASSIGN stops at the first bracket or semicolon; password managers use those. These two take the whole value: inside
@@ -165,6 +192,9 @@ def _secretish(val: str, wordy_ok: bool = False) -> bool:
     return len(val) >= 32 and any(c.islower() for c in val) and any(c.isupper() for c in val) and _entropy(val) >= 4.2
 
 
+_SNAKE_WORDS = re.compile(r"[a-z]+(?:[_-][a-z]+)+")
+# ClientSecret, myAuthID, Force: words, each hump at least three letters (a generated value has shorter humps)
+_CAMEL_WORDS = re.compile(r"[a-z]{2,}(?:[A-Z][a-z]{2,})+(?:[A-Z]{2,4})?|[A-Z][a-z]{2,}(?:[A-Z][a-z]{2,})*(?:[A-Z]{2,4})?")
 _ID_PART = re.compile(r"[a-z][a-z0-9]*|[A-Z][A-Z0-9]*|[A-Z][a-z][a-z0-9]*|\d+")
 
 
@@ -181,7 +211,8 @@ def _value_looks_secret(val: str, segs: list[str], literal: bool = False) -> boo
     """`literal`: the value is quoted or is the rest of an env / YAML line, so it is data, not a variable."""
     val = val.rstrip(".")
     passwordish = _passwordish(segs)
-    if len(val) < (4 if passwordish and literal else 8) or _is_placeholder_value(val) or _IDENT_CHAIN.fullmatch(val):
+    strong = literal and not passwordish and bool(set(segs) & _STRONG)
+    if len(val) < (4 if passwordish and literal else 6 if strong else 8) or _is_placeholder_value(val) or _IDENT_CHAIN.fullmatch(val):
         return False
     if _HEX_CONSTANT.fullmatch(val):
         return False
@@ -191,6 +222,12 @@ def _value_looks_secret(val: str, segs: list[str], literal: bool = False) -> boo
         return False
     if not passwordish and _identifier_like(val):
         return False
+    if strong:
+        # a literal under `secret` / `token` / `credential`: digits or symbols from 6 characters, letters only from 8
+        if not val.isascii() or _self_described_dummy(val) or set(segs) & _UI_TEXT_NAMES:
+            return False
+        return (len(val) >= (8 if val.isalpha() else 6) and not _identifier_like(val) and not _SNAKE_WORDS.fullmatch(val)
+                and not _CAMEL_WORDS.fullmatch(val))
     if passwordish and literal:
         # under a password name a literal is the password, plain words included; UI text and test values are not
         return val.isascii() and not _self_described_dummy(val) and not set(segs) & _UI_TEXT_NAMES
@@ -280,8 +317,7 @@ def _secrets(text: str) -> list[Finding]:
             g = 1 if value_only else 0
             if m.start(g) < 0:
                 continue
-            if _is_placeholder_value(m.group(g)) and name in {"credential_assignment", "secret_phrase", "auth_header", "bearer_value",
-                                                              "url_query_secret", "curl_user", "secret_phrase_zh", "db_url_credentials"}:
+            if _is_placeholder_value(m.group(g)) and name in _TYPED_VALUES:
                 continue
             if name == "azure_storage_key" and _AFTER_B64.search(text[max(0, m.start() - 24):m.start()]):
                 continue
@@ -292,8 +328,14 @@ def _secrets(text: str) -> list[Finding]:
                 if name == "credential_assignment" and ("public" in _segments(_name_before(text, m.start()))
                                                         or _identifier_like(v)):
                     continue
-            if name in {"db_url_credentials", "curl_user"} and v.lower() in _DUMMY:
-                continue
+            if name in _DUMMY_CHECKED:
+                pw = v.rsplit(":", 1)[-1] if name == "curl_option" else v
+                if v.lower() in _DUMMY or _self_described_dummy(pw) or len(pw) < 3:
+                    continue
+                if name == "cli_password" and (_CAMEL_WORDS.fullmatch(v) or _identifier_like(v)):
+                    continue               # help text (`--password  Force ...`) or an env var name
+                if name == "oauth_param" and len(v) < 8:
+                    continue
             if name in {"auth_header", "bearer_value"} and _SNAKE_OR_KEBAB.fullmatch(v) and not _UUID.fullmatch(v):
                 continue                   # 'Basic login_and_password_removed': a name, not a credential
             out.append(Finding("SECRET", m.start(g), m.end(g), score))

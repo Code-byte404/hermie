@@ -364,3 +364,76 @@ def test_self_described_test_passwords_and_ui_text_are_left_alone(text):
                                   'password = Some("owlknh"),', "Password = tkeftvoh"])
 def test_a_plain_word_password_under_a_password_name_is_hidden(text):
     assert rules.find(text), text
+
+
+# --- CredData dev-split misses (2026-10-18) ---------------------------------------------------------
+
+B32 = string.ascii_uppercase + "234567"
+
+
+def _found(text, core):
+    return _covered(rules.find(text), text, core)
+
+
+MISSED = [  # (text, part that must be hidden)
+    ("SU" + r(56, B32), None),
+    ('const string accSeed = "SA' + r(56, B32) + '";', None),
+    ("Authorization: NTLM TlRMTVNTUAADAAAA" + r(80, B64), None),
+    ('"value": "OAuth oauth_consumer_key=\\"' + r(16) + '\\",oauth_signature_method=\\"HMAC-SHA1\\",oauth_nonce=\\"x\\""', "KEY"),
+    ("'oauth_verifier: '" + r(11) + "',", "VERIFIER"),
+    ('curl_easy_setopt(curl, CURLOPT_PROXYPASSWORD, "' + r(6, string.ascii_lowercase) + '");', None),
+    ('curl_easy_setopt(curl, CURLOPT_USERPWD, "' + r(5, string.ascii_lowercase) + ":" + r(6, string.ascii_lowercase) + '");', None),
+    ("CREATE ROLE gitlab with LOGIN CREATEDB PASSWORD '" + r(8, string.ascii_lowercase) + "';", None),
+    ("CREATE USER 'app'@'localhost' IDENTIFIED BY '" + r(9, string.ascii_lowercase) + "';", None),
+    ("CREATE ROLE app_admin WITH LOGIN PASSWORD " + r(10, string.ascii_lowercase) + ";", None),
+    ("nats server report jetstream --user admin --password " + r(6) + "!", None),
+    ("--username spo@corp.local --password '" + r(8, string.ascii_lowercase) + "157!' \\", None),
+    ("$obj = Get-NtToken -Logon -User Bob -Password " + r(10), None),
+    ("mysql -u root -p" + r(8, string.ascii_lowercase) + " -e 'SELECT 1'", None),
+    ("$pw = ConvertTo-SecureString '" + r(12) + "' -AsPlainText -Force", None),
+    ("Ctrl.IKM = hexkey:" + r(64, HEX), None),
+    ("-macopt hexkey:" + r(32, HEX).upper() + " \\", None),
+    ("Ctrl.hexsecret = hexsecret:" + r(48, HEX), None),
+    ('"unique_id": "AROA' + r(17, UP) + '"', None),
+    ("'secret' => '" + r(12, string.ascii_lowercase) + "',", None),
+    ("consumer_secret: '" + r(3, string.ascii_lowercase) + r(3, string.digits) + "',", None),
+    ('"credential_value": "' + r(50, string.ascii_lowercase) + '",', None),
+    ("clientSecret: '" + r(9, string.ascii_lowercase) + "'", None),
+    ('token: "' + r(7, string.ascii_lowercase + string.digits) + "_" + r(5, string.ascii_lowercase + string.digits) + '",', None),
+    ("test_token = '" + r(60, string.ascii_lowercase + string.digits) + "TROQ'", None),
+]
+
+
+@pytest.mark.parametrize("text,core", MISSED, ids=[f"miss{i}" for i in range(len(MISSED))])
+def test_creddata_missed_shapes_are_found(text, core):
+    if core in ("KEY", "VERIFIER"):
+        core = text.split("=\\\"" if core == "KEY" else ": '")[1].split("\\\"" if core == "KEY" else "'")[0]
+    assert rules.find(text), text
+    if core:
+        assert _found(text, core), text
+
+
+@pytest.mark.parametrize("text", [
+    "oauth_signature_method: 'HMAC-SHA256',",
+    "token_type = 'bearer'",
+    "auth_method: 'password'",
+    "token: 'refresh'",
+    "secret: SECRET_KEY",
+    "--password $DB_PASSWORD",
+    "mysql -u root -p -e 'SELECT 1'",
+    "ALTER USER x PASSWORD EXPIRE;",
+])
+def test_neighbours_of_the_missed_shapes_are_left_alone(text):
+    assert rules.find(text) == [], [(text[f.start:f.end], f.entity) for f in rules.find(text)]
+
+
+@pytest.mark.parametrize("text", [
+    'clientSecret: "bar123",', 'ClientSecret = "ClientSecret"', 'authID:      "myAuthID",', "credentials: 'SECRET2',",
+    "oauth_token: OTOKEN", "&oauth_token=test_oauth_token&oauth_token_secret=test_oauth_token_secret",
+    'easy_setopt(curl, CURLOPT_USERPWD, "xxx:yyy");', 'easy_setopt(curl, CURLOPT_USERPWD, "foo:bar");',
+    "-password (required) Optional if -force is specified", "--password=NATS_PASSWORD  Password",
+    "-W, --password             Force password prompt.", "CREATE USER myuser WITH PASSWORD 'mypassword';",
+    'accessTokenParameter="?access_token=$HelixApiAccessToken"',
+])
+def test_example_values_in_the_new_shapes_are_left_alone(text):
+    assert rules.find(text) == [], [(text[f.start:f.end], f.entity) for f in rules.find(text)]
