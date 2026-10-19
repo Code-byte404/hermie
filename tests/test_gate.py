@@ -352,3 +352,13 @@ def test_names_sharing_a_column_with_a_known_person_are_replaced(tmp_path, analy
     r = g.scan(text, Origin.TOOL)
     assert "Olivia Gallagher" not in r.text and zh not in r.text and "Daniel Fairbanks" not in r.text
     assert "Operations" in r.text and "Finance" in r.text
+
+
+def test_a_known_chinese_name_is_replaced_wherever_it_appears(tmp_path, analyzer):
+    store = MappingStore(tmp_path / "mapping.json")
+    name, short = "唐诗琪", "王伟"   # three and two characters
+    store.add({"<PERSON_1>": name, "<PERSON_2>": short})
+    g = Gate(Config(data_dir=tmp_path), analyzer=analyzer, store=store)
+    r = g.scan(f"{name} owns it, and {short} reviews it.", Origin.ASSISTANT)
+    assert name not in r.text and short not in r.text
+    assert r.text.startswith("<PERSON_1> owns it")

