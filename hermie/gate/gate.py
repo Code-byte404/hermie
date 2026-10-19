@@ -319,6 +319,8 @@ class Gate:
                 continue
             if any(s < m.end() and m.start() < e for s, e in taken):
                 continue
+            if m.group(0).isdigit() and (text[m.start() - 1:m.start()].isdigit() or text[m.end():m.end() + 1].isdigit()):
+                continue   # a known number (a salary from a table) is not a piece of a longer number
             out.append(Finding(entity[m.group(0)], m.start(), m.end(), 1.0))
         return out
 

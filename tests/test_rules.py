@@ -226,8 +226,6 @@ CLEAN = [
     "commit " + r(40, HEX) + " Merge branch 'main'",
     "id = '3f2b8c1e-9d4a-4e6b-8a1f-2c7d5e9b0a13'",
     "data:image/png;base64," + base64.b64encode(rnd.randbytes(60)).decode(),
-    "Client: Acme Corp",
-    "Tenant: Northwind Holdings LLC",
     "Address: str",
     "Address: Optional[str] = None",
     "IP address: 10.0.0.1",
@@ -795,3 +793,102 @@ def test_a_chinese_address_starts_after_the_verb_that_introduces_it(lead):
     text = lead + addr + "的住房出租给乙方。"
     spans = [text[f.start:f.end] for f in rules.find(text) if f.entity == "ADDRESS"]
     assert spans == [addr]
+
+
+# --- organizations, money, dates, projects (claimed from 2026-10-19)
+
+def _spans(text, entity):
+    return {text[f.start:f.end] for f in rules.find(text) if f.entity == entity}
+
+
+ZH_CO = "北京市青禾科技有限公司"   # Beijing Qinghe Technology Co., Ltd.
+ZH_WITH, ZH_SIGN = "与", "签订合同"                        # "with", "signed the contract"
+ZH_OUR_CO = "本公司"                                               # "our company"
+
+
+@pytest.mark.parametrize("text,org", [
+    ("Seller: Silverline Holdings, represented by its director.", "Silverline Holdings"),
+    ("We ship via Bluegate Logistics every week.", "Bluegate Logistics"),
+    ("Invoice from Acme Widgets Inc. is attached.", "Acme Widgets Inc."),
+    ("Harborview Supply Co. will deliver.", "Harborview Supply Co."),
+    ("signed with Northwind Traders LLC today", "Northwind Traders LLC"),
+    (f"甲方：{ZH_CO}", ZH_CO),
+    (f"{ZH_WITH}{ZH_CO}{ZH_SIGN}", ZH_CO),
+])
+def test_organizations_are_found(text, org):
+    assert org in _spans(text, "ORGANIZATION")
+
+
+@pytest.mark.parametrize("text", [
+    "class UserService: pass", "import DataSystems from './x'", "the team decided", f"{ZH_OUR_CO}决定",
+    "Please contact the Support Team.",
+])
+def test_ordinary_words_are_not_organizations(text):
+    assert not _spans(text, "ORGANIZATION")
+
+
+@pytest.mark.parametrize("text,money", [
+    ("The penalty is $6,900.00 per week.", "$6,900.00"),
+    ("Budget: USD 2,096,500 for the year.", "USD 2,096,500"),
+    ("a fee of 1,200 EUR", "1,200 EUR"),
+    ("about £7.5m in total", "£7.5m"),
+    ("月租金人民币5000元", "人民币5000元"),
+    ("押金¥15,600。", "¥15,600"),
+    ("预算3.5万元", "3.5万元"),
+    ("人民币伍仟元整", "人民币伍仟元整"),
+])
+def test_money_is_found(text, money):
+    assert money in _spans(text, "MONEY")
+
+
+@pytest.mark.parametrize("text", ["echo $1 $2", "s/(a)/$10/", "price = 0", "costs nothing", "sed 's/x/$100/'"])
+def test_shell_parameters_and_code_are_not_money(text):
+    assert not _spans(text, "MONEY")
+
+
+@pytest.mark.parametrize("text,date", [
+    ("This agreement is made on August 16, 2026 between", "August 16, 2026"),
+    ("signed 16 August 2026 in London", "16 August 2026"),
+    ("start date 2023-09-08, reviewed", "2023-09-08"),
+    ("due 08/16/2026", "08/16/2026"),
+    ("时间：2026年8月25日", "2026年8月25日"),
+])
+def test_dates_are_found(text, date):
+    assert date in _spans(text, "DATE")
+
+
+@pytest.mark.parametrize("text", [
+    "2026-10-19T08:12:03Z ERROR db timeout", "2026-10-19 08:12:03,551 INFO started", "version 1.2.3",
+    "commit abc123 Date: Mon Oct 19 08:12:03 2026 +0800",
+])
+def test_timestamps_in_logs_are_not_dates(text):
+    assert not _spans(text, "DATE")
+
+
+@pytest.mark.parametrize("text,project", [
+    ("Subject: Project Bluefin, next steps", "Project Bluefin"),
+    ("## 一、远山项目进展", "远山项目"),
+    ("代号“长河”", "长河"),
+])
+def test_project_names_are_found(text, project):
+    assert project in _spans(text, "PROJECT")
+
+
+@pytest.mark.parametrize("text", ["这个项目很大", "开源项目", "the project is late"])
+def test_generic_project_words_are_left_alone(text):
+    assert not _spans(text, "PROJECT")
+
+
+def test_table_columns_give_organizations_money_and_dates():
+    text = ("name,company,salary,start_date\n"
+            "Isabel Brennan,Northwind,53200,2023-09-08\n"
+            "Owen Fairbanks,Redwood,161200,2024-01-15\n")
+    assert {"Northwind", "Redwood"} <= _spans(text, "ORGANIZATION")
+    assert {"53200", "161200"} <= _spans(text, "MONEY")
+    assert {"2023-09-08", "2024-01-15"} <= _spans(text, "DATE")
+
+
+@pytest.mark.parametrize("text,org", [("Client: Acme Corp", "Acme Corp"),
+                                      ("Tenant: Northwind Holdings LLC", "Northwind Holdings LLC")])
+def test_a_company_after_a_party_label_is_an_organization_not_a_person(text, org):
+    assert {(f.entity, text[f.start:f.end]) for f in rules.find(text)} == {("ORGANIZATION", org)}

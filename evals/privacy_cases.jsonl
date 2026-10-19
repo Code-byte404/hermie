@@ -69,3 +69,9 @@
 {"text": "\u7532\u65b9\uff1a\u5317\u4eac\u67d0\u67d0\u79d1\u6280\u6709\u9650\u516c\u53f8", "sensitive": false}
 {"text": "\u4f4f\u5740\uff1a\u89c1\u9644\u4ef6", "sensitive": false}
 {"text": "\u5730\u5740\uff1a\u5f85\u5b9a", "sensitive": false}
+{"text": "\u7532\u65b9\uff1a\u5317\u4eac\u5e02\u9752\u79be\u79d1\u6280\u6709\u9650\u516c\u53f8", "sensitive": true, "layer": "rules", "entities": ["ORGANIZATION"]}
+{"text": "\u6708\u79df\u91d1\u4eba\u6c11\u5e015000\u5143\uff0c\u6bcf\u6708\u4e94\u65e5\u524d\u652f\u4ed8", "sensitive": true, "layer": "rules", "entities": ["MONEY"]}
+{"text": "\u4f1a\u8bae\u65f6\u95f4\uff1a2026\u5e748\u670825\u65e5", "sensitive": true, "layer": "rules", "entities": ["DATE"]}
+{"text": "\u4e00\u3001\u8fdc\u5c71\u9879\u76ee\u8fdb\u5c55", "sensitive": true, "layer": "rules", "entities": ["PROJECT"]}
+{"text": "\u8fd9\u4e2a\u9879\u76ee\u662f\u5f00\u6e90\u9879\u76ee", "sensitive": false}
+{"text": "\u672c\u516c\u53f8\u51b3\u5b9a\u4e0b\u5468\u5f00\u4f1a", "sensitive": false}

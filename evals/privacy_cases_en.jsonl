@@ -64,7 +64,6 @@
 {"text": "Tenant: Tom Becker, passport no. X1234567, signed on the first of March", "sensitive": true, "layer": "rules", "entities": ["PERSON", "NATIONAL_ID"]}
 {"text": "The parcel goes to Flat 3, 12 High Street, Leeds LS1 4AP before Friday", "sensitive": true, "layer": "rules", "entities": ["ADDRESS"]}
 {"text": "Signed: ______ Raj Patel   PAN: ABCDE1234F", "sensitive": true, "layer": "rules", "entities": ["PERSON", "NATIONAL_ID"]}
-{"text": "Client: Acme Corp", "sensitive": false}
 {"text": "primary_key = True  # the key column", "sensitive": false}
 {"text": "Address: Optional[str] = None", "sensitive": false}
 {"text": "api_key = os.environ.get('OPENAI_API_KEY')", "sensitive": false}
@@ -80,3 +79,13 @@
 {"text": "Key = 000102030405060708090A0B0C0D0E0F101112131415161718191A1B", "sensitive": false}
 {"text": "\"FORGOT_PASSWORD\": \"Forgot password?\",", "sensitive": false}
 {"text": "-W, --password             Force password prompt.", "sensitive": false}
+{"text": "Client: Acme Corp", "sensitive": true, "layer": "rules", "entities": ["ORGANIZATION"]}
+{"text": "We signed with Bluegate Logistics last week", "sensitive": true, "layer": "rules", "entities": ["ORGANIZATION"]}
+{"text": "The penalty is $6,900.00 per week of delay", "sensitive": true, "layer": "rules", "entities": ["MONEY"]}
+{"text": "Total budget USD 2,096,500 for the closure", "sensitive": true, "layer": "rules", "entities": ["MONEY"]}
+{"text": "This agreement is made on August 16, 2026", "sensitive": true, "layer": "rules", "entities": ["DATE"]}
+{"text": "Re: Project Bluefin, keep this internal", "sensitive": true, "layer": "rules", "entities": ["PROJECT"]}
+{"text": "echo $1 and $2 are positional parameters", "sensitive": false}
+{"text": "2026-10-19T08:12:03Z INFO server started", "sensitive": false}
+{"text": "See the Project Structure section", "sensitive": false}
+{"text": "class PaymentService handles retries", "sensitive": false}

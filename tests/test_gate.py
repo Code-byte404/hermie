@@ -362,3 +362,11 @@ def test_a_known_chinese_name_is_replaced_wherever_it_appears(tmp_path, analyzer
     r = g.scan(f"{name} owns it, and {short} reviews it.", Origin.ASSISTANT)
     assert name not in r.text and short not in r.text
     assert r.text.startswith("<PERSON_1> owns it")
+
+
+def test_a_known_number_is_not_replaced_inside_a_longer_number(tmp_path, analyzer):
+    store = MappingStore(tmp_path / "mapping.json")
+    store.add({"<MONEY_1>": "53200"})
+    g = Gate(Config(data_dir=tmp_path), analyzer=analyzer, store=store)
+    r = g.scan("salary 53200, order id 1532001", Origin.TOOL)
+    assert r.text == "salary <MONEY_1>, order id 1532001"
