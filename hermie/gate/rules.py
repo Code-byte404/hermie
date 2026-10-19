@@ -532,13 +532,19 @@ _SURNAMES = ("\u738b\u674e\u5f20\u5218\u9648\u6768\u9ec4\u8d75\u5434\u5468\u5f90
 _COMPOUND = ("\u6b27\u9633|\u53f8\u9a6c|\u4e0a\u5b98|\u8bf8\u845b|\u4e1c\u65b9|\u7687\u752b|\u5c09\u8fdf|\u516c\u5b59|\u6155\u5bb9|\u4ee4\u72d0|\u53f8\u5f92|\u590f\u4faf|"
              "\u6fb9\u53f0|\u957f\u5b59|\u72ec\u5b64|\u5357\u5bab|\u5b87\u6587|\u8f69\u8f95|\u7aef\u6728|\u62d3\u8dcb")
 _ZH_NAME = rf"(?:(?:{_COMPOUND})[\u4e00-\u9fa5]{{1,2}}|[{_SURNAMES}][\u4e00-\u9fa5\u00b7]{{1,3}})"
-_ZH_LABELS = ("\u7532\u65b9|\u4e59\u65b9|\u4e19\u65b9|\u4e01\u65b9|\u51fa\u79df\u4eba|\u627f\u79df\u4eba|\u51fa\u79df\u65b9|\u627f\u79df\u65b9|\u51fa\u5356\u4eba|\u4e70\u53d7\u4eba|\u5356\u65b9|\u4e70\u65b9|"
+_ZH_LABELS = ("\u53c2\u4f1a\u4eba\u5458|\u53c2\u4f1a\u4eba|\u4e0e\u4f1a\u4eba\u5458|\u4e0e\u4f1a\u8005|\u51fa\u5e2d\u4eba\u5458|\u51fa\u5e2d\u4eba|\u8bb0\u5f55\u4eba|\u4e3b\u6301\u4eba|"
+              "\u6284\u9001|\u5ba1\u6279\u4eba|\u5ba1\u6838\u4eba|\u8d77\u8349\u4eba|\u53d1\u4ef6\u4eba|"
+              "\u7532\u65b9|\u4e59\u65b9|\u4e19\u65b9|\u4e01\u65b9|\u51fa\u79df\u4eba|\u627f\u79df\u4eba|\u51fa\u79df\u65b9|\u627f\u79df\u65b9|\u51fa\u5356\u4eba|\u4e70\u53d7\u4eba|\u5356\u65b9|\u4e70\u65b9|"
               "\u59d4\u6258\u4eba|\u53d7\u6258\u4eba|\u51fa\u501f\u4eba|\u501f\u6b3e\u4eba|\u8d37\u6b3e\u4eba|\u62c5\u4fdd\u4eba|\u4fdd\u8bc1\u4eba|\u59d3\u540d|\u540d\u5b57|"
               "\u6cd5\u5b9a\u4ee3\u8868\u4eba|\u8054\u7cfb\u4eba|\u6536\u4ef6\u4eba|\u6536\u8d27\u4eba|\u6237\u4e3b|\u7acb\u7ea6\u4eba|\u7acb\u4e66\u4eba|\u7b7e\u7ea6\u4eba|\u7b7e\u5b57|\u7b7e\u540d|"
               "\u7533\u8bf7\u4eba|\u6295\u4fdd\u4eba|\u88ab\u4fdd\u9669\u4eba|\u53d7\u76ca\u4eba|\u60a3\u8005|\u75c5\u4eba|\u5458\u5de5|\u5b66\u751f|\u5bb6\u957f|\u76d1\u62a4\u4eba|"
               "\u7d27\u6025\u8054\u7cfb\u4eba|\u7ecf\u529e\u4eba|\u8d1f\u8d23\u4eba|\u4ee3\u7406\u4eba|\u672c\u4eba|\u6211\u53eb|\u540d\u53eb")
 _ZH_NAME_FULL = re.compile(_ZH_NAME)
 _ZH_NAME_AFTER_LABEL = re.compile(rf"(?:{_ZH_LABELS})(?:[\uff08(][^\uff09)\n]{{0,8}}[\uff09)])?[:\uff1a\s]*(?P<name>{_ZH_NAME})")
+_ZH_LIST_NEXT = re.compile(rf"[\u3001\uff0c,/\s]*(?:\u548c|\u53ca|\u4e0e)?\s*(?P<name>{_ZH_NAME})(?=[\u3001\uff0c,/\s]|\u548c|\u53ca|\u4e0e|$)")
+_ZH_LIST_SEP = re.compile(r"[\u3001\uff0c,/]|\s*(?:\u548c|\u53ca|\u4e0e)")
+_ZH_LAZY_NAME = rf"(?:(?:{_COMPOUND})[\u4e00-\u9fa5]{{1,2}}?|[{_SURNAMES}][\u4e00-\u9fa5]{{1,2}}?)"
+_ZH_NAME_OWNS = re.compile(rf"\u7531(?P<name>{_ZH_LAZY_NAME})(?=\u8d1f\u8d23|\u7275\u5934|\u4e3b\u5bfc|\u8ddf\u8fdb)")
 _ZH_NAME_TITLE = re.compile(rf"(?P<name>(?:{_COMPOUND})[\u4e00-\u9fa5]{{0,1}}|[{_SURNAMES}][\u4e00-\u9fa5]{{0,2}}?)(?=\u5148\u751f|\u5973\u58eb|\u5c0f\u59d0)")
 _ZH_ORG_AFTER = re.compile(r"[\u4e00-\u9fa5]{0,6}(?:\u516c\u53f8|\u96c6\u56e2|\u6709\u9650|\u79d1\u6280|\u94f6\u884c|\u5b66\u6821|\u533b\u9662|\u4e2d\u5fc3|\u5b66\u9662|\u5927\u5b66|\u5de5\u5382|"
                            r"\u5546\u5e97|\u4e8b\u52a1\u6240|\u7814\u7a76\u9662|\u534f\u4f1a|\u59d4\u5458\u4f1a|\u653f\u5e9c|\u8d85\u5e02|\u5e97)")
@@ -551,6 +557,14 @@ def _zh_names(text: str) -> list[Finding]:
         if _ZH_ORG_AFTER.match(text, m.start("name")) or _ZH_ORG_AFTER.search(name):
             continue
         out.append(Finding("PERSON", m.start("name"), m.end("name"), 0.75))
+        end = m.end("name")
+        while (sep := _ZH_LIST_SEP.match(text, end)) and (nxt := _ZH_LIST_NEXT.match(text, end)) and sep.end() > end:
+            if _ZH_ORG_AFTER.match(text, nxt.start("name")):
+                break
+            out.append(Finding("PERSON", nxt.start("name"), nxt.end("name"), 0.7))
+            end = nxt.end("name")
+    for m in _ZH_NAME_OWNS.finditer(text):
+        out.append(Finding("PERSON", m.start("name"), m.end("name"), 0.7))
     for m in _ZH_NAME_TITLE.finditer(text):
         out.append(Finding("PERSON", m.start("name"), m.end("name"), 0.7))
     return out
@@ -635,6 +649,43 @@ def _table_names(text: str) -> list[Finding]:
                 if (_ZH_NAME_FULL.fullmatch(v) or _CELL_NAME.fullmatch(v) or part and _CELL_PART.fullmatch(v)) \
                         and not _is_company(v):
                     out.append(Finding("PERSON", roff + a, roff + b, 0.75))
+    return out
+
+
+def column_persons(text: str, found: list[Finding]) -> list[Finding]:
+    """Cells that share a column with a known person, in a block of two or more delimited rows with the same number of
+    cells (script output without a header, `name | dept | salary`): the other cells of that column that look like
+    names are persons too. `found` holds what the other detectors (and the placeholders) already named."""
+    people = [(f.start, f.end) for f in found if f.entity == "PERSON"]
+    if not people or "\n" not in text:
+        return []
+    out: list[Finding] = []
+    lines, pos = [], 0
+    for raw in text.split("\n"):
+        m = _LINE_NO.match(raw)
+        skip = m.end() if m else 0
+        lines.append((pos + skip, raw[skip:]))
+        pos += len(raw) + 1
+    i = 0
+    while i < len(lines):
+        sep = next((c for c in "|\t,;" if c in lines[i][1]), None)
+        n = len(_row(lines[i][1], sep)) if sep else 0
+        j = i
+        while sep and j < len(lines) and len(_row(lines[j][1], sep)) == n and n >= 2:
+            j += 1
+        if j - i >= 2:
+            rows = [[(off + a, off + b) for a, b in _row(line, sep)] for off, line in lines[i:j]]
+            for k in range(n):
+                col = [r[k] for r in rows]
+                if not any(a <= s0 and e0 <= b and (s0, e0) != (a, a) and text[s0:e0].strip() for a, b in col
+                           for s0, e0 in people if a <= s0 < b):
+                    continue
+                for a, b in col:
+                    v = text[a:b]
+                    if (_ZH_NAME_FULL.fullmatch(v) or _CELL_NAME.fullmatch(v)) and not _is_company(v) \
+                            and not any(s0 < b and a < e0 for s0, e0 in people):
+                        out.append(Finding("PERSON", a, b, 0.7))
+        i = max(j, i + 1)
     return out
 
 

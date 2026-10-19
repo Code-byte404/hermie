@@ -9,6 +9,7 @@ from collections import OrderedDict
 from fnmatch import fnmatch
 from urllib.parse import urlparse
 
+from hermie.gate import rules
 from hermie.gate.judge import make_judge
 from hermie.gate.recognizers import build_analyzer, scan as pattern_scan, smuggling_risk_text, smuggling_risk_url
 from hermie.gate.redact import PLACEHOLDER, MappingStore, MappingStoreError, _merge_overlaps, redact, restore
@@ -337,7 +338,11 @@ class Gate:
             # values already in the mapping (restored into assistant text, tool calls and results on the way back)
             # map back to their placeholders even where the recognizers would not see them
             rx, entity = self._known_regex(current)
-            out["all"] = _merge_overlaps(findings + self._known_findings(text, rx, entity))
+            found = findings + self._known_findings(text, rx, entity)
+            # names that share a table column with a person already found (script output without a header)
+            seeds = found + [Finding("PERSON", m.start(), m.end(), 1.0)
+                             for m in PLACEHOLDER.finditer(text) if m.group(1) == "PERSON"]
+            out["all"] = _merge_overlaps(found + rules.column_persons(text, seeds))
             out["red"], out["new"] = redact(text, out["all"], existing=current, counters=counters)
             return out["new"]
 

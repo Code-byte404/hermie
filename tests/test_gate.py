@@ -341,3 +341,14 @@ def test_chunk_boundary_inside_a_concatenated_or_escaped_key_hides_every_line(tm
         fs = [f for f in g._pattern_findings(text) if f.entity == "SECRET"]
         missed = [x for x in lines if not any(f.start <= text.find(x) and text.find(x) + len(x) <= f.end for f in fs)]
         assert missed == [], len(missed)
+
+
+def test_names_sharing_a_column_with_a_known_person_are_replaced(tmp_path, analyzer):
+    store = MappingStore(tmp_path / "mapping.json")
+    store.add({"<PERSON_1>": "Olivia Gallagher"})
+    g = Gate(Config(data_dir=tmp_path), analyzer=analyzer, store=store)
+    zh = "卢静怡"
+    text = f"Olivia Gallagher | Operations | 181200\n{zh} | Finance | 168400\nDaniel Fairbanks | Legal | 161200\n"
+    r = g.scan(text, Origin.TOOL)
+    assert "Olivia Gallagher" not in r.text and zh not in r.text and "Daniel Fairbanks" not in r.text
+    assert "Operations" in r.text and "Finance" in r.text

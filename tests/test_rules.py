@@ -726,3 +726,39 @@ def test_a_first_name_column_takes_single_words():
 ])
 def test_tables_without_person_names_are_left_alone(text):
     assert not _persons(text)
+
+
+# --- Chinese name lists after a label, and names that share a column with a known person
+
+ZH_NAME_C = "顾诗琪"
+ZH_ATTENDEES = "参会人"      # attendees
+ZH_RECORDER = "记录人"       # minutes taken by
+ZH_BY, ZH_OWNS = "由", "负责"   # "by ... is responsible"
+
+
+def test_every_name_in_a_chinese_list_after_a_label_is_found():
+    text = f"{ZH_ATTENDEES}：{ZH_NAME_C}、{ZH_NAME_A}、{ZH_NAME_B}\n{ZH_RECORDER}：{ZH_NAME_B}\n"
+    assert {ZH_NAME_C, ZH_NAME_A, ZH_NAME_B} <= _persons(text)
+
+
+def test_a_chinese_name_between_by_and_responsible_is_found():
+    text = f"本事项{ZH_BY}{ZH_NAME_A}{ZH_OWNS}，下周五前提交方案。"
+    assert ZH_NAME_A in _persons(text)
+
+
+def test_cells_in_the_column_of_a_known_person_are_persons():
+    from hermie.gate.types import Finding
+    text = ("<PERSON_6> | Operations | 181200\n"
+            f"{ZH_NAME_A} | Finance | 168400\n"
+            "Daniel Fairbanks | Legal | 161200\n"
+            "Steel | Ops | 12\n")
+    seed = [Finding("PERSON", 0, len("<PERSON_6>"), 1.0)]
+    got = {text[f.start:f.end] for f in rules.column_persons(text, seed)}
+    assert got == {ZH_NAME_A, "Daniel Fairbanks"}
+
+
+def test_no_column_spread_without_a_person_in_the_column():
+    from hermie.gate.types import Finding
+    text = "Daniel Fairbanks | Legal\nOwen Fairbanks | Ops\n"
+    assert rules.column_persons(text, [Finding("EMAIL_ADDRESS", 0, 3, 1.0)]) == []
+    assert rules.column_persons("just one line | with a bar", [Finding("PERSON", 0, 4, 1.0)]) == []
