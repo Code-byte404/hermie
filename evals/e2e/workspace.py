@@ -74,7 +74,8 @@ class Canary:
 
 
 def normalize(s: str) -> str:
-    return "".join(ch for ch in s.casefold() if not ch.isspace() and ch not in "-._")
+    """Case-folded, without whitespace and the separators people put in phones, cards and ids."""
+    return "".join(ch for ch in s.casefold() if not ch.isspace() and ch not in "-._()+")
 
 
 def load_canaries(path: Path) -> list[Canary]:

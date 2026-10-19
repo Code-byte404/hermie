@@ -92,3 +92,69 @@ def test_top_three_salaries_are_fixed_positions(built):
     salaries = sorted((int(r.split(",")[4]), i) for i, r in enumerate(rows))
     assert [i for _, i in salaries[-3:]][::-1] == list(W.TOP_PAID)
     assert all(f"emp.{i}.name" in by_id for i in W.TOP_PAID)
+
+
+# ---------------------------------------------------------------- canary search
+
+from evals.e2e import leaks as L
+
+
+def _c(cid, value, kind="person", lang="en"):
+    return W.Canary(cid, value, kind, "f", lang, W.KINDS[kind])
+
+
+def _body(obj, ascii_=True):
+    return json.dumps(obj, ensure_ascii=ascii_).encode()
+
+
+def test_finds_exact_and_reports_path():
+    c = _c("p", "Clara Petrov")
+    body = _body({"messages": [{"role": "user", "content": [{"type": "text", "text": "ask Clara Petrov today"}]}]})
+    assert L.find_leaks(body, [c]) == [L.Leak("p", "$.messages[0].content[0].text", "exact")]
+
+
+def test_finds_json_escaped_chinese():
+    c = _c("z", "秦宇轩", lang="zh")
+    for ascii_ in (True, False):
+        assert [x.canary_id for x in L.find_leaks(_body({"m": "房东 " + c.value}, ascii_), [c])] == ["z"]
+    nested = json.dumps({"path": "a.md", "content": "房东" + c.value}, ensure_ascii=True)
+    assert [x.canary_id for x in L.find_leaks(_body({"input": nested}), [c])] == ["z"]
+
+
+def test_finds_normalized_phone_and_card():
+    phone = _c("ph", "(303) 555-0170", "phone")
+    card = _c("cd", "6200001234567890123", "bank_card")
+    found = L.find_leaks(_body({"t": "call 303 5550170 or pay 6200 0012 3456 7890 123"}), [phone, card])
+    assert {(x.canary_id, x.form) for x in found} == {("ph", "normalized"), ("cd", "normalized")}
+
+
+def test_finds_urlencoded_and_key_substring():
+    pw = _c("pw", "Harborviolet!42xY7q", "password")
+    key = _c("k", "ghp_" + "aB3dE5gH7jK9mN1pQ3sT5vX7zA9cE1gI3kM5", "api_key")
+    who = _c("n", "Clara Petrov")
+    body = _body({"u": "https://x/?p=Harborviolet%2142xY7q", "t": "token ends " + key.value[10:24],
+                  "s": "Petrov"})
+    assert {(x.canary_id, x.form) for x in L.find_leaks(body, [pw, key, who])} == {("pw", "urlencoded"),
+                                                                                    ("k", "substring")}
+
+
+def test_placeholder_is_not_a_leak():
+    c = _c("p", "Clara Petrov")
+    assert L.find_leaks(_body({"t": "ask <PERSON_1> today"}), [c]) == []
+
+
+def test_short_values_need_word_bounds():
+    c = _c("a", "4200", "amount")
+    assert L.find_leaks(_body({"t": "order 142007 shipped"}), [c]) == []
+    assert [x.form for x in L.find_leaks(_body({"t": "pay 4200 now"}), [c])] == ["exact"]
+
+
+def test_one_leak_per_canary_and_path_strongest_form_first():
+    c = _c("ph", "(303) 555-0170", "phone")
+    found = L.find_leaks(_body({"t": "(303) 555-0170 and 3035550170"}), [c])
+    assert found == [L.Leak("ph", "$.t", "exact")]
+
+
+def test_non_json_body_is_searched_as_text():
+    c = _c("p", "Clara Petrov")
+    assert L.find_leaks(b"not json: Clara Petrov", [c]) == [L.Leak("p", "$", "exact")]
