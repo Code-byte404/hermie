@@ -23,7 +23,8 @@ ZH = json.loads((Path(__file__).parent / "data" / "zh.json").read_text())
 KINDS: dict[str, bool] = {   # kind -> Hermie claims to protect it today
     "person": True, "email": True, "phone": True, "national_id": True, "address": True, "bank_card": True,
     "iban": True, "api_key": True, "password": True, "url_credentials": True,
-    "company": False, "amount": False, "date": False, "project": False, "passage": False,
+    "company": True, "amount": True, "date": True, "project": True,   # claimed from 2026-10-19
+    "passage": False,
 }
 
 EMPLOYEES = 16          # rows 0-7 English names, 8-15 Chinese names

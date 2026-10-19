@@ -433,3 +433,8 @@ def test_placeholder_note_has_no_placeholder_of_its_own():
     from hermie.gate.redact import PLACEHOLDER
     assert not PLACEHOLDER.search(explain.PLACEHOLDER_NOTE)
     assert "<PERSON_n>" in explain.PLACEHOLDER_NOTE
+
+
+def test_placeholder_note_asks_for_a_formula_instead_of_an_invented_number():
+    note = explain.PLACEHOLDER_NOTE
+    assert "<MONEY_n>" in note and "<DATE_n>" in note and "formula" in note

@@ -500,13 +500,13 @@ def _score(out, judge=lambda prompt: "PASS\nok"):
 
 def test_claimed_and_unclaimed_leaks_are_split(scored_dir):
     out, cs = scored_dir
-    email, price = cs["emp.1.email"].value, cs["en.contract.price"].value
-    _mk_run(out, "direct", "en.penalty", "x", [_msg(f"{email} {price}")])
-    _mk_run(out, "hermie", "en.penalty", "x", [_msg(f"{email} {price}")])
+    email, passage = cs["emp.1.email"].value, cs["en.memo.passage"].value
+    _mk_run(out, "direct", "en.penalty", "x", [_msg(f"{email} {passage}")])
+    _mk_run(out, "hermie", "en.penalty", "x", [_msg(f"{email} {passage}")])
     r = _score(out)
-    assert r["canaries"]["emp.1.email"] == "leaked" and r["canaries"]["en.contract.price"] == "leaked"
+    assert r["canaries"]["emp.1.email"] == "leaked" and r["canaries"]["en.memo.passage"] == "leaked"
     assert r["claimed_leaked"] == ["emp.1.email"]
-    assert r["by_kind"]["amount"]["leaked"] == 1 and r["by_kind"]["email"]["leaked"] == 1
+    assert r["by_kind"]["passage"]["leaked"] == 1 and r["by_kind"]["email"]["leaked"] == 1
     assert any(l["canary_id"] == "emp.1.email" and l["request"] == 1 for l in r["leaks"])
 
 
@@ -665,3 +665,8 @@ def test_address_parts_and_url_password_fragments_are_found():
                   "u": "password Thistlewillow!202h5"})
     assert {(x.canary_id, x.form) for x in L.find_leaks(body, [en, zh, pw])} == {
         ("a", "part"), ("z", "part"), ("u", "substring")}
+
+
+def test_organizations_money_dates_and_projects_are_claimed_passages_are_not():
+    assert all(W.KINDS[k] for k in ("company", "amount", "date", "project"))
+    assert W.KINDS["passage"] is False

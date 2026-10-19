@@ -80,10 +80,14 @@ def names_text(pairs) -> str:
 # --- what leaves the machine: no values, no reason free text ---
 
 PLACEHOLDER_NOTE = ("[Hermie, the user's local privacy proxy, replaced private values in this conversation with "
-                    "placeholders such as <PERSON_n>, <EMAIL_ADDRESS_n> or <SECRET_n>. Each one stands for one real value "
-                    "that the user has; Hermie puts the real value back into your reply before the user reads it. Use a "
-                    "placeholder exactly where the value belongs and copy it as written. Do not tell the user that a "
-                    "name or value is missing, redacted, anonymized or a placeholder: to the user it is the real value.]")
+                    "placeholders such as <PERSON_n>, <ORGANIZATION_n>, <MONEY_n>, <DATE_n> or <SECRET_n>. Each one stands "
+                    "for one real value that the user has; Hermie puts the real value back into your reply before the "
+                    "user reads it. Use a placeholder exactly where the value belongs and copy it as written. Do not tell "
+                    "the user that a name or value is missing, redacted, anonymized or a placeholder: to the user it is "
+                    "the real value. You cannot see the numbers behind <MONEY_n> or <DATE_n>: when a task needs a sum, a "
+                    "ratio, a comparison or a date calculation on them, write the formula with the placeholders (for "
+                    "example <MONEY_m> / <MONEY_n> months) and say the user can read the result off the real values; "
+                    "never invent a number.]")
 
 
 def note_text(kind: str, id: str, size: str = "", reason: str = "", tool: str | None = None) -> str:

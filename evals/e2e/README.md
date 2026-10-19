@@ -30,12 +30,13 @@ Design: `docs/superpowers/specs/2026-10-18-e2e-canary-utility-design.md` (local)
 
 ## What counts
 
-- **Leak:** a canary in a body the Hermie arm sent. All kinds count, including the ones Hermie does not claim today
-  (company names, amounts, dates, project names, confidential passages): those are expected to leak and their
-  counts are the product gap list.
+- **Leak:** a canary in a body the Hermie arm sent. All kinds count, including the one Hermie does not claim today
+  (confidential passages, which need a judge): it is expected to leak and its count is the product gap list.
+  Company names, amounts, dates and project names are claimed since 2026-10-19. The generator's English company
+  suffixes (Logistics, Holdings, ...) are on Hermie's suffix list, so company recall here is an upper bound.
 - A canary is `leaked`, `protected` (only the direct arm sent it) or `not exercised` (no run sent it).
 - **Gate 1:** INCONCLUSIVE while any Hermie run is invalid; otherwise no claimed canary leaked (person, email, phone, national ID, address, bank card, IBAN, API key,
-  password, URL credentials).
+  password, URL credentials, company, amount, date, project).
 - **Gate 2:** no task where the direct arm passes and the Hermie arm fails, except noise (repeats disagree).
   Noise means the direct arm itself is unsteady across repeats. Causes: `blocked` (a held user message, 422), `withheld` (a held tool result), `unrestored` (a placeholder left
   in the answer), `swapped` (a must-not value in the answer), `damage` (anything else).

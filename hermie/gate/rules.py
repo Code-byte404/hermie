@@ -577,12 +577,24 @@ def _zh_names(text: str) -> list[Finding]:
 
 _ORG_SUFFIX = (r"(?:Inc\.?|LLC|L\.L\.C\.|Ltd\.?|Limited|Corp\.?|Corporation|Co\.|Company|GmbH|AG|S\.A\.|PLC|plc|LLP|"
                r"Pty(?: Ltd\.?)?|B\.?V\.|N\.V\.|Holdings|Group|Logistics|Industries|Technologies|Partners|Capital|Ventures|"
-               r"Enterprises|Associates|Trading|Traders|Manufacturing|Supply(?: Co\.)?|Components|Bank|Insurance|"
-               r"Pharmaceuticals|Consulting|Foundation|Studios|Media)")
+               r"Enterprises|Associates|Trading|Traders|Manufacturing|Supply(?: Co\.)?|Bank|Insurance|"
+               r"Pharmaceuticals|Consulting|Foundation|Studios)")
 _ORG_WORD = r"(?:[A-Z][A-Za-z0-9'\u2019&-]*|&|and|of)"
 _EN_ORG = re.compile(rf"(?<![\w.])(?:The\s+)?(?P<v>[A-Z][A-Za-z0-9'\u2019&-]*(?:[ \t]+{_ORG_WORD}){{0,3}}?[ \t]+{_ORG_SUFFIX}"
                      rf"(?:[ \t]+(?:Inc\.?|LLC|Ltd\.?|Limited|Co\.|Corp\.?|GmbH|PLC|plc|LLP))?)(?![\w])")
 _NOT_ORG_HEAD = {"The", "A", "An", "Our", "Your", "Their", "This", "That", "Support", "Sales", "Admin", "Data", "Contact"}
+# "Group" closes many code names (Instance Group, Security Group, Thread Group): those heads are not companies
+_TECH_GROUP_HEAD = {"Instance", "Queue", "Meeting", "DB", "Security", "Resource", "Target", "Log", "Thread", "Worker",
+                    "User", "Node", "Scaling", "Placement", "Parameter", "Subnet", "Option", "Consumer", "Process", "Tab",
+                    "Button", "Radio", "Control", "Form", "Input", "Field", "Test", "Item", "Access", "Ad", "Block",
+                    "Regional", "Auto", "Cache", "Replication", "Availability", "Capture", "Match", "Permission"}
+# license headers and copyright lines name public companies and projects, not the user's business
+_LICENSE_LINE = re.compile(r"(?i)copyright|\(c\)|\u00a9|licen[cs]ed?\b|all rights reserved")
+
+
+def _line_at(text: str, i: int) -> str:
+    end = text.find("\n", i)
+    return text[text.rfind("\n", 0, i) + 1:end if end >= 0 else len(text)]
 _ZH_ORG_SUFFIX = (r"(?:\u80a1\u4efd\u6709\u9650\u516c\u53f8|\u6709\u9650\u8d23\u4efb\u516c\u53f8|\u6709\u9650\u516c\u53f8|\u96c6\u56e2|"
                   r"\u4e8b\u52a1\u6240|\u7814\u7a76\u9662|\u94f6\u884c|\u516c\u53f8)")
 _ZH_ORG = re.compile(rf"[\u4e00-\u9fa5]{{2,16}}?{_ZH_ORG_SUFFIX}")
@@ -595,7 +607,10 @@ def _orgs(text: str) -> list[Finding]:
     out = []
     for m in _EN_ORG.finditer(text):
         v = m.group("v")
-        if v.split()[0] not in _NOT_ORG_HEAD:
+        words = v.split()
+        if words[-1] == "Group" and words[-2] in _TECH_GROUP_HEAD:
+            continue
+        if words[0] not in _NOT_ORG_HEAD and not _LICENSE_LINE.search(_line_at(text, m.start())):
             out.append(Finding("ORGANIZATION", m.start("v"), m.end("v"), 0.7))
     if _CJK.search(text):
         for m in _ZH_ORG.finditer(text):
@@ -629,6 +644,8 @@ def _money(text: str) -> list[Finding]:
         v = m.group()
         if v[0] == "$" and "," not in v and "." not in v and len(re.sub(r"\D", "", v)) < 3:
             continue   # $1, $2, $10: shell and regex parameters
+        if re.match(r"(?:US)?\$0\d", v):
+            continue   # $0000: an assembler or format constant
         if text[max(0, m.start() - 4):m.start()].endswith(("s/", "/")) and v[0] == "$":
             continue   # a replacement group in s/x/$100/
         out.append(Finding("MONEY", m.start(), m.end(), 0.7))
@@ -657,16 +674,16 @@ def _dates(text: str) -> list[Finding]:
     out = []
     for m in _DATE.finditer(text):
         if m.group()[0].isdigit() and "\u5e74" not in m.group():
-            end = text.find("\n", m.end())
-            line = text[text.rfind("\n", 0, m.start()) + 1:end if end >= 0 else len(text)]
-            if _CODE_LINE.search(line):
+            if _CODE_LINE.search(_line_at(text, m.start())):
                 continue
         out.append(Finding("DATE", m.start(), m.end(), 0.65))
     return out
 
 
-_EN_PROJECT = re.compile(r"(?<![\w])(?:Project|Operation|Codename|Code name)\s+(?P<v>[A-Z][a-z]+(?:\s+[A-Z][a-z]+)?)")
-_ZH_PROJECT = re.compile(r"(?:^|(?<=[\s\u3001\uff0c\u3002\uff1a:#\uff08(\u201c\u300c]))(?P<v>[\u4e00-\u9fa5]{2,4}\u9879\u76ee)")
+_EN_PROJECT = re.compile(r"(?<![\w])(?:Project|Codename|Code name)[ \t]+(?P<v>[A-Z][a-z]+(?:[ \t]+[A-Z][a-z]+)?)")
+# a Chinese project name: right after an enumeration comma (a heading item) or in quotes before the word "project"
+_ZH_PROJECT = re.compile(r"(?<=\u3001)(?P<v>[\u4e00-\u9fa5]{2,4}\u9879\u76ee)"
+                         r"|[\u201c\u300c\u300a\"](?P<q>[\u4e00-\u9fa5A-Za-z0-9]{2,8})[\u201d\u300d\u300b\"]\u9879\u76ee")
 _ZH_CODENAME = re.compile(r"\u4ee3\u53f7[\u201c\u300c\"\uff1a:\s]*(?P<v>[\u4e00-\u9fa5A-Za-z0-9]{2,8})")
 _ZH_GENERIC_PROJECT = re.compile(r"^(?:\u8fd9|\u90a3|\u8be5|\u6b64|\u672c|\u5404|\u6bcf|\u67d0|\u5168|\u6574|\u65b0|\u8001|\u5b50|"
                                  r"\u5927|\u5c0f|\u591a|\u4e00|\u5f00\u6e90|\u6d4b\u8bd5|\u793a\u4f8b|\u91cd\u70b9|\u76f8\u5173|"
@@ -676,16 +693,21 @@ _ZH_GENERIC_PROJECT = re.compile(r"^(?:\u8fd9|\u90a3|\u8be5|\u6b64|\u672c|\u5404
 _NOT_PROJECT_NAME = {"Overview", "Description", "Structure", "Setup", "Status", "Plan", "Planning", "Manager", "Management",
                      "Name", "Names", "Files", "File", "Settings", "Lead", "Leader", "Goals", "Scope", "Summary", "Root",
                      "Layout", "Board", "Team", "Owner", "Info", "Details", "Page", "Home", "Template", "Directory",
-                     "Folder", "Config", "Configuration", "Timeline", "Roadmap", "Budget", "Report", "Notes", "Charter"}
+                     "Folder", "Config", "Configuration", "Timeline", "Roadmap", "Budget", "Report", "Notes", "Charter",
+                     "Authors", "Object", "Card", "Sdk", "Body", "Column", "Collection", "Generator", "Types", "Type",
+                     "Item", "Items", "Id", "Key", "Model", "Service", "Api", "Url", "Path", "Version", "Data", "List",
+                     "View", "Module", "Reference", "Properties", "Property", "Explorer", "Tree", "Node", "Build",
+                     "Target", "Default", "Dependencies", "Schema", "Files", "Source", "Sources", "Members", "Admin"}
 
 
 def _projects(text: str) -> list[Finding]:
     out = [Finding("PROJECT", m.start(), m.end(), 0.7) for m in _EN_PROJECT.finditer(text)
-           if m.group("v").split()[0] not in _NOT_PROJECT_NAME]
+           if m.group("v").split()[0] not in _NOT_PROJECT_NAME and not _LICENSE_LINE.search(_line_at(text, m.start()))]
     if _CJK.search(text):
         for m in _ZH_PROJECT.finditer(text):
-            if not _ZH_GENERIC_PROJECT.match(m.group("v")):
-                out.append(Finding("PROJECT", m.start("v"), m.end("v"), 0.7))
+            g = "v" if m.group("v") else "q"
+            if not _ZH_GENERIC_PROJECT.match(m.group(g)):
+                out.append(Finding("PROJECT", m.start(g), m.end(g), 0.7))
         for m in _ZH_CODENAME.finditer(text):
             out.append(Finding("PROJECT", m.start("v"), m.end("v"), 0.7))
     return out
@@ -710,6 +732,8 @@ _DATE_HEADERS = {"date", "start date", "end date", "birthday", "birth date", "da
                  "due date", "\u65e5\u671f", "\u5165\u804c\u65e5\u671f", "\u751f\u65e5", "\u51fa\u751f\u65e5\u671f",
                  "\u7b7e\u7ea6\u65e5\u671f"}
 _PROJECT_HEADERS = {"project", "project name", "\u9879\u76ee", "\u9879\u76ee\u540d\u79f0"}
+# a company or project cell: starts with a capital or a CJK character, words only (no code identifiers or links)
+_CELL_LABEL = re.compile(r"[A-Z\u4e00-\u9fa5][A-Za-z0-9\u4e00-\u9fa5&'.\- ]{1,60}")
 _CELL_MONEY = re.compile(rf"[$\u20ac\u00a3\u00a5\uffe5]?\s?(?:{_NUM})\s?(?:\u5143)?")
 _CELL_DATE = re.compile(r"(?:19|20)\d{2}[-/.\u5e74]\d{1,2}[-/.\u6708]\d{1,2}\u65e5?|\d{1,2}[/.]\d{1,2}[/.](?:19|20)\d{2}")
 _LINE_NO = re.compile(r"^[ \t]*\d+(?:\t|→)")
@@ -805,10 +829,10 @@ def _table_names(text: str) -> list[Finding]:
             for k, entity in other.items():
                 a, b = cells[k]
                 v = row[a:b]
-                ok = {"ORGANIZATION": lambda: any(c.isalpha() for c in v) and len(v) >= 2,
+                ok = {"ORGANIZATION": lambda: _CELL_LABEL.fullmatch(v) is not None,
                       "MONEY": lambda: bool(_CELL_MONEY.fullmatch(v)) and any(c.isdigit() for c in v),
                       "DATE": lambda: bool(_CELL_DATE.fullmatch(v)),
-                      "PROJECT": lambda: any(c.isalpha() for c in v) and len(v) >= 2}[entity]()
+                      "PROJECT": lambda: _CELL_LABEL.fullmatch(v) is not None}[entity]()
                 if ok:
                     out.append(Finding(entity, roff + a, roff + b, 0.7))
     return out

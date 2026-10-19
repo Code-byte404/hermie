@@ -892,3 +892,31 @@ def test_table_columns_give_organizations_money_and_dates():
                                       ("Tenant: Northwind Holdings LLC", "Northwind Holdings LLC")])
 def test_a_company_after_a_party_label_is_an_organization_not_a_person(text, org):
     assert {(f.entity, text[f.start:f.end]) for f in rules.find(text)} == {("ORGANIZATION", org)}
+
+
+@pytest.mark.parametrize("text", [
+    "// Copyright 2015 Google Inc. All rights reserved.",
+    " * Licensed to Elasticsearch B.V. under one or more contributor license agreements.",
+    "resource \"aws_autoscaling_group\" uses an Instance Group here",
+    "A9 Vulnerable Components",
+    "Copyright The Chromium Project Authors.",
+    "createOperation Object Project Card",
+    "mov ax, $0000",
+    "启动项目后运行",                 # "after starting the project, run"
+    "这是 一个闭源项目",            # "this is a closed-source project"
+])
+def test_license_headers_and_code_words_are_not_orgs_projects_or_money(text):
+    found = {(f.entity, text[f.start:f.end]) for f in rules.find(text)}
+    assert not {e for e, _ in found} & {"ORGANIZATION", "PROJECT", "MONEY"}, found
+
+
+def test_a_quoted_chinese_project_name_is_found():
+    text = "启动“长河”项目"   # start the "Changhe" project
+    assert "长河" in _spans(text, "PROJECT")
+
+
+def test_code_values_in_company_and_project_columns_are_left_alone():
+    text = ("company,project,amount\n"
+            "government_entity,[https://github.com/x/y],1\n"
+            "requirements,user_session,2\n")
+    assert not _spans(text, "ORGANIZATION") and not _spans(text, "PROJECT")
