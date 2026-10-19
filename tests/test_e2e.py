@@ -248,3 +248,73 @@ async def test_upstream_error_status_passes_through(tmp_path):
         r = await c.post("/v1/messages", json={})
     assert r.status_code == 529 and r.json() == {"error": "overloaded"}
     assert json.loads((tmp_path / "rec" / "001.meta.json").read_text())["status"] == 529
+
+
+# ---------------------------------------------------------------- tasks and grading
+
+from evals.e2e import grade as G
+from evals.e2e import tasks as T
+
+
+def test_every_task_refers_to_existing_canaries(built):
+    _, canaries = built
+    by_id = {c.id: c for c in canaries}
+    claimed = 0
+    for t in T.TASKS:
+        for cid in t.must_mention + t.must_not_mention + tuple(G.rubric_ids(t.rubric)):
+            assert cid in by_id, (t.id, cid)
+        claimed += any(by_id[c].claimed for c in t.must_mention)
+    assert claimed >= 0.7 * len(T.TASKS)
+
+
+def test_task_mix():
+    ids = [t.id for t in T.TASKS]
+    assert len(ids) == len(set(ids)) and 18 <= len(ids) <= 22
+    zh = sum(t.lang == "zh" for t in T.TASKS)
+    assert 0.4 <= zh / len(ids) <= 0.6
+    assert any(t.followups for t in T.TASKS)
+    assert sum(bool(t.must_not_mention) for t in T.TASKS) >= 2
+    assert any(t.run_tests for t in T.TASKS)
+    assert all(t.prompt.strip() and t.rubric.strip() for t in T.TASKS)
+
+
+def _task(**kw):
+    base = dict(id="t", lang="en", prompt="p", followups=(), must_mention=("a",), must_not_mention=("b",),
+                run_tests=False, rubric="names {a}")
+    return T.Task(**(base | kw))
+
+
+def test_check_finds_missing_wrong_and_placeholders(tmp_path):
+    cs = {"a": _c("a", "Clara Petrov"), "b": _c("b", "Owen Brennan")}
+    ok = G.check(_task(), "Ask clara petrov.", cs, tmp_path)
+    assert ok["passed"] and ok["missing"] == [] and ok["tests_passed"] is None
+    bad = G.check(_task(), "Ask <PERSON_2> and Owen Brennan.", cs, tmp_path)
+    assert not bad["passed"] and bad["missing"] == ["a"] and bad["wrong"] == ["b"]
+    assert bad["placeholders_left"] == ["<PERSON_2>"]
+
+
+def test_check_runs_app_tests(built, tmp_path):
+    import shutil
+    out, canaries = built
+    shutil.copytree(out, tmp_path / "w")
+    r = G.check(_task(must_mention=(), must_not_mention=(), run_tests=True), "done", {}, tmp_path / "w")
+    assert r["tests_passed"] is False and not r["passed"]
+    code = tmp_path / "w" / "app" / "inventory.py"
+    code.write_text(code.read_text().replace("len(items) - 1", "len(items)"))
+    assert G.check(_task(must_mention=(), must_not_mention=(), run_tests=True), "done", {}, tmp_path / "w")["passed"]
+
+
+def test_judge_prompt_is_blind_and_verdict_parses():
+    cs = {"a": _c("a", "Clara Petrov")}
+    key = G.render(_task().rubric, cs)
+    assert key == "names Clara Petrov"
+    prompt = G.judge_prompt(_task(), key, "answer text")
+    assert "hermie" not in prompt.lower() and "direct" not in prompt.lower() and "answer text" in prompt
+    assert G.parse_verdict("PASS\nok") == (True, "ok")
+    assert G.parse_verdict("FAIL\nwrong party") == (False, "wrong party")
+    assert G.parse_verdict("maybe")[0] is False
+
+
+def test_passed_combines_checks_and_verdict():
+    assert G.passed({"passed": True}, None) and G.passed({"passed": True}, (True, ""))
+    assert not G.passed({"passed": True}, (False, "x")) and not G.passed({"passed": False}, (True, ""))
