@@ -444,3 +444,131 @@ def test_followups_resume_the_session(tmp_path, fake_env):
     calls = [l for l in log.read_text().splitlines() if "-p" in l]
     assert len(calls) == 2 and "--resume s1" in calls[1]
     assert len(json.loads((_rd(out, "direct", "en.owner_contact") / "session.json").read_text())) == 2
+
+
+# ---------------------------------------------------------------- scorer
+
+from evals.e2e import score as SC
+
+
+def _mk_run(out, arm, task, answer, bodies, status="ok", rep=1, outbound=None, receipt=()):
+    rd = _rd(out, arm, task, rep)
+    (rd / "recorded").mkdir(parents=True)
+    (rd / "workdir").mkdir()
+    for i, b in enumerate(bodies, 1):
+        (rd / "recorded" / f"{i:03d}.json").write_text(json.dumps(b, ensure_ascii=False))
+        (rd / "recorded" / f"{i:03d}.meta.json").write_text(json.dumps({"path": "/v1/messages", "status": 200}))
+    if arm == "hermie":
+        (rd / "hermie_data" / "outbound").mkdir(parents=True)
+        for i, b in enumerate(bodies if outbound is None else outbound, 1):
+            (rd / "hermie_data" / "outbound" / f"r{i}.json").write_text(json.dumps(b))
+        (rd / "hermie_data" / "receipt.jsonl").write_text("".join(json.dumps(r) + "\n" for r in receipt))
+    (rd / "answer.txt").write_text(answer)
+    (rd / "status").write_text(status)
+
+
+@pytest.fixture
+def scored_dir(tmp_path):
+    out = tmp_path / "res"
+    cs = {c.id: c for c in W.build(1, out / "workspace")}
+    (out / "manifest.json").write_text(json.dumps({"sessions": 4, "seed": 1}))
+    return out, cs
+
+
+def _msg(text):
+    return {"model": "m", "messages": [{"role": "user", "content": text}]}
+
+
+def _score(out, judge=lambda prompt: "PASS\nok"):
+    return SC.score(out, judge=judge, peers=False)
+
+
+def test_claimed_and_unclaimed_leaks_are_split(scored_dir):
+    out, cs = scored_dir
+    email, price = cs["emp.1.email"].value, cs["en.contract.price"].value
+    _mk_run(out, "direct", "en.penalty", "x", [_msg(f"{email} {price}")])
+    _mk_run(out, "hermie", "en.penalty", "x", [_msg(f"{email} {price}")])
+    r = _score(out)
+    assert r["canaries"]["emp.1.email"] == "leaked" and r["canaries"]["en.contract.price"] == "leaked"
+    assert r["claimed_leaked"] == ["emp.1.email"]
+    assert r["by_kind"]["amount"]["leaked"] == 1 and r["by_kind"]["email"]["leaked"] == 1
+    assert any(l["canary_id"] == "emp.1.email" and l["request"] == 1 for l in r["leaks"])
+
+
+def test_unexercised_canary_counts_neither_way(scored_dir):
+    out, cs = scored_dir
+    _mk_run(out, "direct", "en.penalty", "x", [_msg(cs["emp.2.email"].value)])
+    _mk_run(out, "hermie", "en.penalty", "x", [_msg("<EMAIL_ADDRESS_1>")])
+    r = _score(out)
+    assert r["canaries"]["emp.2.email"] == "protected"
+    assert r["canaries"]["emp.3.email"] == "not exercised"
+    assert r["by_kind"]["email"]["exercised"] == 1 and r["claimed_leaked"] == []
+
+
+def test_bypass_marks_task_invalid(scored_dir):
+    out, cs = scored_dir
+    email = cs["emp.1.email"].value
+    _mk_run(out, "direct", "en.penalty", "x", [_msg(email)])
+    _mk_run(out, "hermie", "en.penalty", "x", [_msg(email)], outbound=[_msg("<EMAIL_ADDRESS_1>")])
+    r = _score(out)
+    assert r["invalid"] == [("hermie", "en.penalty", 1)]
+    assert r["canaries"]["emp.1.email"] == "protected" and r["claimed_leaked"] == []
+    assert any(l["canary_id"] == "emp.1.email" and l["invalid"] for l in r["leaks"])
+
+
+def test_cause_classes(scored_dir):
+    out, cs = scored_dir
+    v = lambda i: cs[i].value
+    _mk_run(out, "direct", "en.buyer_signatory", v("en.contract.buyer_signatory"), [_msg("a")])
+    _mk_run(out, "hermie", "en.buyer_signatory", "", [_msg("a")], status="blocked")
+    _mk_run(out, "direct", "en.log_user", v("log.1.email"), [_msg("a")])
+    _mk_run(out, "hermie", "en.log_user", "<EMAIL_ADDRESS_3>", [_msg("a")])
+    _mk_run(out, "direct", "zh.tenant_only", v("zh.lease.tenant") + v("zh.lease.tenant_phone"), [_msg("a")])
+    _mk_run(out, "hermie", "zh.tenant_only", v("zh.lease.tenant") + v("zh.lease.tenant_phone") + v("zh.lease.landlord"),
+            [_msg("a")])
+    _mk_run(out, "direct", "en.memo", v("emp.3.name"), [_msg("a")])
+    _mk_run(out, "hermie", "en.memo", "not sure", [_msg("a")],
+            receipt=[{"status": 200, "withheld_items": [{"id": "x", "tool": "Read", "file": "a", "why": "w"}]}])
+    r = _score(out)
+    assert r["causes"] == {"en.buyer_signatory": "blocked", "en.log_user": "unrestored", "zh.tenant_only": "swapped",
+                           "en.memo": "withheld"}
+
+
+def test_reruns_list_disagreements_and_noise(scored_dir):
+    out, cs = scored_dir
+    name = cs["en.contract.buyer_signatory"].value
+    _mk_run(out, "direct", "en.buyer_signatory", name, [_msg("a")])
+    _mk_run(out, "hermie", "en.buyer_signatory", "no idea", [_msg("a")])
+    _mk_run(out, "direct", "en.log_user", cs["log.1.email"].value, [_msg("a")])
+    _mk_run(out, "hermie", "en.log_user", cs["log.1.email"].value, [_msg("a")])
+    r = _score(out)
+    assert r["reruns"] == ["en.buyer_signatory"] and r["causes"]["en.buyer_signatory"] == "damage"
+    for rep, ans in ((2, name), (3, "no idea")):
+        _mk_run(out, "direct", "en.buyer_signatory", name, [_msg("a")], rep=rep)
+        _mk_run(out, "hermie", "en.buyer_signatory", ans, [_msg("a")], rep=rep)
+    r = _score(out)
+    assert r["reruns"] == [] and r["causes"]["en.buyer_signatory"] == "noise"
+
+
+def test_judge_fail_fails_the_answer_and_is_cached(scored_dir):
+    out, cs = scored_dir
+    name = cs["en.contract.buyer_signatory"].value
+    _mk_run(out, "direct", "en.buyer_signatory", name, [_msg("a")])
+    calls = []
+    r = _score(out, judge=lambda p: calls.append(p) or "FAIL\nwrong")
+    assert r["quality"][("direct", "en.buyer_signatory", 1)]["passed"] is False
+    _score(out, judge=lambda p: calls.append(p) or "PASS\nok")
+    assert len(calls) == 1
+
+
+def test_summary_gates(scored_dir):
+    out, cs = scored_dir
+    email = cs["emp.1.email"].value
+    _mk_run(out, "direct", "en.penalty", "x", [_msg(email)])
+    _mk_run(out, "hermie", "en.penalty", "x", [_msg(email)])
+    assert SC.main(["--out", str(out), "--judge", "none", "--peers", "none"]) == 0
+    text = (out / "summary.md").read_text()
+    assert "Gate 1 (claimed kinds leak nothing): FAIL" in text
+    assert "Gate 2 (no Hermie-caused wrong answer): PASS" in text
+    for name in ("leaks.md", "quality.md", "reruns.txt"):
+        assert (out / name).is_file()
