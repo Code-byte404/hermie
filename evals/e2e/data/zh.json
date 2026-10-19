@@ -1,0 +1,262 @@
+{
+ "surnames": {
+  "gloss": "family names",
+  "items": [
+   "\u738b",
+   "\u674e",
+   "\u5f20",
+   "\u5218",
+   "\u9648",
+   "\u6768",
+   "\u9ec4",
+   "\u8d75",
+   "\u5434",
+   "\u5468",
+   "\u5f90",
+   "\u5b59",
+   "\u9a6c",
+   "\u6731",
+   "\u80e1",
+   "\u90ed",
+   "\u4f55",
+   "\u9ad8",
+   "\u6797",
+   "\u7f57",
+   "\u90d1",
+   "\u6881",
+   "\u8c22",
+   "\u5b8b",
+   "\u5510",
+   "\u8bb8",
+   "\u97e9",
+   "\u51af",
+   "\u9093",
+   "\u66f9",
+   "\u5f6d",
+   "\u66fe",
+   "\u8427",
+   "\u7530",
+   "\u8463",
+   "\u8881",
+   "\u6f58",
+   "\u848b",
+   "\u8521",
+   "\u4f59",
+   "\u675c",
+   "\u53f6",
+   "\u7a0b",
+   "\u82cf",
+   "\u9b4f",
+   "\u5415",
+   "\u4e01",
+   "\u4efb",
+   "\u6c88",
+   "\u59da",
+   "\u5362",
+   "\u59dc",
+   "\u5d14",
+   "\u949f",
+   "\u8c2d",
+   "\u9646",
+   "\u6c6a",
+   "\u8303",
+   "\u91d1",
+   "\u77f3",
+   "\u5ed6",
+   "\u8d3e",
+   "\u590f",
+   "\u97e6",
+   "\u4ed8",
+   "\u65b9",
+   "\u767d",
+   "\u90b9",
+   "\u5b5f",
+   "\u718a",
+   "\u79e6",
+   "\u90b1",
+   "\u6c5f",
+   "\u5c39",
+   "\u859b",
+   "\u95eb",
+   "\u6bb5",
+   "\u96f7",
+   "\u4faf",
+   "\u9f99",
+   "\u53f2",
+   "\u9676",
+   "\u9ece",
+   "\u8d3a",
+   "\u987e",
+   "\u6bdb",
+   "\u90dd",
+   "\u9f9a",
+   "\u90b5",
+   "\u4e07",
+   "\u94b1",
+   "\u4e25",
+   "\u8983",
+   "\u6b66",
+   "\u6234",
+   "\u83ab",
+   "\u5b54",
+   "\u5411",
+   "\u6c64"
+  ]
+ },
+ "given": {
+  "gloss": "given names (one or two characters)",
+  "items": [
+   "\u5b50\u6db5",
+   "\u6d69\u7136",
+   "\u96e8\u6850",
+   "\u601d\u8fdc",
+   "\u6893\u8431",
+   "\u4fca\u6770",
+   "\u6b23\u6021",
+   "\u5b87\u8f69",
+   "\u8bd7\u742a",
+   "\u660e\u54f2",
+   "\u82e5\u66e6",
+   "\u535a\u6587",
+   "\u5609\u6021",
+   "\u5929\u4f51",
+   "\u6653\u5cf0",
+   "\u4e3d\u5a1f",
+   "\u5fd7\u5f3a",
+   "\u5a49\u6e05",
+   "\u5efa\u56fd",
+   "\u79c0\u82f1",
+   "\u6d77\u6d9b",
+   "\u9759\u6021",
+   "\u6587\u535a",
+   "\u4f73\u6167",
+   "\u632f\u5b87",
+   "\u68a6\u7476",
+   "\u56fd\u680b",
+   "\u96c5\u7434",
+   "\u9e4f\u98de",
+   "\u6167\u654f"
+  ]
+ },
+ "cities": {
+  "gloss": "city + district pairs",
+  "items": [
+   [
+    "\u4e0a\u6d77\u5e02",
+    "\u6d66\u4e1c\u65b0\u533a"
+   ],
+   [
+    "\u5317\u4eac\u5e02",
+    "\u671d\u9633\u533a"
+   ],
+   [
+    "\u6df1\u5733\u5e02",
+    "\u5357\u5c71\u533a"
+   ],
+   [
+    "\u676d\u5dde\u5e02",
+    "\u897f\u6e56\u533a"
+   ],
+   [
+    "\u5e7f\u5dde\u5e02",
+    "\u5929\u6cb3\u533a"
+   ],
+   [
+    "\u6210\u90fd\u5e02",
+    "\u6b66\u4faf\u533a"
+   ]
+  ]
+ },
+ "roads": {
+  "gloss": "invented road names",
+  "items": [
+   "\u9752\u67ab\u8def",
+   "\u94f6\u674f\u5927\u9053",
+   "\u661f\u6cb3\u8def",
+   "\u4e91\u6816\u8def",
+   "\u9526\u7ee3\u8857",
+   "\u671b\u6c5f\u8def",
+   "\u68a7\u6850\u8def",
+   "\u6d77\u68e0\u8857",
+   "\u4e34\u6eaa\u8def",
+   "\u7fe0\u5fae\u8def"
+  ]
+ },
+ "company_words": {
+  "gloss": "invented company name stems",
+  "items": [
+   "\u661f\u6cb3",
+   "\u4e91\u5e06",
+   "\u9752\u79be",
+   "\u8fdc\u822a",
+   "\u5609\u79be",
+   "\u745e\u4e30",
+   "\u9f0e\u76db",
+   "\u534e\u542f",
+   "\u660e\u5fb7",
+   "\u5b89\u548c"
+  ]
+ },
+ "company_kinds": {
+  "gloss": "company kinds",
+  "items": [
+   "\u8d38\u6613",
+   "\u79d1\u6280",
+   "\u7269\u6d41",
+   "\u54a8\u8be2",
+   "\u5efa\u6750",
+   "\u6587\u5316\u4f20\u5a92"
+  ]
+ },
+ "company_suffix": {
+  "gloss": "Co., Ltd.",
+  "text": "\u6709\u9650\u516c\u53f8"
+ },
+ "projects": {
+  "gloss": "invented internal project names",
+  "items": [
+   "\u9752\u9e1f\u8ba1\u5212",
+   "\u5317\u6781\u661f\u9879\u76ee",
+   "\u767d\u9e6d\u5de5\u7a0b",
+   "\u8d64\u971e\u8ba1\u5212",
+   "\u8fdc\u5c71\u9879\u76ee",
+   "\u6668\u66e6\u8ba1\u5212"
+  ]
+ },
+ "date_format": {
+  "gloss": "date: {y} year {m} month {d} day",
+  "text": "{y}\u5e74{m}\u6708{d}\u65e5"
+ },
+ "amount_format": {
+  "gloss": "amount in RMB: {n} yuan",
+  "text": "\u4eba\u6c11\u5e01{n}\u5143"
+ },
+ "lease": {
+  "gloss": "residential lease: parties with ID numbers and phones, property address, rent, deposit, landlord bank card, start date, and who pays repairs (landlord) vs utilities (tenant)",
+  "text": "# \u623f\u5c4b\u79df\u8d41\u5408\u540c\n\n\u51fa\u79df\u65b9\uff08\u7532\u65b9\uff09\uff1a{landlord}\n\u8eab\u4efd\u8bc1\u53f7\u7801\uff1a{landlord_id}\n\u8054\u7cfb\u7535\u8bdd\uff1a{landlord_phone}\n\n\u627f\u79df\u65b9\uff08\u4e59\u65b9\uff09\uff1a{tenant}\n\u8eab\u4efd\u8bc1\u53f7\u7801\uff1a{tenant_id}\n\u8054\u7cfb\u7535\u8bdd\uff1a{tenant_phone}\n\n## \u7b2c\u4e00\u6761 \u623f\u5c4b\u4fe1\u606f\n\n\u7532\u65b9\u5c06\u4f4d\u4e8e{address}\u7684\u4f4f\u623f\u51fa\u79df\u7ed9\u4e59\u65b9\u5c45\u4f4f\u4f7f\u7528\u3002\n\n## \u7b2c\u4e8c\u6761 \u79df\u671f\n\n\u79df\u671f\u81ea{start_date}\u8d77\uff0c\u5171\u5341\u4e8c\u4e2a\u6708\u3002\n\n## \u7b2c\u4e09\u6761 \u79df\u91d1\u53ca\u62bc\u91d1\n\n\u6708\u79df\u91d1\u4e3a{rent}\uff0c\u4e59\u65b9\u5e94\u4e8e\u6bcf\u6708\u4e94\u65e5\u524d\u652f\u4ed8\u3002\u62bc\u91d1\u4e3a{deposit}\uff0c\u79df\u671f\u5c4a\u6ee1\u4e14\u65e0\u635f\u574f\u65f6\u7531\u7532\u65b9\u5168\u989d\u9000\u8fd8\u3002\n\u79df\u91d1\u8bf7\u8f6c\u5165\u7532\u65b9\u94f6\u884c\u5361\uff1a{bank_card}\uff08\u5f00\u6237\u884c\uff1a\u793a\u4f8b\u94f6\u884c\uff09\u3002\n\n## \u7b2c\u56db\u6761 \u7ef4\u4fee\u4e0e\u8d39\u7528\n\n\u623f\u5c4b\u4e3b\u4f53\u7ed3\u6784\u53ca\u5bb6\u7535\u7684\u7ef4\u4fee\u8d39\u7528\u7531\u7532\u65b9\u627f\u62c5\uff1b\u6c34\u3001\u7535\u3001\u71c3\u6c14\u3001\u7f51\u7edc\u7b49\u8d39\u7528\u7531\u4e59\u65b9\u627f\u62c5\u3002\n\u4e59\u65b9\u903e\u671f\u652f\u4ed8\u79df\u91d1\u8d85\u8fc7\u5341\u4e94\u65e5\u7684\uff0c\u7532\u65b9\u6709\u6743\u89e3\u9664\u5408\u540c\uff0c\u62bc\u91d1\u4e0d\u4e88\u9000\u8fd8\u3002\n\n## \u7b2c\u4e94\u6761 \u5176\u4ed6\n\n\u672c\u5408\u540c\u4e00\u5f0f\u4e24\u4efd\uff0c\u7532\u4e59\u53cc\u65b9\u5404\u6267\u4e00\u4efd\uff0c\u81ea\u53cc\u65b9\u7b7e\u5b57\u4e4b\u65e5\u8d77\u751f\u6548\u3002\n\n\u7532\u65b9\u7b7e\u5b57\uff1a{landlord}            \u4e59\u65b9\u7b7e\u5b57\uff1a{tenant}\n"
+ },
+ "meeting": {
+  "gloss": "meeting notes: date, attendees, the project, the decision (a confidential passage), the owner, and a new API key pasted into the notes",
+  "text": "# \u5468\u4f8b\u4f1a\u7eaa\u8981\n\n\u65f6\u95f4\uff1a{date}\n\u53c2\u4f1a\u4eba\uff1a{attendees}\n\u8bb0\u5f55\u4eba\uff1a{recorder}\n\n## \u4e00\u3001{project}\u8fdb\u5c55\n\n{decision}\n\n\u672c\u4e8b\u9879\u7531{owner}\u8d1f\u8d23\uff0c\u4e0b\u5468\u4e94\u524d\u63d0\u4ea4\u65b9\u6848\u3002\n\n## \u4e8c\u3001\u63a5\u53e3\u4e0e\u5bc6\u94a5\n\n\u4f9b\u5e94\u5546\u63a5\u53e3\u5df2\u5f00\u901a\uff0c\u65b0\u7684\u5bc6\u94a5\u662f {api_key} \uff0c\u8bf7\u5927\u5bb6\u5148\u7528\u8fd9\u4e2a\u6d4b\u8bd5\uff0c\u4e0d\u8981\u5916\u4f20\u3002\n\n## \u4e09\u3001\u5176\u4ed6\n\n\u4e0b\u6b21\u4f8b\u4f1a\u6539\u5230\u5468\u4e09\u4e0b\u5348\u3002\n"
+ },
+ "decisions": {
+  "gloss": "confidential decisions (passages)",
+  "items": [
+   "\u7ecf\u8ba8\u8bba\u51b3\u5b9a\uff0c\u516c\u53f8\u5c06\u5728\u7b2c\u56db\u5b63\u5ea6\u6682\u505c\u534e\u4e1c\u533a\u7684\u6269\u5f20\u8ba1\u5212\uff0c\u5e76\u5c06\u9884\u7b97\u7684\u4e09\u6210\u8f6c\u6295\u6d77\u5916\u5e02\u573a\uff0c\u6b64\u4e8b\u5728\u6b63\u5f0f\u516c\u544a\u524d\u4e25\u683c\u4fdd\u5bc6\u3002",
+   "\u4f1a\u8bae\u51b3\u5b9a\u4e0e\u4f9b\u5e94\u5546\u91cd\u65b0\u8c08\u5224\u5e74\u5ea6\u5408\u540c\uff0c\u82e5\u5bf9\u65b9\u4e0d\u63a5\u53d7\u964d\u4ef7\u767e\u5206\u4e4b\u5341\u4e94\uff0c\u5c06\u4e8e\u660e\u5e74\u4e00\u6708\u8d77\u66f4\u6362\u4f9b\u5e94\u5546\uff0c\u6b64\u51b3\u5b9a\u6682\u4e0d\u5bf9\u5916\u516c\u5f00\u3002",
+   "\u7ba1\u7406\u5c42\u540c\u610f\u5728\u660e\u5e74\u4e09\u6708\u524d\u88c1\u51cf\u5ba2\u670d\u90e8\u95e8\u7ea6\u4e8c\u5341\u4e2a\u5c97\u4f4d\uff0c\u5177\u4f53\u540d\u5355\u7531\u4eba\u4e8b\u90e8\u95e8\u53e6\u884c\u786e\u5b9a\uff0c\u5728\u901a\u77e5\u5458\u5de5\u4e4b\u524d\u4e0d\u5f97\u5916\u4f20\u3002"
+  ]
+ },
+ "contact_note": {
+  "gloss": "contact note: key account, call before visiting",
+  "text": "\u91cd\u70b9\u5ba2\u6237\uff0c\u62dc\u8bbf\u524d\u5148\u7535\u8bdd\u8054\u7cfb"
+ },
+ "address_format": {
+  "gloss": "{city}{district}{road} No.{n}, building {b}, room {r}{u:02d}",
+  "text": "{city}{district}{road}{n}\u53f7{b}\u680b{r}{u:02d}\u5ba4"
+ },
+ "list_sep": {
+  "gloss": "enumeration comma",
+  "text": "\u3001"
+ }
+}
