@@ -158,3 +158,93 @@ def test_one_leak_per_canary_and_path_strongest_form_first():
 def test_non_json_body_is_searched_as_text():
     c = _c("p", "Clara Petrov")
     assert L.find_leaks(b"not json: Clara Petrov", [c]) == [L.Leak("p", "$", "exact")]
+
+
+# ---------------------------------------------------------------- recorder
+
+import asyncio
+
+import httpx
+
+from evals.e2e import recorder as R
+
+FIX = ROOT / "tests" / "fixtures"
+
+
+def _rec_client(tmp_path, handler):
+    app = R.create_recorder("https://up.test/base", tmp_path / "rec", client=httpx.AsyncClient(
+        transport=httpx.MockTransport(handler)))
+    return httpx.AsyncClient(transport=httpx.ASGITransport(app), base_url="http://rec")
+
+
+async def test_records_body_not_headers(tmp_path):
+    seen = []
+
+    def up(req):
+        seen.append(req)
+        return httpx.Response(200, json={"ok": True})
+    async with _rec_client(tmp_path, up) as c:
+        body = json.dumps({"messages": [{"role": "user", "content": "hi"}]}).encode()
+        r = await c.post("/v1/messages?beta=true", content=body,
+                         headers={"x-api-key": "k-secret-test", "authorization": "Bearer k-secret-test"})
+    assert r.status_code == 200 and r.json() == {"ok": True}
+    assert str(seen[0].url) == "https://up.test/base/v1/messages?beta=true"
+    assert seen[0].headers["x-api-key"] == "k-secret-test" and seen[0].headers["authorization"].endswith("k-secret-test")
+    assert seen[0].headers["host"] == "up.test"
+    assert (tmp_path / "rec" / "001.json").read_bytes() == body
+    assert json.loads((tmp_path / "rec" / "001.meta.json").read_text())["path"] == "/v1/messages"
+    for p in (tmp_path / "rec").iterdir():
+        assert b"k-secret-test" not in p.read_bytes()
+
+
+def _free_port():
+    import socket
+    with socket.socket() as so:
+        so.bind(("127.0.0.1", 0))
+        return so.getsockname()[1]
+
+
+def test_sse_passes_through_in_chunks(tmp_path):
+    """A real server: httpx's ASGI transport buffers whole responses, so it cannot show streaming."""
+    import threading
+    import time
+    blocks = [b + b"\n\n" for b in (FIX / "streams" / "anthropic.sse").read_bytes().split(b"\n\n") if b]
+    first_seen = threading.Event()
+
+    class Slow(httpx.AsyncByteStream):
+        async def __aiter__(self):
+            yield blocks[0]
+            t0 = time.monotonic()
+            while not first_seen.is_set():   # a buffering recorder never lets the client see the first block
+                assert time.monotonic() - t0 < 5, "client never saw the first block"
+                await asyncio.sleep(0.01)
+            for b in blocks[1:]:
+                yield b
+
+    up = httpx.AsyncClient(transport=httpx.MockTransport(
+        lambda req: httpx.Response(200, headers={"content-type": "text/event-stream"}, stream=Slow())))
+    port = _free_port()
+    with R.serve_recorder("https://up.test", tmp_path / "rec", port, client=up):
+        got = b""
+        with httpx.stream("POST", f"http://127.0.0.1:{port}/v1/messages", json={"stream": True}, timeout=10) as r:
+            for chunk in r.iter_raw():
+                got += chunk
+                first_seen.set()
+    assert got == b"".join(blocks)
+    assert r.headers["content-type"].startswith("text/event-stream")
+    assert json.loads((tmp_path / "rec" / "001.json").read_text()) == {"stream": True}
+
+
+async def test_get_and_query_forwarded_and_numbered(tmp_path):
+    async with _rec_client(tmp_path, lambda req: httpx.Response(200, json={"m": req.method})) as c:
+        assert (await c.get("/v1/models?x=1")).json() == {"m": "GET"}
+        assert (await c.post("/v1/messages", json={"a": 1})).json() == {"m": "POST"}
+    assert (tmp_path / "rec" / "001.json").read_bytes() == b""
+    assert json.loads((tmp_path / "rec" / "002.json").read_text()) == {"a": 1}
+
+
+async def test_upstream_error_status_passes_through(tmp_path):
+    async with _rec_client(tmp_path, lambda req: httpx.Response(529, json={"error": "overloaded"})) as c:
+        r = await c.post("/v1/messages", json={})
+    assert r.status_code == 529 and r.json() == {"error": "overloaded"}
+    assert json.loads((tmp_path / "rec" / "001.meta.json").read_text())["status"] == 529
