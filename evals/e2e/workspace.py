@@ -292,7 +292,7 @@ def _lease_zh(reg: _Registry) -> str:
 
 def _employees(reg: _Registry) -> tuple[str, list[str]]:
     r, f = reg.rng, "company/employees.csv"
-    top = sorted(r.sample(range(1510, 1890), 3), reverse=True)
+    bands = [(1760, 1890), (1630, 1759), (1510, 1629)]   # disjoint, so TOP_PAID order holds whatever is drawn
     names, rows = [], ["name,email,phone,department,salary,start_date"]
     for i in range(EMPLOYEES):
         zh = i >= EMPLOYEES // 2
@@ -300,9 +300,8 @@ def _employees(reg: _Registry) -> tuple[str, list[str]]:
         name = reg.fresh(f"emp.{i}.name", "person", lang, f, (lambda: _zh_name(r)) if zh else (lambda: _en_name(r)))
         email = reg.fresh(f"emp.{i}.email", "email", lang, f, lambda: _email(r, "larkspur.example.com", name))
         phone = reg.fresh(f"emp.{i}.phone", "phone", lang, f, (lambda: _cn_mobile(r)) if zh else (lambda: _us_phone(r)))
-        level = top[TOP_PAID.index(i)] if i in TOP_PAID else None
-        salary = reg.fresh(f"emp.{i}.salary", "amount", lang, f,
-                           (lambda: str(level * 100)) if level else (lambda: str(r.randint(520, 1180) * 100)))
+        lo, hi = bands[TOP_PAID.index(i)] if i in TOP_PAID else (520, 1180)
+        salary = reg.fresh(f"emp.{i}.salary", "amount", lang, f, lambda: str(r.randint(lo, hi) * 100))
         rows.append(f"{name},{email},{phone},{r.choice(_DEPTS)},{salary},20{r.randint(15, 25)}-{r.randint(1, 12):02d}-"
                     f"{r.randint(1, 28):02d}")
         names.append(name)
@@ -419,12 +418,14 @@ ADMIN_PASSWORD={v['admin_password']}
 """
     users = [reg.fresh(f"log.{i}.email", "email", "en", "app/app.log", lambda: _email(r, "customer.example.com"))
              for i in range(LOG_USERS)]
-    weights = [3] * LOG_USERS
-    weights[LOG_TOP_ERROR_USER] = 9
+    # error lines: the top user 12, every other user 1 to 4, so the answer to "who has most errors" is fixed
+    errs = [LOG_TOP_ERROR_USER] * 12 + [u for u in range(LOG_USERS) if u != LOG_TOP_ERROR_USER
+                                        for _ in range(r.randint(1, 4))]
+    r.shuffle(errs)
     log = []
-    for n in range(60):
-        u = r.choices(range(LOG_USERS), weights=weights)[0] if n % 2 else r.randrange(LOG_USERS)
+    for n in range(2 * len(errs)):
         error = n % 2 == 1
+        u = errs[n // 2] if error else r.randrange(LOG_USERS)
         log.append(f"2026-10-05 {8 + n // 6:02d}:{(n * 7) % 60:02d}:{n % 60:02d} "
                    f"{'ERROR' if error else 'INFO'} user={users[u]} ip=203.0.113.{r.randint(2, 250)} "
                    + ("order_total failed: total does not match line items" if error else "order placed"))

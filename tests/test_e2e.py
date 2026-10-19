@@ -572,3 +572,14 @@ def test_summary_gates(scored_dir):
     assert "Gate 2 (no Hermie-caused wrong answer): PASS" in text
     for name in ("leaks.md", "quality.md", "reruns.txt"):
         assert (out / name).is_file()
+
+
+@pytest.mark.parametrize("seed", range(1, 31))
+def test_log_top_error_user_is_strictly_first(tmp_path, seed):
+    from collections import Counter
+    out = tmp_path / "w"
+    cs = {c.id: c.value for c in W.build(seed, out)}
+    errors = Counter(l.split("user=")[1].split()[0] for l in (out / "app" / "app.log").read_text().splitlines()
+                     if " ERROR " in l)
+    (top, n), (_, second) = errors.most_common(2)
+    assert top == cs[f"log.{W.LOG_TOP_ERROR_USER}.email"] and n > second
