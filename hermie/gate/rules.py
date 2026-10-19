@@ -10,6 +10,7 @@ from __future__ import annotations
 import base64
 import binascii
 import math
+import bisect
 import re
 
 from .types import Finding
@@ -686,6 +687,38 @@ def column_persons(text: str, found: list[Finding]) -> list[Finding]:
                             and not any(s0 < b and a < e0 for s0, e0 in people):
                         out.append(Finding("PERSON", a, b, 0.7))
         i = max(j, i + 1)
+    out += _space_rows(text, lines, people)
+    return out
+
+
+def _space_rows(text: str, lines: list[tuple[int, str]], people: list[tuple[int, int]]) -> list[Finding]:
+    """Rows separated by spaces only (`print(name, dept, salary)`): a person at the start of a row, followed by k more
+    tokens, makes the leading part of each neighbouring row (all but its last k tokens) a person when it looks like
+    a name. Neighbours run up to a blank line."""
+    out: list[Finding] = []
+    offs = [off for off, _ in lines]
+    for s0, e0 in people:
+        n = bisect.bisect_right(offs, s0) - 1
+        if n < 0:
+            continue
+        off, line = lines[n]
+        if s0 - off > len(line) or line[:s0 - off].strip():
+            continue
+        rest = len(text[e0:off + len(line)].split())
+        if rest < 1 or len(line.split()) < 2:
+            continue
+        for step in (-1, 1):
+            m = n + step
+            while 0 <= m < len(lines) and lines[m][1].strip():
+                roff, row = lines[m]
+                toks = list(re.finditer(r"\S+", row))
+                if len(toks) > rest:
+                    a, b = toks[0].start(), toks[-rest - 1].end()
+                    v = row[a:b]
+                    if (_ZH_NAME_FULL.fullmatch(v) or _CELL_NAME.fullmatch(v)) and not _is_company(v) \
+                            and not any(x < roff + b and roff + a < y for x, y in people):
+                        out.append(Finding("PERSON", roff + a, roff + b, 0.65))
+                m += step
     return out
 
 

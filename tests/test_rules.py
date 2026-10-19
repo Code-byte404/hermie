@@ -762,3 +762,21 @@ def test_no_column_spread_without_a_person_in_the_column():
     text = "Daniel Fairbanks | Legal\nOwen Fairbanks | Ops\n"
     assert rules.column_persons(text, [Finding("EMAIL_ADDRESS", 0, 3, 1.0)]) == []
     assert rules.column_persons("just one line | with a bar", [Finding("PERSON", 0, 4, 1.0)]) == []
+
+
+def test_names_leading_space_separated_rows_like_a_known_person():
+    from hermie.gate.types import Finding
+    text = ("<PERSON_6> Operations 181200\n"
+            f"{ZH_NAME_A} Finance 168400\n"
+            "Daniel Fairbanks Legal 161200\n"
+            "total rows 3\n")
+    seed = [Finding("PERSON", 0, len("<PERSON_6>"), 1.0)]
+    got = {text[f.start:f.end] for f in rules.column_persons(text, seed)}
+    assert got == {ZH_NAME_A, "Daniel Fairbanks"}
+
+
+def test_no_space_column_spread_when_the_person_is_not_at_the_line_start():
+    from hermie.gate.types import Finding
+    text = "owner is Maya Nakamura\nDaniel Fairbanks Legal 161200\n"
+    i = text.index("Maya")
+    assert rules.column_persons(text, [Finding("PERSON", i, i + len("Maya Nakamura"), 1.0)]) == []
