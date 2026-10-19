@@ -672,3 +672,57 @@ def test_whitespace_and_repeated_headers_scan_in_linear_time(text):
 ])
 def test_weak_but_real_values_are_found(text, core):
     assert _found(text, core or text.split(" = ")[1]), [(text[f.start:f.end]) for f in rules.find(text)]
+
+
+# --- names in tables: a name column (by its header) makes every row's cell a person
+
+ZH_NAME_A, ZH_NAME_B = "方静怡", "覃俊杰"   # two invented Chinese names
+ZH_HEADER = "姓名"                                       # "name"
+
+
+def _persons(text):
+    return {text[f.start:f.end] for f in rules.find(text) if f.entity == "PERSON"}
+
+
+def test_names_in_a_csv_name_column_are_found():
+    text = ("name,email,department,salary\n"
+            "Isabel Brennan,ib@example.com,Sales,53200\n"
+            f"{ZH_NAME_A},fj@example.com,Finance,61000\n"
+            "Daniel Fairbanks,df@example.com,Legal,161200\n")
+    assert {"Isabel Brennan", ZH_NAME_A, "Daniel Fairbanks"} <= _persons(text)
+
+
+def test_quoted_cells_and_a_name_column_that_is_not_first():
+    text = ('id,full_name,address\n'
+            '7,"Clara Lindqvist","4401 Bramble Street, Springfield"\n'
+            f'8,{ZH_NAME_B},"x"\n')
+    assert {"Clara Lindqvist", ZH_NAME_B} <= _persons(text)
+
+
+@pytest.mark.parametrize("prefix", ["{:>6}\t", "{:>6}→"])
+def test_names_in_a_table_read_with_line_numbers(prefix):
+    rows = ["name,phone", "Nadia Brennan,(303) 555-0138", f"{ZH_NAME_A},19900003960"]
+    text = "\n".join(prefix.format(i + 1) + row for i, row in enumerate(rows))
+    assert {"Nadia Brennan", ZH_NAME_A} <= _persons(text)
+
+
+def test_tsv_markdown_and_chinese_headers():
+    tsv = "Name\tTeam\nPriya Lindqvist\tOps\n"
+    md = "| Contact Name | Role |\n|---|---|\n| Owen Fairbanks | CFO |\n"
+    zh = f"{ZH_HEADER},dept\n{ZH_NAME_B},Ops\n"
+    assert "Priya Lindqvist" in _persons(tsv) and "Owen Fairbanks" in _persons(md) and ZH_NAME_B in _persons(zh)
+
+
+def test_a_first_name_column_takes_single_words():
+    text = "first_name,last_name,city\nMaya,Nakamura,Riverton\n"
+    assert {"Maya", "Nakamura"} <= _persons(text)
+
+
+@pytest.mark.parametrize("text", [
+    "name,version\nrequests,2.31.0\nDjango,4.2\nnumpy,1.26\n",          # package lists
+    "product name,price\nSteel Pump,40\nBlue Valve,12\n",               # not a person column
+    "file_name,size\nReport Final.pdf,12\n",
+    "name,email\nN/A,x@example.com\n12345,y@example.com\n",
+])
+def test_tables_without_person_names_are_left_alone(text):
+    assert not _persons(text)

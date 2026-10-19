@@ -537,6 +537,7 @@ _ZH_LABELS = ("\u7532\u65b9|\u4e59\u65b9|\u4e19\u65b9|\u4e01\u65b9|\u51fa\u79df\
               "\u6cd5\u5b9a\u4ee3\u8868\u4eba|\u8054\u7cfb\u4eba|\u6536\u4ef6\u4eba|\u6536\u8d27\u4eba|\u6237\u4e3b|\u7acb\u7ea6\u4eba|\u7acb\u4e66\u4eba|\u7b7e\u7ea6\u4eba|\u7b7e\u5b57|\u7b7e\u540d|"
               "\u7533\u8bf7\u4eba|\u6295\u4fdd\u4eba|\u88ab\u4fdd\u9669\u4eba|\u53d7\u76ca\u4eba|\u60a3\u8005|\u75c5\u4eba|\u5458\u5de5|\u5b66\u751f|\u5bb6\u957f|\u76d1\u62a4\u4eba|"
               "\u7d27\u6025\u8054\u7cfb\u4eba|\u7ecf\u529e\u4eba|\u8d1f\u8d23\u4eba|\u4ee3\u7406\u4eba|\u672c\u4eba|\u6211\u53eb|\u540d\u53eb")
+_ZH_NAME_FULL = re.compile(_ZH_NAME)
 _ZH_NAME_AFTER_LABEL = re.compile(rf"(?:{_ZH_LABELS})(?:[\uff08(][^\uff09)\n]{{0,8}}[\uff09)])?[:\uff1a\s]*(?P<name>{_ZH_NAME})")
 _ZH_NAME_TITLE = re.compile(rf"(?P<name>(?:{_COMPOUND})[\u4e00-\u9fa5]{{0,1}}|[{_SURNAMES}][\u4e00-\u9fa5]{{0,2}}?)(?=\u5148\u751f|\u5973\u58eb|\u5c0f\u59d0)")
 _ZH_ORG_AFTER = re.compile(r"[\u4e00-\u9fa5]{0,6}(?:\u516c\u53f8|\u96c6\u56e2|\u6709\u9650|\u79d1\u6280|\u94f6\u884c|\u5b66\u6821|\u533b\u9662|\u4e2d\u5fc3|\u5b66\u9662|\u5927\u5b66|\u5de5\u5382|"
@@ -552,6 +553,88 @@ def _zh_names(text: str) -> list[Finding]:
         out.append(Finding("PERSON", m.start("name"), m.end("name"), 0.75))
     for m in _ZH_NAME_TITLE.finditer(text):
         out.append(Finding("PERSON", m.start("name"), m.end("name"), 0.7))
+    return out
+
+
+# Names in tables: a header cell names the column (name, full name, contact, ...), and each later row with the same
+# number of cells gives a person in that column. Claude Code shows files with line numbers ("     3\t" or "     3→"),
+# so that prefix is dropped first. Values must look like names: two or more capitalized words (one is enough under a
+# first / last name header) or a Chinese name.
+_NAME_HEADERS = {"name", "full name", "fullname", "legal name", "display name", "person", "contact", "contact name",
+                 "contact person", "employee", "employee name", "customer", "customer name", "client", "client name",
+                 "owner", "owner name", "signatory", "recipient", "sender", "author", "member", "member name",
+                 "姓名", "名字", "联系人", "员工", "员工姓名",
+                 "客户姓名", "负责人"}
+_PART_HEADERS = {"first name", "firstname", "given name", "last name", "lastname", "surname", "family name"}
+_LINE_NO = re.compile(r"^[ \t]*\d+(?:\t|→)")
+_CELL_NAME = re.compile(rf"{_TITLE}{_W}(?:[ \t]+(?:[A-Z]\.|{_PARTICLE}|{_W})){{1,3}}")
+_CELL_PART = re.compile(_W)
+
+
+def _cells(line: str, sep: str) -> list[tuple[int, int]]:
+    """Cell spans of one delimited line (quotes respected, surrounding spaces and quotes trimmed)."""
+    spans, start, quoted = [], 0, False
+    for i, ch in enumerate(line + sep):
+        if ch == '"':
+            quoted = not quoted
+        elif ch == sep and not quoted:
+            a, b = start, i
+            while a < b and line[a] in ' \t"':
+                a += 1
+            while b > a and line[b - 1] in ' \t"':
+                b -= 1
+            spans.append((a, b))
+            start = i + 1
+    return spans
+
+
+def _row(line: str, sep: str) -> list[tuple[int, int]]:
+    cells = _cells(line, sep)
+    if sep == "|":   # a markdown row: drop the empty cells outside the outer bars
+        if cells and cells[0][0] == cells[0][1]:
+            cells = cells[1:]
+        if cells and cells[-1][0] == cells[-1][1]:
+            cells = cells[:-1]
+    return cells
+
+
+def _table_names(text: str) -> list[Finding]:
+    out: list[Finding] = []
+    lines, pos = [], 0
+    for raw in text.split("\n"):
+        m = _LINE_NO.match(raw)
+        skip = m.end() if m else 0
+        lines.append((pos + skip, raw[skip:]))
+        pos += len(raw) + 1
+    i = 0
+    while i < len(lines):
+        off, head = lines[i]
+        i += 1
+        sep = next((c for c in ",\t|;" if c in head), None)
+        if sep is None:
+            continue
+        cols = _row(head, sep)
+        if len(cols) < 2:
+            continue
+        keys = [re.sub(r"[\s_\-]+", " ", head[a:b]).strip().lower() for a, b in cols]
+        wanted = {k: (key in _PART_HEADERS) for k, key in enumerate(keys) if key in _NAME_HEADERS | _PART_HEADERS}
+        if not wanted:
+            continue
+        while i < len(lines):
+            roff, row = lines[i]
+            cells = _row(row, sep)
+            if sep == "|" and cells and all(set(row[a:b]) <= set("-: ") for a, b in cells):
+                i += 1   # markdown separator row
+                continue
+            if len(cells) != len(cols):
+                break
+            i += 1
+            for k, part in wanted.items():
+                a, b = cells[k]
+                v = row[a:b]
+                if (_ZH_NAME_FULL.fullmatch(v) or _CELL_NAME.fullmatch(v) or part and _CELL_PART.fullmatch(v)) \
+                        and not _is_company(v):
+                    out.append(Finding("PERSON", roff + a, roff + b, 0.75))
     return out
 
 
@@ -717,6 +800,8 @@ def _pii(text: str) -> list[Finding]:
         out += _en_addresses(text)
     if any(c.isupper() for c in text):
         out += _en_names(text)
+    if "\n" in text:
+        out += _table_names(text)
     return out
 
 
