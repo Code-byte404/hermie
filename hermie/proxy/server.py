@@ -32,7 +32,7 @@ from hermie.gate.types import CleanBody, Origin
 from hermie.proxy.approvals import AllowStore, Approvals, NoPrompter, PendingItem, SessionAllow
 from hermie.proxy.receipt import BodyStore, Receipt, ReceiptLine, client_label
 from hermie.proxy.stream import StreamStats, relay_sse, restore_json
-from hermie.proxy.walker import Decision, walk_request
+from hermie.proxy.walker import Decision, add_placeholder_note, walk_request
 
 ROUTES: dict[str, str | None] = {
     "anthropic": "https://api.anthropic.com",
@@ -431,10 +431,13 @@ def create_app(config: Config, gate: Gate | None = None, upstream_client: httpx.
                 if d.new:
                     rec.new_parts.append(_part(d))
 
-            clean = certify_body(json.dumps(result.body, ensure_ascii=False).encode())
             known = gate.mapping
-            rec.placeholders = list(dict.fromkeys(
-                m.group(0) for m in PLACEHOLDER.finditer(clean.data.decode("utf-8", "replace")) if m.group(0) in known))[:200]
+            found = list(dict.fromkeys(
+                m.group(0) for m in PLACEHOLDER.finditer(json.dumps(result.body, ensure_ascii=False)) if m.group(0) in known))
+            rec.placeholders = found[:200]
+            if found and config.mode != "observe":
+                add_placeholder_note(result.body, provider)
+            clean = certify_body(json.dumps(result.body, ensure_ascii=False).encode())
             bodies.put(rid, clean.data)
             try:
                 resp = await send_upstream(client, request.method, url, forward_headers(request.headers), clean,

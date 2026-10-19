@@ -407,3 +407,47 @@ class _Walker:
 def walk_request(body: dict, gate, approvals, config) -> WalkResult:
     """`approvals` provides `is_allowed(hash, reason)` and `assign(hash) -> id` (the allow store's id source)."""
     return _Walker(gate, approvals, config, body).run()
+
+
+def _append_text(holder: dict, key: str, note: str, block: dict) -> None:
+    """Add the note to a system slot that is a string (new paragraph) or a list of blocks (new block)."""
+    cur = holder.get(key)
+    if isinstance(cur, list):
+        cur.append(block)
+    elif isinstance(cur, str) and cur:
+        holder[key] = cur + "\n\n" + note
+    else:
+        holder[key] = note
+
+
+def add_placeholder_note(body: dict, provider: str) -> bool:
+    """Put `explain.PLACEHOLDER_NOTE` into the request's system slot, so the model treats placeholders as the real
+    values instead of telling the user they are missing. On the custom route only a clear format gets it. Returns
+    False when the body was left alone."""
+    note = explain.PLACEHOLDER_NOTE
+    messages = body.get("messages")
+    if "contents" in body and provider in ("gemini", "custom"):
+        si = body.get("systemInstruction")
+        if not isinstance(si, dict) or not isinstance(si.get("parts"), list):
+            body["systemInstruction"] = si = {"parts": []}
+        si["parts"].append({"text": note})
+        return True
+    if not isinstance(messages, list):
+        if "input" in body and provider in ("openai", "custom") and isinstance(body.get("instructions"), (str, type(None))):
+            _append_text(body, "instructions", note, {})
+            return True
+        return False
+    if provider == "anthropic" or provider == "custom" and "system" in body:
+        if isinstance(body.get("system"), list):
+            body["system"].append({"type": "text", "text": note})
+        else:
+            _append_text(body, "system", note, {})
+        return True
+    first = next((m for m in messages if isinstance(m, dict) and m.get("role") in ("system", "developer")), None)
+    if first is not None:
+        _append_text(first, "content", note, {"type": "text", "text": note})
+        return True
+    if provider == "openai":
+        messages.insert(0, {"role": "system", "content": note})
+        return True
+    return False

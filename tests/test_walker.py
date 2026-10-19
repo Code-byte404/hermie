@@ -379,3 +379,57 @@ def test_withheld_file_name_with_a_finding_is_not_recorded(tmp_path, analyzer):
     out = walk_request(body, gate, Allow(), cfg)
     [d] = [d for d in out.decisions if d.kind == "withhold"]
     assert d.file is None
+
+
+# --- the placeholder note: tells the model what <ENTITY_n> means, so it does not call the value missing ---
+
+from hermie import explain
+from hermie.proxy.walker import add_placeholder_note
+
+
+@pytest.mark.parametrize("fmt,provider", [("anthropic", "anthropic"), ("openai_chat", "openai"),
+                                          ("openai_responses", "openai"), ("gemini", "gemini")])
+def test_placeholder_note_goes_into_the_system_slot_of_each_format(fmt, provider):
+    body = json.loads((FIX / f"{fmt}.json").read_text())
+    before = json.dumps(body)
+    assert add_placeholder_note(body, provider)
+    dumped = json.dumps(body)
+    assert dumped.count(json.dumps(explain.PLACEHOLDER_NOTE)[1:-1]) == 1
+    if fmt == "anthropic":
+        assert body["system"][-1] == {"type": "text", "text": explain.PLACEHOLDER_NOTE}
+        assert len(body["system"]) == 2 and body["messages"] == json.loads(before)["messages"]
+    elif fmt == "openai_chat":
+        assert body["messages"][0]["role"] == "system" and body["messages"][0]["content"].endswith(explain.PLACEHOLDER_NOTE)
+        assert len(body["messages"]) == len(json.loads(before)["messages"])
+    elif fmt == "openai_responses":
+        assert body["instructions"].endswith(explain.PLACEHOLDER_NOTE)
+    else:
+        assert body["systemInstruction"]["parts"][-1] == {"text": explain.PLACEHOLDER_NOTE}
+
+
+def test_placeholder_note_creates_the_slot_when_the_request_has_none():
+    a = {"model": "m", "messages": [{"role": "user", "content": "hi <PERSON_1>"}]}
+    assert add_placeholder_note(a, "anthropic") and a["system"] == explain.PLACEHOLDER_NOTE
+    s = {"model": "m", "system": "Be brief.", "messages": []}
+    assert add_placeholder_note(s, "anthropic") and s["system"] == "Be brief.\n\n" + explain.PLACEHOLDER_NOTE
+    o = {"model": "m", "messages": [{"role": "user", "content": "hi"}]}
+    assert add_placeholder_note(o, "openai") and o["messages"][0] == {"role": "system", "content": explain.PLACEHOLDER_NOTE}
+    g = {"contents": [{"role": "user", "parts": [{"text": "hi"}]}]}
+    assert add_placeholder_note(g, "gemini") and g["systemInstruction"] == {"parts": [{"text": explain.PLACEHOLDER_NOTE}]}
+    r = {"model": "m", "input": "hi"}
+    assert add_placeholder_note(r, "openai") and r["instructions"] == explain.PLACEHOLDER_NOTE
+
+
+def test_placeholder_note_on_the_custom_route_only_when_the_format_is_clear():
+    a = {"model": "m", "system": [], "messages": []}
+    assert add_placeholder_note(a, "custom") and a["system"] == [{"type": "text", "text": explain.PLACEHOLDER_NOTE}]
+    c = {"model": "m", "messages": [{"role": "developer", "content": [{"type": "text", "text": "x"}]}]}
+    assert add_placeholder_note(c, "custom") and c["messages"][0]["content"][-1] == {"type": "text", "text": explain.PLACEHOLDER_NOTE}
+    unclear = {"model": "m", "messages": [{"role": "user", "content": "hi"}]}
+    assert not add_placeholder_note(unclear, "custom") and "system" not in unclear
+
+
+def test_placeholder_note_has_no_placeholder_of_its_own():
+    from hermie.gate.redact import PLACEHOLDER
+    assert not PLACEHOLDER.search(explain.PLACEHOLDER_NOTE)
+    assert "<PERSON_n>" in explain.PLACEHOLDER_NOTE

@@ -560,3 +560,26 @@ def test_unreachable_error_is_plain(tmp_path, analyzer):
     cfg, c = _app(tmp_path, analyzer, up)
     r = c.post("/anthropic/v1/messages", json=_body("anthropic"), headers={"x-api-key": "sk-test-key"})
     assert r.status_code == 502 and r.json()["error"]["message"].startswith("Hermie could not reach api.anthropic.com")
+
+
+def test_placeholder_note_sent_only_when_the_body_has_placeholders(tmp_path, analyzer):
+    from hermie import explain
+    up = Upstream()
+    cfg, c = _app(tmp_path, analyzer, up)
+    plain = {"model": "m", "max_tokens": 10, "messages": [{"role": "user", "content": "refactor the parser"}]}
+    assert c.post("/anthropic/v1/messages", json=plain).status_code == 200
+    assert "system" not in json.loads(up.seen[-1].content)
+    private = {"model": "m", "max_tokens": 10, "messages": [{"role": "user", "content": "call 555-010-0199"}]}
+    assert c.post("/anthropic/v1/messages", json=private).status_code == 200
+    sent = json.loads(up.seen[-1].content)
+    assert sent["system"] == explain.PLACEHOLDER_NOTE and "555-010-0199" not in json.dumps(sent)
+    stored = [f.read_text() for f in (tmp_path / "outbound").glob("*.json")]
+    assert up.seen[-1].content.decode() in stored          # the stored body is what went out, note included
+
+
+def test_observe_mode_adds_no_placeholder_note(tmp_path, analyzer):
+    up = Upstream()
+    cfg, c = _app(tmp_path, analyzer, up, mode="observe")
+    body = {"model": "m", "max_tokens": 10, "messages": [{"role": "user", "content": "call 555-010-0199"}]}
+    assert c.post("/anthropic/v1/messages", json=body).status_code == 200
+    assert json.loads(up.seen[-1].content) == body
