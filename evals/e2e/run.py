@@ -20,6 +20,7 @@ import shutil
 import socket
 import subprocess
 import sys
+import tempfile
 import time
 from pathlib import Path
 
@@ -30,6 +31,10 @@ from evals.e2e.workspace import build
 
 ARMS = ("hermie", "direct")
 CLAUDE_TIMEOUT_S = 600
+# no user settings (hooks, plugins, model), no MCP servers, no web tools: every byte the model sends goes through the
+# API, so through the recorder. --disallowedTools takes a list, so it stays last.
+CLAUDE_FLAGS = ["--setting-sources", "project,local", "--strict-mcp-config", "--mcp-config", '{"mcpServers": {}}',
+                "--disallowedTools", "WebFetch", "WebSearch"]
 
 
 def _free_port() -> int:
@@ -38,11 +43,23 @@ def _free_port() -> int:
         return s.getsockname()[1]
 
 
+def child_env() -> dict[str, str]:
+    """The parent's environment without HERMIE_* (the user's overrides) and Claude Code's own session markers."""
+    return {k: v for k, v in os.environ.items()
+            if not k.startswith(("HERMIE_", "CLAUDE_CODE_")) and k != "CLAUDECODE"}
+
+
+def hermie_config(port: int, data_dir: Path, upstream: str, languages: str):
+    """Built directly, not with Config.load: ~/.hermie/config.toml and HERMIE_* must not change the run."""
+    from hermie.config import Config
+    return Config(port=port, data_dir=data_dir, mode="enforce", judge=None, languages=tuple(languages.split(",")),
+                  anthropic_upstream=upstream)
+
+
 def serve_hermie(argv: list[str]) -> int:
     """Hermie's app with no prompter (a headless `hermie serve` on macOS would open a dialog for a held item)."""
     import uvicorn
 
-    from hermie.config import Config
     from hermie.proxy.approvals import NoPrompter
     from hermie.proxy.server import create_app
     ap = argparse.ArgumentParser()
@@ -51,8 +68,7 @@ def serve_hermie(argv: list[str]) -> int:
     ap.add_argument("--upstream", required=True)
     ap.add_argument("--languages", default="en,zh")
     a = ap.parse_args(argv)
-    config = Config.load(None, port=a.port, data_dir=a.data_dir, mode="enforce", judge=None,
-                         languages=tuple(a.languages.split(",")), anthropic_upstream=a.upstream)
+    config = hermie_config(a.port, a.data_dir, a.upstream, a.languages)
     uvicorn.run(create_app(config, prompter=NoPrompter()), host="127.0.0.1", port=a.port, log_level="warning")
     return 0
 
@@ -83,8 +99,12 @@ def classify(returncode: int | None, outputs: list[dict], receipt: Path, timed_o
 
 
 def _claude_env(base_url: str) -> dict[str, str]:
-    env = {k: v for k, v in os.environ.items() if k != "CLAUDECODE" and not k.startswith("CLAUDE_CODE_")}
-    env["ANTHROPIC_BASE_URL"] = base_url
+    """Any request not to 127.0.0.1 (the base URL) goes to a proxy port nobody listens on: an exit around the
+    recorder fails loudly instead of leaving unrecorded."""
+    env = child_env()
+    dead = f"http://127.0.0.1:{_free_port()}"
+    env.update(ANTHROPIC_BASE_URL=base_url, HTTPS_PROXY=dead, HTTP_PROXY=dead, https_proxy=dead, http_proxy=dead,
+               NO_PROXY="127.0.0.1,localhost", no_proxy="127.0.0.1,localhost")
     return env
 
 
@@ -107,7 +127,8 @@ def run_one(task: Task, arm: str, rep: int, out: Path, a) -> tuple[str, int, str
     if rd.exists():
         shutil.rmtree(rd)
     rd.mkdir(parents=True)
-    workdir = rd / "workdir"
+    # the model works in a temp folder away from the run files (mapping, canaries); copied back for grading
+    workdir = Path(tempfile.mkdtemp(prefix="hermie-e2e-")) / "work"
     shutil.copytree(out / "workspace", workdir, ignore=shutil.ignore_patterns("canaries.json"))
     outputs, sessions, returncode, timed_out, proc = [], 0, None, False, None
     rport = _free_port()
@@ -119,7 +140,8 @@ def run_one(task: Task, arm: str, rep: int, out: Path, a) -> tuple[str, int, str
                 proc = subprocess.Popen([sys.executable, "-m", "evals.e2e.run", "serve-hermie", "--port", str(hport),
                                          "--data-dir", str(rd / "hermie_data"), "--upstream",
                                          f"http://127.0.0.1:{rport}", "--languages", a.languages],
-                                        stdin=subprocess.DEVNULL, stdout=log, stderr=subprocess.STDOUT)
+                                        stdin=subprocess.DEVNULL, stdout=log, stderr=subprocess.STDOUT,
+                                        env=child_env())
                 _wait_port(hport, proc)
                 base = f"http://127.0.0.1:{hport}/anthropic"
             else:
@@ -129,6 +151,7 @@ def run_one(task: Task, arm: str, rep: int, out: Path, a) -> tuple[str, int, str
                 cmd = [a.claude, "-p", prompt, "--output-format", "json", "--permission-mode", "bypassPermissions"]
                 if sid:
                     cmd += ["--resume", sid]
+                cmd += CLAUDE_FLAGS
                 sessions += 1
                 try:
                     r = subprocess.run(cmd, cwd=workdir, env=_claude_env(base), capture_output=True, text=True,
@@ -148,6 +171,8 @@ def run_one(task: Task, arm: str, rep: int, out: Path, a) -> tuple[str, int, str
                     proc.wait(10)
                 except subprocess.TimeoutExpired:
                     proc.kill()
+            shutil.copytree(workdir, rd / "workdir")
+            shutil.rmtree(workdir.parent, ignore_errors=True)
     status = classify(returncode, outputs, rd / "hermie_data" / "receipt.jsonl", timed_out)
     (rd / "session.json").write_text(json.dumps(outputs, ensure_ascii=False, indent=1))
     (rd / "answer.txt").write_text("\n\n---\n\n".join(str(o.get("result", "")) for o in outputs))
@@ -185,7 +210,8 @@ def main(argv: list[str] | None = None) -> int:
     v = subprocess.run([a.claude, "--version"], capture_output=True, text=True)
     manifest.update(hermie_commit=_git_commit(), claude_version=v.stdout.strip(),
                     hermie_config={"mode": "enforce", "judge": None, "languages": a.languages.split(","),
-                                   "prompter": "none"})
+                                   "prompter": "none", "built": "directly (no config.toml, no HERMIE_*)"},
+                    claude_flags=" ".join(CLAUDE_FLAGS))
     manifest.setdefault("sessions", 0)
     wanted = [t for t in a.tasks.split(",") if t]
     tasks = [t for t in TASKS if not wanted or t.id in wanted]

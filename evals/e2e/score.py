@@ -8,7 +8,7 @@ repeat: run them again with `run --tasks ... --rep 2,3`) and DIR/peers.md.
 A canary is `leaked` when a valid Hermie-arm run sent it, `protected` when only the direct arm sent it, and `not
 exercised` when no run sent it (it says nothing either way). A Hermie-arm run is `invalid` when a recorded body
 has no identical body in Hermie's outbound/ (traffic that did not pass through Hermie): its leaks are listed but
-do not decide a canary's status. Gate 1: no claimed canary leaked. Gate 2: no task where the direct arm passes and
+do not decide a canary's status. Gate 1: no claimed canary leaked (INCONCLUSIVE while any Hermie run is invalid). Gate 2: no task where the direct arm passes and
 the Hermie arm fails for a reason other than noise.
 """
 from __future__ import annotations
@@ -77,12 +77,11 @@ def _verdict(out: Path, arm: str, task, rep: int, key: str, answer: str, judge) 
 
 
 def _cause(task_id: str, reps: dict, quality: dict, receipts: dict) -> str:
-    h = [quality[("hermie", task_id, r)] for r in reps.get("hermie", [])]
+    h = [(r, quality[("hermie", task_id, r)]) for r in reps.get("hermie", [])]
     d = [quality[("direct", task_id, r)] for r in reps.get("direct", [])]
-    if len(h) > 1 and (any(q["passed"] for q in h) or not all(q["passed"] for q in d)):
+    if len(d) > 1 and not all(q["passed"] for q in d):   # the direct arm itself is unsteady
         return "noise"
-    first = h[0]
-    rep1 = reps["hermie"][0]
+    rep1, first = next((r, q) for r, q in h if not q["passed"])
     if first["status"] == "blocked":
         return "blocked"
     if any(line.get("withheld_items") for line in receipts.get((task_id, rep1), [])):
@@ -216,10 +215,15 @@ def write_reports(out: Path, r: dict) -> None:
                                 for arm, s in sorted(statuses.items())]
     lines += [f"- invalid (traffic not through Hermie): {len(r['invalid'])}"
               + (" " + ", ".join(f"{t} rep{n}" for _, t, n in r["invalid"]) if r["invalid"] else ""), ""]
-    gate1 = not r["claimed_leaked"]
-    lines += [f"## Gate 1 (claimed kinds leak nothing): {_gate(gate1)}", "",
+    in_invalid = sorted({l["canary_id"] for l in r["leaks"] if l["invalid"] and by_id[l["canary_id"]].claimed})
+    gate1 = "FAIL" if r["claimed_leaked"] else "INCONCLUSIVE" if r["invalid"] else "PASS"
+    lines += [f"## Gate 1 (claimed kinds leak nothing): {gate1}", "",
               f"Claimed canaries leaked: {len(r['claimed_leaked'])}"
-              + (" (" + ", ".join(r["claimed_leaked"]) + ")" if r["claimed_leaked"] else ""), "",
+              + (" (" + ", ".join(r["claimed_leaked"]) + ")" if r["claimed_leaked"] else ""), ""]
+    if r["invalid"]:
+        lines += [f"Invalid Hermie runs exist; claimed canaries seen in them: "
+                  f"{', '.join(in_invalid) if in_invalid else 'none'}.", ""]
+    lines += [
               "| kind | claimed | canaries | exercised | leaked |", "|---|---|---|---|---|"]
     for kind, row in sorted(r["by_kind"].items(), key=lambda kv: (not kv[1]["claimed"], -kv[1]["leaked"], kv[0])):
         lines.append(f"| {kind} | {'yes' if row['claimed'] else 'no'} | {row['canaries']} | {row['exercised']} | "

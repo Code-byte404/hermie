@@ -34,10 +34,10 @@ Design: `docs/superpowers/specs/2026-10-18-e2e-canary-utility-design.md` (local)
   (company names, amounts, dates, project names, confidential passages): those are expected to leak and their
   counts are the product gap list.
 - A canary is `leaked`, `protected` (only the direct arm sent it) or `not exercised` (no run sent it).
-- **Gate 1:** no claimed canary leaked (person, email, phone, national ID, address, bank card, IBAN, API key,
+- **Gate 1:** INCONCLUSIVE while any Hermie run is invalid; otherwise no claimed canary leaked (person, email, phone, national ID, address, bank card, IBAN, API key,
   password, URL credentials).
 - **Gate 2:** no task where the direct arm passes and the Hermie arm fails, except noise (repeats disagree).
-  Causes: `blocked` (a held user message, 422), `withheld` (a held tool result), `unrestored` (a placeholder left
+  Noise means the direct arm itself is unsteady across repeats. Causes: `blocked` (a held user message, 422), `withheld` (a held tool result), `unrestored` (a placeholder left
   in the answer), `swapped` (a must-not value in the answer), `damage` (anything else).
 
 ## Key canaries use real provider shapes
@@ -57,6 +57,13 @@ conda run -n hermie python -m evals.e2e.run --out $R          # real Claude Code
 conda run -n hermie python -m evals.e2e.score --out $R        # summary.md, leaks.md, quality.md, reruns.txt
 conda run -n hermie python -m evals.e2e.run --out $R --tasks $(cat $R/reruns.txt) --rep 2,3   # then score again
 ```
+
+Isolation: `claude -p` runs with `--setting-sources project,local` (no user hooks, plugins or model setting),
+`--strict-mcp-config` with no servers and `--disallowedTools WebFetch WebSearch`, in a temp folder away from the
+run files; `HTTPS_PROXY` points at a dead local port with `NO_PROXY=127.0.0.1`, so any request that does not go
+through the base URL fails loudly instead of leaving unrecorded. Hermie's config is built directly (no
+`~/.hermie/config.toml`, no `HERMIE_*`). If the Claude Code login needs a token refresh, the dead proxy blocks it:
+open `claude` once interactively before a run.
 
 The run uses the Claude Code login of whoever starts it and reaches the real Anthropic API. Results stay outside
 the repo. Offline tests: `tests/test_e2e.py` (a fake `claude` and a fake upstream).

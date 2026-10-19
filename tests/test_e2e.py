@@ -73,7 +73,7 @@ def test_refuses_repo_and_nonempty_paths(tmp_path):
 
 
 def test_no_cjk_in_repo_sources():
-    for p in (ROOT / "evals" / "e2e").rglob("*"):
+    for p in [*(ROOT / "evals" / "e2e").rglob("*"), Path(__file__)]:
         if p.is_file() and p.suffix in (".py", ".json", ".md", ".txt"):
             assert not re.search(r"[\u3000-\u303f\u4e00-\u9fff\uff00-\uffef]", p.read_text(encoding="utf-8")), p
 
@@ -114,10 +114,10 @@ def test_finds_exact_and_reports_path():
 
 
 def test_finds_json_escaped_chinese():
-    c = _c("z", "秦宇轩", lang="zh")
+    c = _c("z", "\u79e6\u5b87\u8f69", lang="zh")
     for ascii_ in (True, False):
-        assert [x.canary_id for x in L.find_leaks(_body({"m": "房东 " + c.value}, ascii_), [c])] == ["z"]
-    nested = json.dumps({"path": "a.md", "content": "房东" + c.value}, ensure_ascii=True)
+        assert [x.canary_id for x in L.find_leaks(_body({"m": "\u623f\u4e1c " + c.value}, ascii_), [c])] == ["z"]
+    nested = json.dumps({"path": "a.md", "content": "\u623f\u4e1c" + c.value}, ensure_ascii=True)
     assert [x.canary_id for x in L.find_leaks(_body({"input": nested}), [c])] == ["z"]
 
 
@@ -333,7 +333,9 @@ import json, os, sys, urllib.request, urllib.error
 if "--version" in sys.argv:
     print("9.9.9 (Claude Code)"); sys.exit(0)
 with open(os.environ["FAKE_CLAUDE_LOG"], "a") as f:
-    f.write(" ".join(sys.argv[1:]) + "\\n")
+    f.write(json.dumps({{"argv": sys.argv[1:], "cwd": os.getcwd(), "https_proxy": os.environ.get("HTTPS_PROXY"),
+                        "no_proxy": os.environ.get("NO_PROXY"),
+                        "hermie_env": sorted(k for k in os.environ if k.startswith("HERMIE_"))}}) + "\\n")
 if os.environ.get("FAKE_CLAUDE_FAIL"):
     print(json.dumps({{"type": "result", "is_error": True, "result": "API Error", "session_id": "s1"}})); sys.exit(1)
 prompt = sys.argv[sys.argv.index("-p") + 1]
@@ -380,6 +382,10 @@ def fake_env(tmp_path, monkeypatch):
     th.join(5)
 
 
+def _calls(log):
+    return [json.loads(l) for l in log.read_text().splitlines() if l.strip()]
+
+
 def _rd(out, arm, task, rep=1):
     return out / "runs" / arm / task / f"rep{rep}"
 
@@ -424,7 +430,7 @@ def test_resume_skips_finished_runs(tmp_path, fake_env):
     out = tmp_path / "res"
     for _ in range(2):
         RUN.main(["--out", str(out), "--tasks", "en.penalty", "--arms", "direct", *args])
-    assert len([l for l in log.read_text().splitlines() if "-p" in l]) == 1
+    assert len(_calls(log)) == 1
 
 
 def test_canaries_are_frozen_across_invocations(tmp_path, fake_env, capsys):
@@ -441,8 +447,8 @@ def test_followups_resume_the_session(tmp_path, fake_env):
     args, log = fake_env
     out = tmp_path / "res"
     RUN.main(["--out", str(out), "--tasks", "en.owner_contact", "--arms", "direct", *args])
-    calls = [l for l in log.read_text().splitlines() if "-p" in l]
-    assert len(calls) == 2 and "--resume s1" in calls[1]
+    calls = _calls(log)
+    assert len(calls) == 2 and calls[1]["argv"][calls[1]["argv"].index("--resume") + 1] == "s1"
     assert len(json.loads((_rd(out, "direct", "en.owner_contact") / "session.json").read_text())) == 2
 
 
@@ -543,11 +549,20 @@ def test_reruns_list_disagreements_and_noise(scored_dir):
     _mk_run(out, "hermie", "en.log_user", cs["log.1.email"].value, [_msg("a")])
     r = _score(out)
     assert r["reruns"] == ["en.buyer_signatory"] and r["causes"]["en.buyer_signatory"] == "damage"
-    for rep, ans in ((2, name), (3, "no idea")):
-        _mk_run(out, "direct", "en.buyer_signatory", name, [_msg("a")], rep=rep)
-        _mk_run(out, "hermie", "en.buyer_signatory", ans, [_msg("a")], rep=rep)
+    for rep, h, d in ((2, name, name), (3, "no idea", "no idea")):
+        _mk_run(out, "direct", "en.buyer_signatory", d, [_msg("a")], rep=rep)
+        _mk_run(out, "hermie", "en.buyer_signatory", h, [_msg("a")], rep=rep)
     r = _score(out)
     assert r["reruns"] == [] and r["causes"]["en.buyer_signatory"] == "noise"
+
+
+def test_mostly_failing_hermie_against_a_steady_direct_arm_is_not_noise(scored_dir):
+    out, cs = scored_dir
+    name = cs["en.contract.buyer_signatory"].value
+    for rep, h in ((1, "no idea"), (2, name), (3, "no idea")):
+        _mk_run(out, "direct", "en.buyer_signatory", name, [_msg("a")], rep=rep)
+        _mk_run(out, "hermie", "en.buyer_signatory", h, [_msg("a")], rep=rep)
+    assert _score(out)["causes"]["en.buyer_signatory"] == "damage"
 
 
 def test_judge_fail_fails_the_answer_and_is_cached(scored_dir):
@@ -583,3 +598,61 @@ def test_log_top_error_user_is_strictly_first(tmp_path, seed):
                      if " ERROR " in l)
     (top, n), (_, second) = errors.most_common(2)
     assert top == cs[f"log.{W.LOG_TOP_ERROR_USER}.email"] and n > second
+
+
+
+# ---------------------------------------------------------------- review fixes
+
+def test_gate1_is_inconclusive_while_a_hermie_run_is_invalid(scored_dir):
+    out, cs = scored_dir
+    email = cs["emp.1.email"].value
+    _mk_run(out, "direct", "en.penalty", "x", [_msg(email)])
+    _mk_run(out, "hermie", "en.penalty", "x", [_msg(email)], outbound=[_msg("<EMAIL_ADDRESS_1>")])
+    SC.main(["--out", str(out), "--judge", "none", "--peers", "none"])
+    text = (out / "summary.md").read_text()
+    assert "Gate 1 (claimed kinds leak nothing): INCONCLUSIVE" in text
+    assert "emp.1.email" in text   # the claimed canary seen in the invalid run is named
+
+
+def test_claude_runs_isolated_from_user_setup_and_unrecorded_exits(tmp_path, fake_env):
+    args, log = fake_env
+    out = tmp_path / "res"
+    RUN.main(["--out", str(out), "--tasks", "en.penalty", *args])
+    for call in _calls(log):
+        argv = call["argv"]
+        assert argv[argv.index("--setting-sources") + 1] == "project,local"
+        assert "--strict-mcp-config" in argv and json.loads(argv[argv.index("--mcp-config") + 1]) == {"mcpServers": {}}
+        assert {"WebFetch", "WebSearch"} <= set(argv[argv.index("--disallowedTools") + 1:])
+        assert call["https_proxy"].startswith("http://127.0.0.1:") and "127.0.0.1" in call["no_proxy"]
+        assert out not in Path(call["cwd"]).resolve().parents   # run files are not next to the model
+    for arm in ("direct", "hermie"):
+        assert (_rd(out, arm, "en.penalty") / "workdir" / "contracts" / "lease_zh.md").is_file()
+    m = json.loads((out / "manifest.json").read_text())
+    assert "--strict-mcp-config" in m["claude_flags"]
+
+
+def test_hermie_child_ignores_user_config_and_env(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMIE_ALLOW_VALUES", "secret-value")
+    monkeypatch.setenv("HERMIE_PRESIDIO_THRESHOLD", "0.9")
+    cfg = RUN.hermie_config(8999, tmp_path / "d", "http://127.0.0.1:9", "en,zh")
+    assert cfg.allow_values == () and cfg.presidio_threshold == 0.5 and cfg.languages == ("en", "zh")
+    assert cfg.anthropic_upstream == "http://127.0.0.1:9" and cfg.judge is None and cfg.mode == "enforce"
+    assert not [k for k in RUN.child_env() if k.startswith("HERMIE_")]
+
+
+def test_prefix_only_fragment_is_not_a_leak():
+    key = _c("k", "sk-ant-api03-" + "Qx7Lm2Pz9Rt4Vb8Nc1Kd6Wf3Hj5Gs0Ae" * 3 + "AA", "api_key")
+    assert L.find_leaks(_body({"t": "ANTHROPIC_API_KEY=sk-ant-api03-..."}), [key]) == []
+    assert [x.form for x in L.find_leaks(_body({"t": "it ends Qx7Lm2Pz9Rt4V"}), [key])] == ["substring"]
+
+
+def test_address_parts_and_url_password_fragments_are_found():
+    en = _c("a", "4211 Maple Street, Springfield, IL 62711", "address")
+    zh = _c("z", W.ZH["address_format"]["text"].format(city=W.ZH["cities"]["items"][0][0],
+                                                       district=W.ZH["cities"]["items"][0][1], road=W.ZH["roads"]["items"][0], n=123,
+                                                       b=5, r=12, u=1), "address", "zh")
+    pw = _c("u", "Thistlewillow!202h5M", "url_credentials")
+    body = _body({"a": "the office at 4211 Maple Street", "z": "at " + W.ZH["roads"]["items"][0] + "123",
+                  "u": "password Thistlewillow!202h5"})
+    assert {(x.canary_id, x.form) for x in L.find_leaks(body, [en, zh, pw])} == {
+        ("a", "part"), ("z", "part"), ("u", "substring")}
