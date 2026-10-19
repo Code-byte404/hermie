@@ -344,10 +344,9 @@ class Gate:
             # map back to their placeholders even where the recognizers would not see them
             rx, entity = self._known_regex(current)
             found = findings + self._known_findings(text, rx, entity)
-            # names that share a table column with a person already found (script output without a header)
-            seeds = found + [Finding("PERSON", m.start(), m.end(), 1.0)
-                             for m in PLACEHOLDER.finditer(text) if m.group(1) == "PERSON"]
-            out["all"] = _merge_overlaps(found + rules.column_persons(text, seeds))
+            # cells that share a table column with a person, amount, date or company already found (headerless output)
+            seeds = found + [Finding(m.group(1), m.start(), m.end(), 1.0) for m in PLACEHOLDER.finditer(text)]
+            out["all"] = _merge_overlaps(found + rules.column_spread(text, seeds))
             out["red"], out["new"] = redact(text, out["all"], existing=current, counters=counters)
             return out["new"]
 

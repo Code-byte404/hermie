@@ -682,8 +682,9 @@ def _dates(text: str) -> list[Finding]:
 
 _EN_PROJECT = re.compile(r"(?<![\w])(?:Project|Codename|Code name)[ \t]+(?P<v>[A-Z][a-z]+(?:[ \t]+[A-Z][a-z]+)?)")
 # a Chinese project name: right after an enumeration comma (a heading item) or in quotes before the word "project"
-_ZH_PROJECT = re.compile(r"(?<=\u3001)(?P<v>[\u4e00-\u9fa5]{2,4}\u9879\u76ee)"
-                         r"|[\u201c\u300c\u300a\"](?P<q>[\u4e00-\u9fa5A-Za-z0-9]{2,8})[\u201d\u300d\u300b\"]\u9879\u76ee")
+_ZH_PROJECT_WORD = r"(?:\u9879\u76ee|\u8ba1\u5212|\u5de5\u7a0b|\u884c\u52a8)"   # project, plan, works, campaign
+_ZH_PROJECT = re.compile(rf"(?<=\u3001)(?P<v>[\u4e00-\u9fa5]{{2,4}}{_ZH_PROJECT_WORD})"
+                         rf"|[\u201c\u300c\u300a\"](?P<q>[\u4e00-\u9fa5A-Za-z0-9]{{2,8}})[\u201d\u300d\u300b\"]{_ZH_PROJECT_WORD}")
 _ZH_CODENAME = re.compile(r"\u4ee3\u53f7[\u201c\u300c\"\uff1a:\s]*(?P<v>[\u4e00-\u9fa5A-Za-z0-9]{2,8})")
 _ZH_GENERIC_PROJECT = re.compile(r"^(?:\u8fd9|\u90a3|\u8be5|\u6b64|\u672c|\u5404|\u6bcf|\u67d0|\u5168|\u6574|\u65b0|\u8001|\u5b50|"
                                  r"\u5927|\u5c0f|\u591a|\u4e00|\u5f00\u6e90|\u6d4b\u8bd5|\u793a\u4f8b|\u91cd\u70b9|\u76f8\u5173|"
@@ -838,13 +839,28 @@ def _table_names(text: str) -> list[Finding]:
     return out
 
 
-def column_persons(text: str, found: list[Finding]) -> list[Finding]:
-    """Cells that share a column with a known person, in a block of two or more delimited rows with the same number of
-    cells (script output without a header, `name | dept | salary`): the other cells of that column that look like
-    names are persons too. `found` holds what the other detectors (and the placeholders) already named."""
-    people = [(f.start, f.end) for f in found if f.entity == "PERSON"]
-    if not people or "\n" not in text:
+_SPREAD = ("PERSON", "MONEY", "DATE", "ORGANIZATION")
+
+
+def _cell_is(entity: str, v: str) -> bool:
+    if entity == "PERSON":
+        return bool(_ZH_NAME_FULL.fullmatch(v) or _CELL_NAME.fullmatch(v)) and not _is_company(v)
+    if entity == "MONEY":
+        return bool(_CELL_MONEY.fullmatch(v)) and any(c.isdigit() for c in v)
+    if entity == "DATE":
+        return bool(_CELL_DATE.fullmatch(v))
+    return _CELL_LABEL.fullmatch(v) is not None
+
+
+def column_spread(text: str, found: list[Finding]) -> list[Finding]:
+    """Cells that share a column with a known person, amount, date or company, in a block of two or more delimited rows
+    with the same number of cells (script output without a header, `name | dept | salary`): the other cells of that
+    column that have the same shape get the same entity. `found` holds what the other detectors (and the placeholders)
+    already named."""
+    seeds = [(f.start, f.end, f.entity) for f in found if f.entity in _SPREAD]
+    if not seeds or "\n" not in text:
         return []
+    taken = [(a, b) for a, b, _ in seeds]
     out: list[Finding] = []
     lines, pos = [], 0
     for raw in text.split("\n"):
@@ -863,20 +879,44 @@ def column_persons(text: str, found: list[Finding]) -> list[Finding]:
             rows = [[(off + a, off + b) for a, b in _row(line, sep)] for off, line in lines[i:j]]
             for k in range(n):
                 col = [r[k] for r in rows]
-                if not any(a <= s0 and e0 <= b and (s0, e0) != (a, a) and text[s0:e0].strip() for a, b in col
-                           for s0, e0 in people if a <= s0 < b):
-                    continue
-                for a, b in col:
-                    v = text[a:b]
-                    if (_ZH_NAME_FULL.fullmatch(v) or _CELL_NAME.fullmatch(v)) and not _is_company(v) \
-                            and not any(s0 < b and a < e0 for s0, e0 in people):
-                        out.append(Finding("PERSON", a, b, 0.7))
+                kinds = {e for a, b in col for s0, e0, e in seeds if a <= s0 < b and e0 <= b and text[s0:e0].strip()}
+                for entity in kinds:
+                    for a, b in col:
+                        if _cell_is(entity, text[a:b]) and not any(s0 < b and a < e0 for s0, e0 in taken):
+                            out.append(Finding(entity, a, b, 0.7))
         i = max(j, i + 1)
-    out += _space_rows(text, lines, people)
+    out += _space_rows(text, lines, [(a, b) for a, b, e in seeds if e == "PERSON"], taken)
+    out += _space_tails(text, lines, [(a, b, e) for a, b, e in seeds if e in ("MONEY", "DATE")], taken)
     return out
 
 
-def _space_rows(text: str, lines: list[tuple[int, str]], people: list[tuple[int, int]]) -> list[Finding]:
+def _space_tails(text: str, lines: list[tuple[int, str]], seeds: list[tuple[int, int, str]],
+                 taken: list[tuple[int, int]]) -> list[Finding]:
+    """Rows separated by spaces only: an amount or date that ends a row makes the last token of each neighbouring row
+    the same entity when it has that shape. Neighbours run up to a blank line."""
+    out: list[Finding] = []
+    offs = [off for off, _ in lines]
+    for s0, e0, entity in seeds:
+        n = bisect.bisect_right(offs, s0) - 1
+        if n < 0:
+            continue
+        off, line = lines[n]
+        if s0 - off > len(line) or line[e0 - off:].strip() or len(line.split()) < 2:
+            continue
+        for step in (-1, 1):
+            m = n + step
+            while 0 <= m < len(lines) and lines[m][1].strip():
+                roff, row = lines[m]
+                last = list(re.finditer(r"\S+", row))[-1]
+                a, b = roff + last.start(), roff + last.end()
+                if len(row.split()) >= 2 and _cell_is(entity, last.group()) and not any(x < b and a < y for x, y in taken):
+                    out.append(Finding(entity, a, b, 0.65))
+                m += step
+    return out
+
+
+def _space_rows(text: str, lines: list[tuple[int, str]], people: list[tuple[int, int]],
+                taken: list[tuple[int, int]]) -> list[Finding]:
     """Rows separated by spaces only (`print(name, dept, salary)`): a person at the start of a row, followed by k more
     tokens, makes the leading part of each neighbouring row (all but its last k tokens) a person when it looks like
     a name. Neighbours run up to a blank line."""
@@ -900,8 +940,7 @@ def _space_rows(text: str, lines: list[tuple[int, str]], people: list[tuple[int,
                 if len(toks) > rest:
                     a, b = toks[0].start(), toks[-rest - 1].end()
                     v = row[a:b]
-                    if (_ZH_NAME_FULL.fullmatch(v) or _CELL_NAME.fullmatch(v)) and not _is_company(v) \
-                            and not any(x < roff + b and roff + a < y for x, y in people):
+                    if _cell_is("PERSON", v) and not any(x < roff + b and roff + a < y for x, y in taken):
                         out.append(Finding("PERSON", roff + a, roff + b, 0.65))
                 m += step
     return out

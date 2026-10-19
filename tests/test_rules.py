@@ -751,15 +751,15 @@ def test_cells_in_the_column_of_a_known_person_are_persons():
             "Daniel Fairbanks | Legal | 161200\n"
             "Steel | Ops | 12\n")
     seed = [Finding("PERSON", 0, len("<PERSON_6>"), 1.0)]
-    got = {text[f.start:f.end] for f in rules.column_persons(text, seed)}
+    got = {text[f.start:f.end] for f in rules.column_spread(text, seed)}
     assert got == {ZH_NAME_A, "Daniel Fairbanks"}
 
 
 def test_no_column_spread_without_a_person_in_the_column():
     from hermie.gate.types import Finding
     text = "Daniel Fairbanks | Legal\nOwen Fairbanks | Ops\n"
-    assert rules.column_persons(text, [Finding("EMAIL_ADDRESS", 0, 3, 1.0)]) == []
-    assert rules.column_persons("just one line | with a bar", [Finding("PERSON", 0, 4, 1.0)]) == []
+    assert rules.column_spread(text, [Finding("EMAIL_ADDRESS", 0, 3, 1.0)]) == []
+    assert rules.column_spread("just one line | with a bar", [Finding("PERSON", 0, 4, 1.0)]) == []
 
 
 def test_names_leading_space_separated_rows_like_a_known_person():
@@ -769,7 +769,7 @@ def test_names_leading_space_separated_rows_like_a_known_person():
             "Daniel Fairbanks Legal 161200\n"
             "total rows 3\n")
     seed = [Finding("PERSON", 0, len("<PERSON_6>"), 1.0)]
-    got = {text[f.start:f.end] for f in rules.column_persons(text, seed)}
+    got = {text[f.start:f.end] for f in rules.column_spread(text, seed)}
     assert got == {ZH_NAME_A, "Daniel Fairbanks"}
 
 
@@ -777,7 +777,7 @@ def test_no_space_column_spread_when_the_person_is_not_at_the_line_start():
     from hermie.gate.types import Finding
     text = "owner is Maya Nakamura\nDaniel Fairbanks Legal 161200\n"
     i = text.index("Maya")
-    assert rules.column_persons(text, [Finding("PERSON", i, i + len("Maya Nakamura"), 1.0)]) == []
+    assert rules.column_spread(text, [Finding("PERSON", i, i + len("Maya Nakamura"), 1.0)]) == []
 
 
 @pytest.mark.parametrize("line", ["FN:{}", "FN;CHARSET=UTF-8:{}", "N:{}"])
@@ -920,3 +920,27 @@ def test_code_values_in_company_and_project_columns_are_left_alone():
             "government_entity,[https://github.com/x/y],1\n"
             "requirements,user_session,2\n")
     assert not _spans(text, "ORGANIZATION") and not _spans(text, "PROJECT")
+
+
+def test_cells_in_the_column_of_a_known_amount_are_amounts():
+    from hermie.gate.types import Finding
+    text = "<PERSON_6> | Sales | <MONEY_3>\n<PERSON_8> | Engineering | 167600\n<PERSON_9> | Engineering | 158400\n"
+    i = text.index("<MONEY_3>")
+    seed = [Finding("MONEY", i, i + len("<MONEY_3>"), 1.0)]
+    got = {(f.entity, text[f.start:f.end]) for f in rules.column_spread(text, seed)}
+    assert got == {("MONEY", "167600"), ("MONEY", "158400")}
+
+
+def test_the_last_token_of_space_separated_rows_follows_a_known_amount():
+    from hermie.gate.types import Finding
+    text = "Olivia Gallagher Sales <MONEY_3>\nDaniel Fairbanks Legal 161200\nnotes: done\n"
+    i = text.index("<MONEY_3>")
+    got = {(f.entity, text[f.start:f.end]) for f in rules.column_spread(text, [Finding("MONEY", i, i + 9, 1.0)])}
+    assert ("MONEY", "161200") in got and not any(v == "done" for _, v in got)
+
+
+@pytest.mark.parametrize("suffix", ["计划", "工程", "行动"])   # plan, works, campaign
+def test_chinese_project_names_ending_in_plan_works_or_campaign(suffix):
+    name = "晨曦" + suffix
+    text = "## 一、" + name + "进展"
+    assert name in _spans(text, "PROJECT")
