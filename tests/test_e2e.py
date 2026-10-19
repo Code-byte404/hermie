@@ -318,3 +318,129 @@ def test_judge_prompt_is_blind_and_verdict_parses():
 def test_passed_combines_checks_and_verdict():
     assert G.passed({"passed": True}, None) and G.passed({"passed": True}, (True, ""))
     assert not G.passed({"passed": True}, (False, "x")) and not G.passed({"passed": False}, (True, ""))
+
+
+# ---------------------------------------------------------------- runner
+
+import os
+import threading
+
+from evals.e2e import run as RUN
+
+FAKE_CLAUDE = '''#!{python}
+"""Stands in for claude -p: sends one request with the prompt and a workspace file, prints a claude-style result."""
+import json, os, sys, urllib.request, urllib.error
+if "--version" in sys.argv:
+    print("9.9.9 (Claude Code)"); sys.exit(0)
+with open(os.environ["FAKE_CLAUDE_LOG"], "a") as f:
+    f.write(" ".join(sys.argv[1:]) + "\\n")
+if os.environ.get("FAKE_CLAUDE_FAIL"):
+    print(json.dumps({{"type": "result", "is_error": True, "result": "API Error", "session_id": "s1"}})); sys.exit(1)
+prompt = sys.argv[sys.argv.index("-p") + 1]
+body = {{"model": "claude-test", "max_tokens": 10, "messages": [{{"role": "user", "content": prompt + "\\n" +
+        open("contacts/clients.csv", encoding="utf-8").read()}}]}}
+req = urllib.request.Request(os.environ["ANTHROPIC_BASE_URL"].rstrip("/") + "/v1/messages",
+                             data=json.dumps(body).encode(), headers={{"content-type": "application/json",
+                             "x-api-key": "k-test"}})
+try:
+    reply = json.loads(urllib.request.urlopen(req, timeout=60).read())
+except urllib.error.HTTPError as e:
+    print(json.dumps({{"type": "result", "is_error": True, "result": f"API Error {{e.code}}", "session_id": "s1"}}))
+    sys.exit(1)
+print(json.dumps({{"type": "result", "is_error": False, "result": reply["content"][0]["text"], "session_id": "s1",
+                  "modelUsage": {{"claude-test": {{}}}}}}))
+'''
+
+
+@pytest.fixture
+def fake_env(tmp_path, monkeypatch):
+    import uvicorn
+    from starlette.applications import Starlette
+    from starlette.responses import JSONResponse
+    from starlette.routing import Route
+
+    async def messages(request):
+        return JSONResponse({"id": "m", "type": "message", "role": "assistant", "model": "claude-test",
+                             "content": [{"type": "text", "text": "done"}], "stop_reason": "end_turn",
+                             "usage": {"input_tokens": 1, "output_tokens": 1}})
+    port = _free_port()
+    server = uvicorn.Server(uvicorn.Config(Starlette(routes=[Route("/v1/messages", messages, methods=["POST"])]),
+                                           host="127.0.0.1", port=port, log_level="warning", lifespan="off"))
+    th = threading.Thread(target=server.run, daemon=True)
+    th.start()
+    while not server.started:
+        pass
+    fake = tmp_path / "fake_claude"
+    fake.write_text(FAKE_CLAUDE.format(python=sys.executable))
+    fake.chmod(0o755)
+    log = tmp_path / "claude.log"
+    monkeypatch.setenv("FAKE_CLAUDE_LOG", str(log))
+    yield ["--claude", str(fake), "--recorder-upstream", f"http://127.0.0.1:{port}", "--languages", "en"], log
+    server.should_exit = True
+    th.join(5)
+
+
+def _rd(out, arm, task, rep=1):
+    return out / "runs" / arm / task / f"rep{rep}"
+
+
+def test_run_records_both_arms(tmp_path, fake_env):
+    args, log = fake_env
+    out = tmp_path / "res"
+    assert RUN.main(["--out", str(out), "--seed", "1", "--tasks", "en.reminder", *args]) == 0
+    email = next(c.value for c in W.load_canaries(out / "workspace" / "canaries.json") if c.id == "client.1.email")
+    direct, hermie = _rd(out, "direct", "en.reminder"), _rd(out, "hermie", "en.reminder")
+    assert email in (direct / "recorded" / "001.json").read_text()
+    assert email not in (hermie / "recorded" / "001.json").read_text()
+    assert (direct / "status").read_text() == (hermie / "status").read_text() == "ok"
+    assert (hermie / "answer.txt").read_text() == "done"
+    assert list((hermie / "hermie_data" / "outbound").glob("*.json"))
+    assert not (direct / "workdir" / "canaries.json").exists()
+    m = json.loads((out / "manifest.json").read_text())
+    assert m["sessions"] == 2 and m["seed"] == 1 and m["claude_version"].startswith("9.9.9")
+    assert m["model"] == "claude-test" and m["hermie_config"]["languages"] == ["en"]
+
+
+def test_failed_session_is_recorded_and_run_continues(tmp_path, fake_env, monkeypatch):
+    args, log = fake_env
+    monkeypatch.setenv("FAKE_CLAUDE_FAIL", "1")
+    out = tmp_path / "res"
+    assert RUN.main(["--out", str(out), "--tasks", "en.reminder,en.penalty", "--arms", "direct", *args]) == 0
+    assert (_rd(out, "direct", "en.reminder") / "status").read_text() == "error"
+    assert (_rd(out, "direct", "en.penalty") / "status").read_text() == "error"
+
+
+def test_blocked_is_read_from_the_hermie_receipt(tmp_path):
+    receipt = tmp_path / "receipt.jsonl"
+    receipt.write_text(json.dumps({"status": 200}) + "\n" + json.dumps({"status": 422}) + "\n")
+    assert RUN.classify(1, [{"is_error": True}], receipt, timed_out=False) == "blocked"
+    assert RUN.classify(0, [{"is_error": False}], tmp_path / "none.jsonl", timed_out=False) == "ok"
+    assert RUN.classify(None, [], tmp_path / "none.jsonl", timed_out=True) == "timeout"
+    assert RUN.classify(1, [{"is_error": True}], tmp_path / "none.jsonl", timed_out=False) == "error"
+
+
+def test_resume_skips_finished_runs(tmp_path, fake_env):
+    args, log = fake_env
+    out = tmp_path / "res"
+    for _ in range(2):
+        RUN.main(["--out", str(out), "--tasks", "en.penalty", "--arms", "direct", *args])
+    assert len([l for l in log.read_text().splitlines() if "-p" in l]) == 1
+
+
+def test_canaries_are_frozen_across_invocations(tmp_path, fake_env, capsys):
+    args, log = fake_env
+    out = tmp_path / "res"
+    RUN.main(["--out", str(out), "--seed", "1", "--tasks", "en.penalty", "--arms", "direct", *args])
+    before = (out / "workspace" / "canaries.json").read_text()
+    RUN.main(["--out", str(out), "--seed", "2", "--tasks", "en.penalty", "--arms", "direct", *args])
+    assert (out / "workspace" / "canaries.json").read_text() == before
+    assert "frozen" in capsys.readouterr().out
+
+
+def test_followups_resume_the_session(tmp_path, fake_env):
+    args, log = fake_env
+    out = tmp_path / "res"
+    RUN.main(["--out", str(out), "--tasks", "en.owner_contact", "--arms", "direct", *args])
+    calls = [l for l in log.read_text().splitlines() if "-p" in l]
+    assert len(calls) == 2 and "--resume s1" in calls[1]
+    assert len(json.loads((_rd(out, "direct", "en.owner_contact") / "session.json").read_text())) == 2
