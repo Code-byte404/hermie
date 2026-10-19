@@ -780,3 +780,10 @@ def test_no_space_column_spread_when_the_person_is_not_at_the_line_start():
     text = "owner is Maya Nakamura\nDaniel Fairbanks Legal 161200\n"
     i = text.index("Maya")
     assert rules.column_persons(text, [Finding("PERSON", i, i + len("Maya Nakamura"), 1.0)]) == []
+
+
+@pytest.mark.parametrize("line", ["FN:{}", "FN;CHARSET=UTF-8:{}", "N:{}"])
+def test_names_in_vcard_name_fields_are_found(line):
+    for name in (ZH_NAME_A, "Julian Albright"):
+        text = "BEGIN:VCARD\nVERSION:3.0\n" + line.format(name) + "\nTEL;TYPE=CELL:19900006818\nEND:VCARD\n"
+        assert name in _persons(text)

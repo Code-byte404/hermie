@@ -21,8 +21,21 @@ def render(rubric: str, canaries: dict[str, Canary]) -> str:
     return _REF.sub(lambda m: canaries[m.group(1)].value, rubric)
 
 
-def _mentions(answer: str, value: str) -> bool:
-    return value in answer or normalize(value) in normalize(answer)
+_NUMBER = re.compile(r"\d[\d,]*(?:\.\d+)?")
+
+
+def _number(s: str) -> str:
+    n = s.replace(",", "")
+    return n[:-3] if n.endswith(".00") else n
+
+
+def _mentions(answer: str, value: str, kind: str = "") -> bool:
+    """Exact or normalized containment; an amount matches by its number (`7,600`, `7600 yuan`, `$6,900`)."""
+    if value in answer or normalize(value) in normalize(answer):
+        return True
+    if kind == "amount" and (m := _NUMBER.search(value)):
+        return _number(m.group()) in {_number(x) for x in _NUMBER.findall(answer)}
+    return False
 
 
 def _app_tests(workdir: Path) -> bool:
@@ -32,8 +45,8 @@ def _app_tests(workdir: Path) -> bool:
 
 
 def check(task: Task, answer: str, canaries: dict[str, Canary], workdir: Path) -> dict:
-    missing = [cid for cid in task.must_mention if not _mentions(answer, canaries[cid].value)]
-    wrong = [cid for cid in task.must_not_mention if _mentions(answer, canaries[cid].value)]
+    missing = [cid for cid in task.must_mention if not _mentions(answer, canaries[cid].value, canaries[cid].kind)]
+    wrong = [cid for cid in task.must_not_mention if _mentions(answer, canaries[cid].value, canaries[cid].kind)]
     left = PLACEHOLDER.findall(answer)
     tests = _app_tests(Path(workdir)) if task.run_tests else None
     return {"passed": not missing and not wrong and not left and tests is not False, "missing": missing,

@@ -293,6 +293,15 @@ def test_check_finds_missing_wrong_and_placeholders(tmp_path):
     assert bad["placeholders_left"] == ["<PERSON_2>"]
 
 
+def test_check_matches_an_amount_by_its_number():
+    rent = "\u4eba\u6c11\u5e01" + "7600" + "\u5143"          # RMB 7600 yuan
+    cs = {"a": _c("a", rent, kind="amount", lang="zh"), "b": _c("b", "$6,900.00", kind="amount")}
+    for answer in ("rent 7,600", "\u00a57,600 a month", "7600\u5143"):
+        assert G.check(_task(must_not_mention=()), answer, cs, Path("."))["passed"], answer
+    assert not G.check(_task(must_not_mention=()), "rent 76000", cs, Path("."))["passed"]
+    assert G.check(_task(must_mention=("b",), must_not_mention=()), "pays $6,900 a week", cs, Path("."))["passed"]
+
+
 def test_check_runs_app_tests(built, tmp_path):
     import shutil
     out, canaries = built

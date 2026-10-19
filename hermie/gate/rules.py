@@ -613,6 +613,25 @@ def _row(line: str, sep: str) -> list[tuple[int, int]]:
     return cells
 
 
+_VCARD_NAME = re.compile(r"^(?:FN|N)(?:;[^:\n]*)?:(?P<v>[^\n]+?)\s*$", re.M)
+
+
+def _vcard_names(text: str) -> list[Finding]:
+    """vCard name fields (`FN:`, `N:` with any parameters); `N:` parts are separated by semicolons."""
+    if "BEGIN:VCARD" not in text:
+        return []
+    out = []
+    for m in _VCARD_NAME.finditer(text):
+        pos = m.start("v")
+        for part in m.group("v").split(";"):
+            v = part.strip()
+            if v and any(c.isalpha() for c in v) and not _is_company(v):
+                a = text.index(v, pos)
+                out.append(Finding("PERSON", a, a + len(v), 0.8))
+            pos += len(part) + 1
+    return out
+
+
 def _table_names(text: str) -> list[Finding]:
     out: list[Finding] = []
     lines, pos = [], 0
@@ -885,7 +904,7 @@ def _pii(text: str) -> list[Finding]:
     if any(c.isupper() for c in text):
         out += _en_names(text)
     if "\n" in text:
-        out += _table_names(text)
+        out += _table_names(text) + _vcard_names(text)
     return out
 
 
