@@ -360,7 +360,7 @@ def create_app(config: Config, gate: Gate | None = None, upstream_client: httpx.
             if provider not in ROUTES:
                 rec.status = 404
                 return _error(404, "hermie_unknown_route", f"unknown route /{provider}", rid)
-            base = ROUTES[provider] if provider != "custom" else config.custom_upstream
+            base = {"anthropic": config.anthropic_upstream, "custom": config.custom_upstream}.get(provider, ROUTES[provider])
             if not base:
                 rec.status = 404
                 return _error(404, "hermie_unknown_route", "no custom upstream configured", rid)

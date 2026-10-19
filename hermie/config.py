@@ -11,7 +11,7 @@ from typing import Literal
 _TUPLE_FIELDS = ("languages", "deny_words", "allow_values", "allow_paths")
 _INT_FIELDS = ("port", "local_max_chars", "bodies_keep_mb", "hold_timeout_s", "cache_mb")
 _FLOAT_FIELDS = ("judge_threshold", "judge_timeout_s", "local_timeout_s", "presidio_threshold")
-_STR_FIELDS = ("host", "mode", "ollama_url", "images")
+_STR_FIELDS = ("host", "mode", "ollama_url", "images", "anthropic_upstream")
 _OPTIONAL_STR_FIELDS = ("judge", "local_model", "custom_upstream")
 
 
@@ -34,6 +34,7 @@ class Config:
     allow_values: tuple[str, ...] = ()
     allow_paths: tuple[str, ...] = ()
     custom_upstream: str | None = None
+    anthropic_upstream: str = "https://api.anthropic.com"
     bodies_keep_mb: int = 500
     bodies: bool = True
     hold_timeout_s: int = 60
@@ -92,6 +93,8 @@ class Config:
             prefix, _, model = self.local_model.partition(":")
             if prefix != "ollama" or not model:
                 bad("local_model")
+        if not self.anthropic_upstream.startswith(("http://", "https://")):
+            bad("anthropic_upstream")
         if self.local_max_chars < 1:
             bad("local_max_chars")
         for name in ("cache_mb", "bodies_keep_mb", "hold_timeout_s", "judge_timeout_s", "local_timeout_s"):

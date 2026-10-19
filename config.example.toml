@@ -20,6 +20,7 @@ deny_words = []                       # words that are always treated as sensiti
 allow_values = []                     # exact values that are never replaced
 allow_paths = []                      # file paths whose content is never scanned
 # custom_upstream = "https://llm.example.com"  # upstream for the /custom route (off by default)
+anthropic_upstream = "https://api.anthropic.com"  # upstream for the /anthropic route; change only for a company gateway or a test recorder
 bodies_keep_mb = 500                  # size cap of the stored outbound bodies, in MB
 bodies = true                         # store outbound bodies for `hermie show`
 hold_timeout_s = 60                   # seconds a held message waits for approval

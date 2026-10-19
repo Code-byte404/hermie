@@ -72,3 +72,12 @@ def test_config_file_accepts_an_int_for_a_float(tmp_path):
     p = tmp_path / "config.toml"
     p.write_text("judge_timeout_s = 30\njudge_threshold = 1\n")
     assert Config.load(p).judge_timeout_s == 30
+
+
+def test_anthropic_upstream_defaults_and_validates(tmp_path, monkeypatch):
+    assert Config(data_dir=tmp_path).anthropic_upstream == "https://api.anthropic.com"
+    monkeypatch.setenv("HERMIE_ANTHROPIC_UPSTREAM", "http://127.0.0.1:9999")
+    (tmp_path / "empty.toml").write_text("")
+    assert Config.load(tmp_path / "empty.toml").anthropic_upstream == "http://127.0.0.1:9999"
+    with pytest.raises(ValueError):
+        Config(data_dir=tmp_path, anthropic_upstream="ftp://x")

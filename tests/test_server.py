@@ -230,6 +230,16 @@ def test_custom_route_without_upstream_is_404_and_with_one_forwards(tmp_path, an
     assert str(up.seen[0].url) == "https://llm.internal.test/api/v1/messages"
 
 
+
+def test_anthropic_route_uses_configured_upstream(tmp_path, analyzer):
+    up = Upstream(); cfg, c = _app(tmp_path, analyzer, up)
+    assert c.post("/anthropic/v1/messages", json=_body("anthropic")).status_code == 200
+    assert str(up.seen[0].url) == "https://api.anthropic.com/v1/messages"
+    up = Upstream(); cfg, c = _app(tmp_path / "b", analyzer, up, anthropic_upstream="http://127.0.0.1:9/rec")
+    assert c.post("/anthropic/v1/messages", json=_body("anthropic")).status_code == 200
+    assert str(up.seen[0].url) == "http://127.0.0.1:9/rec/v1/messages"
+    assert Config(data_dir=tmp_path).anthropic_upstream == server.ROUTES["anthropic"]
+
 class _ChunkedSSE(httpx.AsyncByteStream):
     def __init__(self): self.closed = False
     async def __aiter__(self):
