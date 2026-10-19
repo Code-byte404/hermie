@@ -52,7 +52,9 @@ def build_analyzer(languages: tuple[str, ...] = ("en",), deny_words: tuple[str, 
 
     class BankCardRecognizer(PatternRecognizer):
         def validate_result(self, pattern_text: str):
-            return _luhn_ok(re.sub(r"\D", "", pattern_text))
+            digits = re.sub(r"\D", "", pattern_text)
+            # an 18-digit CN ID number can pass the card check too; the ID recognizer owns it
+            return _luhn_ok(digits) and not (len(digits) == 18 and _cn_id_checksum_ok(digits))
 
     recognizers = []
     for lang in languages:

@@ -787,3 +787,11 @@ def test_names_in_vcard_name_fields_are_found(line):
     for name in (ZH_NAME_A, "Julian Albright"):
         text = "BEGIN:VCARD\nVERSION:3.0\n" + line.format(name) + "\nTEL;TYPE=CELL:19900006818\nEND:VCARD\n"
         assert name in _persons(text)
+
+
+@pytest.mark.parametrize("lead", ["甲方将位于", "公司坐落于", "请寄到"])
+def test_a_chinese_address_starts_after_the_verb_that_introduces_it(lead):
+    addr = "杭州市西湖区星河路376号18栋2903室"   # Hangzhou ... room 2903
+    text = lead + addr + "的住房出租给乙方。"
+    spans = [text[f.start:f.end] for f in rules.find(text) if f.entity == "ADDRESS"]
+    assert spans == [addr]

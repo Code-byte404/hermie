@@ -108,3 +108,23 @@ def test_secret_patterns_run_once_with_the_rules_filters(analyzer):
     for text in ['token: "x-pack-test-token"', "jwt_secret: a_very_important_secret",
                  "id = sk" + "ab" * 16]:
         assert "SECRET" not in ents(analyzer, text), text
+
+
+def _id_that_is_also_luhn() -> str:
+    """A fake CN ID number (region 99) with a valid checksum that also passes the card check, built at run time."""
+    from hermie.gate import rules
+    for seq in range(1000):
+        body = f"99158619971107{seq:03d}"
+        for check in "0123456789X":
+            if rules._cn_ok(body + check) and check != "X" and rules._luhn_ok(body + check):
+                return body + check
+    raise AssertionError("no such number")
+
+
+def test_an_id_number_that_passes_the_card_check_stays_an_id(analyzer_zh):
+    n = _id_that_is_also_luhn()
+    text = "身份证号码：" + n          # "ID number:"
+    found = [(f.entity, text[f.start:f.end]) for f in scan(analyzer_zh, text, ("en", "zh"), 0.35)]
+    assert ("CN_ID_CARD", n) in found and not any(e == "BANK_CARD" for e, _ in found)
+    raw = analyzer_zh.analyze(text=text, language="zh", score_threshold=0.35)
+    assert not any(r.entity_type == "BANK_CARD" for r in raw)   # not left to the order of equal-score results

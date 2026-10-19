@@ -879,13 +879,22 @@ _ADDR_LABEL_ZH = re.compile(
 _ZH_PLACE_HINT = re.compile(r"[\u7701\u5e02\u533a\u53bf\u8def\u8857\u9053\u5df7\u53f7\u6751\u9547\u4e61\u697c\u5ba4\u680b\u5c42\u5355\u5143\u9662\u56ed\u82d1\u5927\u53a6\d]")
 
 
+# Words that introduce a place ("located at", "sited in", "send to"): the optional province / city groups of _ADDR_ZH
+# would otherwise take them (and the subject before them) as part of the city name.
+_ZH_ADDR_LEAD = re.compile(r"\u4f4d\u4e8e|\u4f4d\u65bc|\u5750\u843d\u4e8e|\u5750\u843d\u5728|\u5730\u5904|\u4f4f\u5728|\u8bbe\u5728|"
+                           r"\u5730\u5740\u4e3a|\u5730\u5740\u662f|\u642c\u5230|\u642c\u81f3|\u5bc4\u5230|\u5bc4\u81f3|\u9001\u5230|\u9001\u81f3")
+
+
 def _zh_addresses(text: str) -> list[Finding]:
     out = []
     for m in _ADDR_ZH.finditer(text):
-        s = m.group()
+        start = m.start()
+        for lead in _ZH_ADDR_LEAD.finditer(text, m.start(), m.end()):
+            start = lead.end()
+        s = text[start:m.end()]
         regions = len(re.findall(r"[\u7701\u5e02\u533a\u53bf\u65d7]", s))
-        if any(c.isdigit() for c in s) or regions >= 2:
-            out.append(Finding("ADDRESS", m.start(), m.end(), 0.75))
+        if len(s) >= 4 and (any(c.isdigit() for c in s) or regions >= 2):
+            out.append(Finding("ADDRESS", start, m.end(), 0.75))
     for m in _ADDR_LABEL_ZH.finditer(text):
         v = m.group("v").strip()
         if _ZH_PLACE_HINT.search(v) and len(v) >= 4:
