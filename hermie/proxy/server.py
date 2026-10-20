@@ -61,6 +61,7 @@ NO_FILES = "hermie does not proxy file uploads"
 BAD_PATH = "hermie refuses paths with '.' or '..' segments or encoded slashes"
 SEEN_IMAGES = 4096
 REVIEW_MAX_CHARS = 3000   # longer than this does not fit the menu, so the person could not read all of it
+APPROVED_KEEP = 50       # texts the person sent this run, kept to cover the same text inside a later request
 
 
 async def send_upstream(client: httpx.AsyncClient, method: str, url: str, headers: dict[str, str],
@@ -276,6 +277,8 @@ def create_app(config: Config, gate: Gate | None = None, upstream_client: httpx.
             choice = await prompter.ask(item) if prompter.available else "unavailable"
             if choice == "send":
                 store.allow(d.hash)
+                if result.held_own:
+                    approvals.approved = (approvals.approved + [result.held_own])[-APPROVED_KEEP:]
                 rec.approved_by = "user"
             elif choice == "allow_all":
                 approvals.session.all = True

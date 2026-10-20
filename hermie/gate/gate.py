@@ -248,6 +248,16 @@ class Gate:
                 pass   # the verdict still holds for this process
         return verdict
 
+    def judged_sensitive(self, text: str) -> bool:
+        """The judge's verdict on a text outside a scan (what is left of a held message once the parts the person
+        already sent are cut out). A judge error counts as sensitive."""
+        if self.judge is None:
+            return False
+        try:
+            return bool(text.strip()) and self._judge(text)
+        except Exception:   # fail closed
+            return True
+
     def _judged_origin(self, origin: Origin) -> bool:
         return self.judge is not None and origin in (Origin.USER, Origin.TOOL)
 

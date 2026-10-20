@@ -99,16 +99,49 @@ def test_payload_subtrees_ignore_skip_keys(tmp_path, analyzer):
     assert "555-010-0199" not in json.dumps(out.body["messages"][1])
     assert out.body["model"] == "claude-opus-5-5" and out.body["messages"][1]["content"][0]["name"] == "Read"
 
-def test_system_role_message_is_user_and_held_when_flagged(tmp_path, analyzer):
+def test_system_text_is_user_origin_scanned_but_not_judged(tmp_path, analyzer):
+    """The client writes the system prompt and system messages (Claude Code's environment block): the patterns and
+    known values still scan them, the judge weighs only what the person typed and what tools returned."""
     body = json.loads((FIX / "openai_chat.json").read_text())
     assert classify(("messages", 0, "content"), body) is Origin.USER
     body["input"] = [{"role": "developer", "content": [{"type": "input_text", "text": "x"}]}]
     assert classify(("input", 0, "content", 0, "text"), body) is Origin.USER
     class J:
-        def is_sensitive(self, text): return "me@example.com" in text or "<EMAIL_ADDRESS_" in text
+        def is_sensitive(self, text): return "plan" in text
     cfg, gate = _gate(tmp_path, analyzer, judge=J())
-    out = walk_request(json.loads((FIX / "openai_chat.json").read_text()), gate, Allow(), cfg)
-    assert out.held is not None and out.held.kind == "hold"
+    body = {"model": "m", "system": [{"type": "text", "text": "Our plan: mail me@example.com"}], "messages": [
+        {"role": "user", "content": [{"type": "text", "text": "hi"}]},
+        {"role": "system", "content": [{"type": "text", "text": "Environment: the plan folder"}]}]}
+    out = walk_request(body, gate, Allow(), cfg)
+    assert out.held is None
+    assert "me@example.com" not in json.dumps(out.body) and "<EMAIL_ADDRESS_1>" in out.body["system"][0]["text"]
+    body["messages"][0]["content"][0]["text"] = "the plan is final"
+    assert walk_request(body, gate, Allow(), cfg).held is not None   # the person's own text is still judged
+
+
+class Approved(Allow):
+    def __init__(self, texts): super().__init__(); self.approved = list(texts)
+
+class CutJudge:
+    def is_sensitive(self, text): return "cut" in text
+
+_PROMPT = "Talking points please. Confidential: we cut 80 jobs in March."
+_TITLE = f"<session>\n{_PROMPT}\n</session>\nWrite the title in the language of the session."
+
+def _user(text): return {"model": "m", "messages": [{"role": "user", "content": [{"type": "text", "text": text}]}]}
+
+def test_held_text_inside_an_approved_text_is_not_asked_again(tmp_path, analyzer):
+    cfg, gate = _gate(tmp_path, analyzer, judge=CutJudge())
+    out = walk_request(_user(_PROMPT), gate, Approved([_TITLE]), cfg)
+    assert out.held is None and [d.kind for d in out.decisions] == ["pass"]
+    assert out.body["messages"][0]["content"][0]["text"] == _PROMPT
+
+def test_held_text_around_an_approved_text_is_judged_on_the_rest(tmp_path, analyzer):
+    cfg, gate = _gate(tmp_path, analyzer, judge=CutJudge())
+    assert walk_request(_user(_TITLE), gate, Approved([_PROMPT]), cfg).held is None
+    more = _TITLE + " Also: we cut the bonus."
+    assert walk_request(_user(more), gate, Approved([_PROMPT]), cfg).held is not None
+    assert walk_request(_user(_TITLE), gate, Approved([]), cfg).held is not None
 
 
 # --- final fix wave ---

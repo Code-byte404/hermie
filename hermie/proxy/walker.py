@@ -50,6 +50,7 @@ class WalkResult:
     scanned_bytes: int = 0
     held: Decision | None = None
     held_text: str | None = None
+    held_own: str | None = None   # the held text as the person sees it: pattern-redacted, injected blocks cut
 
 
 def _strs(d, keys: set) -> bool:
@@ -108,6 +109,27 @@ def classify(path: tuple[str | int, ...], body: dict) -> Origin:
     if any(a.get("role") in ("user", "system", "developer") for a in ancestors):
         return Origin.USER
     return Origin.OTHER
+
+
+def _client_written(path: tuple[str | int, ...], body: dict) -> bool:
+    """The system prompt and system / developer messages: the client writes them (Claude Code's environment block),
+    the person does not type them. The patterns and known values scan them; the judge does not weigh them."""
+    if path and path[0] in _SYSTEM_ROOTS:
+        return True
+    node = body
+    for p in path[:-1]:
+        try:
+            node = node[p]
+        except (KeyError, IndexError, TypeError):
+            return False
+        if isinstance(node, dict) and node.get("role") in ("system", "developer"):
+            return True
+    return False
+
+
+def approved_form(text: str) -> str:
+    """A held text the way approvals compare it: injected blocks cut, whitespace collapsed."""
+    return " ".join(strip_injected(text).split())
 
 
 def _fmt_size(n: int) -> str:
@@ -267,6 +289,8 @@ class _Walker:
             if _PATH_LINE.match(first):
                 hint = first.strip()
         scan_origin = Origin.TOOL if origin is Origin.OTHER else origin
+        if origin is Origin.USER and _client_written(path, self.orig):
+            scan_origin = Origin.OTHER   # no judge
         res = self.gate.scan(text, scan_origin, path_hint=hint)
         size = len(text.encode())
         self.out.scanned_bytes += size
@@ -306,6 +330,8 @@ class _Walker:
                 # rejected before and now only history: keep the conversation usable, the text stays home
                 self.out.decisions.append(Decision("withhold", did, "rejected earlier", size, res.hash, **meta))
                 return self.apply(parent, key, explain.note_text("dropped", did))
+            elif not unscanned and res.reason == "judge" and self._covered(res.text):
+                self.out.decisions.append(Decision("pass", did, res.reason, size, res.hash, **meta))
             else:
                 # a detector error's text is the raw text: no excerpt
                 excerpt = "" if unscanned else " ".join(strip_injected(res.text)[:600].split())[:300]
@@ -314,6 +340,7 @@ class _Walker:
                 if not self.observe:
                     self.out.held = d
                     self.out.held_text = text
+                    self.out.held_own = approved_form(res.text)
                     return False
             return self.apply(parent, key, res.text)
         if not unscanned and self.approvals.is_allowed(res.hash, res.reason):
@@ -323,6 +350,19 @@ class _Walker:
         note = explain.note_text("unscanned" if unscanned else "tool", did, size=_fmt_size(size), reason=res.reason,
                                  tool=meta["tool"])
         return self.apply(parent, key, note)
+
+    def _covered(self, text: str) -> bool:
+        """True when the person already sent this text in this run: it lies inside a text they sent ("Send this one"),
+        or what is left once those texts are cut out passes the judge. Claude Code sends a prompt twice, inside its
+        session-title request and as the turn itself."""
+        approved = getattr(self.approvals, "approved", ())
+        own = approved_form(text)
+        rest = own
+        for a in approved:
+            if own in a:
+                return True
+            rest = rest.replace(a, " ")
+        return rest != own and not self.gate.judged_sensitive(rest)
 
     def _tool_names(self) -> dict[str, str]:
         """Call id -> tool name, built once per walk from tool_use / function_call / chat tool_calls entries."""

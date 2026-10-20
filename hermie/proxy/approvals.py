@@ -231,6 +231,7 @@ class Approvals:
         self.session = session
         self.dropped: set[str] = set()   # messages the user rejected; Claude Code resends them in its history
         self.rewrites: dict[str, str] = {}   # content hash -> rewritten text (already scanned), memory only
+        self.approved: list[str] = []   # held texts the person sent (redacted, `approved_form`), memory only
 
     def assign(self, h: str) -> str:
         return self.store.assign(h)

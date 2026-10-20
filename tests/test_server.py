@@ -421,6 +421,29 @@ def _local_app(tmp_path, analyzer, up, rewriter, prompter=None):
 _SENS = {"role": "user", "content": "the layoff list is final"}
 def _first(): return {"model": "m", "max_tokens": 5, "messages": [_SENS]}
 
+class _SendPrompter:
+    available = True
+    def __init__(self): self.items = []
+    async def ask(self, item): self.items.append(item); return "send"
+
+_TITLE_REQ = "<session>\nthe layoff list is final\n</session>\nWrite the title in the language of the session."
+
+@pytest.mark.parametrize("first,second", [(_TITLE_REQ, _SENS["content"]), (_SENS["content"], _TITLE_REQ)])
+def test_one_answer_covers_the_same_message_inside_another_request(tmp_path, analyzer, first, second):
+    """Claude Code sends the prompt twice: inside its session-title request and as the turn itself. Sending one
+    covers the other; only text around it that the user did not see is judged again."""
+    up = Upstream(); p = _SendPrompter()
+    cfg = Config(data_dir=tmp_path, judge="ollama:x")
+    gate = Gate(cfg, analyzer=analyzer, judge=_LJ(), store=MappingStore(cfg.mapping_path))
+    c = TestClient(server.create_app(cfg, gate=gate, upstream_client=httpx.AsyncClient(transport=httpx.MockTransport(up)),
+                                     prompter=p))
+    for text in (first, second):
+        body = {"model": "m", "max_tokens": 5, "messages": [{"role": "user", "content": text}]}
+        assert c.post("/anthropic/v1/messages", json=body).status_code == 200
+    assert len(p.items) == 1 and len(up.seen) == 2
+    assert c.app.state.approvals.approved   # the approved text is kept in memory only, never on disk
+    assert "layoff" not in (tmp_path / "allowed.jsonl").read_text()
+
 def test_local_choice_sends_placeholders_for_the_spans(tmp_path, analyzer):
     up = Upstream(); rw = _Rewriter(); p = _LocalPrompter()
     cfg, c = _local_app(tmp_path, analyzer, up, rw, p)

@@ -135,7 +135,7 @@ def mapping_error_text(path, error: str) -> str:
 
 OPTIONS: dict[str, tuple[str, str]] = {
     "reject": ("Don't send", "Nothing leaves. Claude Code shows an error; edit the prompt and try again."),
-    "send": ("Send this one", "Sent as shown above. This exact text is not asked about again."),
+    "send": ("Send this one", "Sent as shown above. It is not asked about again, also where it comes back inside a later request."),
     "session": ("Send all, this session", "Messages stopped by the judge or the encoded-data check go out without "
                                           "asking until hermie serve restarts. Replacing still applies."),
     "local": ("Rewrite locally", "Your local model hides the specifics; you review before anything is sent."),
