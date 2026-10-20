@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "hermie"
-version = "0.3.0"
+version = "0.4.0"
 description = "A local privacy proxy for coding agents: redacts what Claude Code, Codex, Gemini CLI and aider send to the cloud, restores placeholders in the replies, and keeps a verbatim receipt."
 readme = "README.md"
 license = { file = "LICENSE" }

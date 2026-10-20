@@ -84,7 +84,7 @@ The full list is in [the guide](docs/guide.md#what-this-does-not-protect-in-full
 ## Quickstart
 
 ```bash
-pip install git+https://github.com/Code-byte404/hermie && python -m spacy download en_core_web_lg
+pip install git+https://github.com/Code-byte404/hermie@v0.4.0 && python -m spacy download en_core_web_lg
 hermie claude                    # opens Claude Code through Hermie
 ```
 
