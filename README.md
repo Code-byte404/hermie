@@ -28,6 +28,14 @@ You read:          ...Maria Gonzalez... (real values restored, also inside the f
 - **Proof, not a promise.** Every request leaves a receipt that lists what kinds were replaced, never the values. `hermie show ID` prints exactly what the cloud received.
 - **Local.** Detection and rewriting run on your machine; no third service decides what is private. Your login is forwarded untouched.
 
+## When it is not sure, it asks
+
+![Claude Code through Hermie: the user asks for talking points and mentions that Northwind Holdings will cut 80 jobs, which staff do not know yet. Hermie's menu appears inside Claude Code: the message was stopped before it left the machine because a local model judged it private, the company name is already a placeholder, and the user can choose not to send, send this one, or send everything this session. The user presses 2 and Claude answers; the reply names Northwind Holdings again](assets/demo-hold.gif)
+
+Some private things have no fixed shape: "we will cut 80 jobs in March, staff do not know yet". With the optional local judge turned on, Hermie reads each message before it leaves and, when it looks like non-public business or personal information, stops it and asks you inside Claude Code. In the recording the company name is already a placeholder; the judge holds the rest, you press **2** (Send this one), and Claude carries on. Choose **1** and nothing leaves. You are asked once per message, not again when Claude Code repeats it in a later request.
+
+Turn it on with one line in `~/.hermie/config.toml`: `judge = "ollama:MODEL"` (any local Ollama model) or `judge = "laya:PATH"` (a small fine-tuned decision model, about 40 ms; see [the guide](docs/guide.md#the-optional-judge-a-small-decision-model)). Script: [`demo/record-hold.sh`](demo/record-hold.sh).
+
 ## How well it works
 
 **Real work, end to end** (2026-10-19). 21 tasks on a seeded work folder (an English sales contract, a Chinese lease, an employee table, Chinese meeting notes, a board memo, contacts, a forwarded mail, a small app with keys), 10 of them in Chinese. Each task ran in real Claude Code twice: through Hermie and directly. An independent recorder saved every request that left the machine.
@@ -82,9 +90,7 @@ hermie claude                    # opens Claude Code through Hermie
 
 `hermie claude` starts the proxy if none is running, opens Claude Code through it for that session (your settings files are not changed), and stops the proxy when the last window closes. Arguments after `claude` go to Claude Code. Chinese names in running text need `python -m spacy download zh_core_web_sm` and `languages = ["en", "zh"]` in `~/.hermie/config.toml`; the other Chinese rules work without it.
 
-Inside Claude Code you see what happened, each turn:
-
-![Claude Code with Hermie: the user pastes a key and asks for a .env file. Claude writes the file; Hermie notes that one placeholder was restored before the write, and sums up the turn. The status line shows the proxy is up](assets/demo-env.gif)
+Inside Claude Code you see what happened, each turn (a key pasted into the chat, written to `.env` by Claude, [recording](docs/guide.md#keys-the-model-never-sees)):
 
 ```text
 ⏺ Write(.env)

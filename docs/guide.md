@@ -4,6 +4,8 @@ The details behind the [README](../README.md): client setup, what is scanned, th
 
 ## Keys the model never sees
 
+![Claude Code with Hermie: the user pastes a key and asks for a .env file. Claude writes the file; Hermie notes that one placeholder was restored before the write, and sums up the turn. The status line shows the proxy is up](../assets/demo-env.gif)
+
 Paste a key into the prompt the way you would paste it to a colleague:
 
 ```text
