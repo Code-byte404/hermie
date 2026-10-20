@@ -127,6 +127,16 @@ def _client_written(path: tuple[str | int, ...], body: dict) -> bool:
     return False
 
 
+# Claude Code's session-title request: the prompt in <session> tags, then its own instruction to name the session
+_SESSION_TITLE = re.compile(r"\A\s*<session>\n(.*?)\n</session>\n", re.DOTALL)
+
+
+def _excerpt_source(text: str) -> str:
+    """What the menu shows of a held text: the person's prompt, without the client's session-title wrapper."""
+    m = _SESSION_TITLE.match(text)
+    return m.group(1) if m else text
+
+
 def approved_form(text: str) -> str:
     """A held text the way approvals compare it: injected blocks cut, whitespace collapsed."""
     return " ".join(strip_injected(text).split())
@@ -334,7 +344,7 @@ class _Walker:
                 self.out.decisions.append(Decision("pass", did, res.reason, size, res.hash, **meta))
             else:
                 # a detector error's text is the raw text: no excerpt
-                excerpt = "" if unscanned else " ".join(strip_injected(res.text)[:600].split())[:300]
+                excerpt = "" if unscanned else " ".join(strip_injected(_excerpt_source(res.text))[:600].split())[:300]
                 d = Decision("hold", did, res.reason, size, res.hash, excerpt, **meta)
                 self.out.decisions.append(d)
                 if not self.observe:

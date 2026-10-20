@@ -248,6 +248,8 @@ def create_app(config: Config, gate: Gate | None = None, upstream_client: httpx.
         except OSError:
             pass   # a full disk must not turn a delivered reply into an error
 
+    ask_lock = asyncio.Lock()   # one question at a time; a request that waited walks again before it asks
+
     def register(d: Decision) -> str:
         """Persist a held / withheld item under the id the walker already showed (both come from `store.assign`)."""
         return store.register(PendingItem(d.hash, _item_kind(d), d.reason, d.size, d.excerpt, d.id),
@@ -257,6 +259,7 @@ def create_app(config: Config, gate: Gate | None = None, upstream_client: httpx.
         """Walk, asking the user about held messages; return the result or a 422 response."""
         local_tried: set[str] = set()
         while True:
+            seen = approvals.answers
             ctx = contextvars.copy_context()
             ctx.run(_tally.set, rec.tally)
             result = await asyncio.to_thread(ctx.run, walk_request, body, gate, approvals, config)
@@ -268,62 +271,66 @@ def create_app(config: Config, gate: Gate | None = None, upstream_client: httpx.
             if d.reason.startswith("detector_error"):   # never offered for release: only reject
                 rec.held = rec.held or d.id
                 return _error(422, "hermie_blocked", explain.UNSCANNED_ERROR, rec.rid, d.id)
-            item_id = register(d)
-            rec.held = rec.held or item_id
-            item = store.pending.get(item_id) or PendingItem(d.hash, "message", d.reason, d.size, d.excerpt, item_id)
-            item.excerpt = d.excerpt
-            item.local_ok = rewriter is not None
-            item.mapping = gate.mapping
-            choice = await prompter.ask(item) if prompter.available else "unavailable"
-            if choice == "send":
-                store.allow(d.hash)
-                if result.held_own:
-                    approvals.approved = (approvals.approved + [result.held_own])[-APPROVED_KEEP:]
-                rec.approved_by = "user"
-            elif choice == "allow_all":
-                approvals.session.all = True
-                rec.approved_by = "session"
-            elif choice == "local" and rewriter is not None:
-                if d.hash in local_tried:   # a second local answer for the same message is a failure
-                    approvals.dropped.add(d.hash)
-                    return _error(422, "hermie_blocked", explain.error_text("local_failed", item_id), rec.rid, item_id)
-                local_tried.add(d.hash)
-                review = getattr(prompter, "review", None)
-                while True:
-                    try:
-                        spans = await rewriter.spans(result.held_text or "")
-                    except Exception:   # a broken rewriter is a failed rewrite, never a crash
-                        spans = None
-                    shown = None
-                    if spans:
-                        # the specifics become placeholders (restored in the reply); patterns and known values scan the
-                        # result, without the judge: the person reads it and decides
-                        ctx = contextvars.copy_context()
-                        ctx.run(_tally.set, rec.tally)
-                        red = await asyncio.to_thread(ctx.run, gate.redact_spans, result.held_text or "", spans)
-                        scanned = await asyncio.to_thread(ctx.run, gate.scan, red, Origin.OTHER)
-                        if (not scanned.sensitive and scanned.text != result.held_text
-                                and len(scanned.text) <= REVIEW_MAX_CHARS):
-                            shown = scanned.text
-                    if shown is None:
+            async with ask_lock:
+                if approvals.answers != seen:
+                    continue   # answered while this request waited for its turn (Claude Code's title request): walk again
+                item_id = register(d)
+                rec.held = rec.held or item_id
+                item = store.pending.get(item_id) or PendingItem(d.hash, "message", d.reason, d.size, d.excerpt, item_id)
+                item.excerpt = d.excerpt
+                item.local_ok = rewriter is not None
+                item.mapping = gate.mapping
+                choice = await prompter.ask(item) if prompter.available else "unavailable"
+                approvals.answers += 1
+                if choice == "send":
+                    store.allow(d.hash)
+                    if result.held_own:
+                        approvals.approved = (approvals.approved + [result.held_own])[-APPROVED_KEEP:]
+                    rec.approved_by = "user"
+                elif choice == "allow_all":
+                    approvals.session.all = True
+                    rec.approved_by = "session"
+                elif choice == "local" and rewriter is not None:
+                    if d.hash in local_tried:   # a second local answer for the same message is a failure
                         approvals.dropped.add(d.hash)
-                        return _error(422, "hermie_blocked", explain.error_text("local_failed", item_id), rec.rid,
+                        return _error(422, "hermie_blocked", explain.error_text("local_failed", item_id), rec.rid, item_id)
+                    local_tried.add(d.hash)
+                    review = getattr(prompter, "review", None)
+                    while True:
+                        try:
+                            spans = await rewriter.spans(result.held_text or "")
+                        except Exception:   # a broken rewriter is a failed rewrite, never a crash
+                            spans = None
+                        shown = None
+                        if spans:
+                            # the specifics become placeholders (restored in the reply); patterns and known values scan the
+                            # result, without the judge: the person reads it and decides
+                            ctx = contextvars.copy_context()
+                            ctx.run(_tally.set, rec.tally)
+                            red = await asyncio.to_thread(ctx.run, gate.redact_spans, result.held_text or "", spans)
+                            scanned = await asyncio.to_thread(ctx.run, gate.scan, red, Origin.OTHER)
+                            if (not scanned.sensitive and scanned.text != result.held_text
+                                    and len(scanned.text) <= REVIEW_MAX_CHARS):
+                                shown = scanned.text
+                        if shown is None:
+                            approvals.dropped.add(d.hash)
+                            return _error(422, "hermie_blocked", explain.error_text("local_failed", item_id), rec.rid,
+                                          item_id)
+                        verdict = await review(item, shown) if review is not None else "discard"
+                        if verdict == "again":
+                            continue
+                        if verdict == "send":
+                            approvals.rewrites[d.hash] = shown
+                            rec.approved_by = "local"
+                            break
+                        approvals.dropped.add(d.hash)
+                        return _error(422, "hermie_blocked", explain.error_text("local_discarded", item_id), rec.rid,
                                       item_id)
-                    verdict = await review(item, shown) if review is not None else "discard"
-                    if verdict == "again":
-                        continue
-                    if verdict == "send":
-                        approvals.rewrites[d.hash] = shown
-                        rec.approved_by = "local"
-                        break
+                else:
                     approvals.dropped.add(d.hash)
-                    return _error(422, "hermie_blocked", explain.error_text("local_discarded", item_id), rec.rid,
-                                  item_id)
-            else:
-                approvals.dropped.add(d.hash)
-                cause = choice if choice in ("timeout", "unavailable") else "reject"
-                return _error(422, "hermie_blocked", explain.error_text(cause, item_id, config.hold_timeout_s),
-                              rec.rid, item_id)
+                    cause = choice if choice in ("timeout", "unavailable") else "reject"
+                    return _error(422, "hermie_blocked", explain.error_text(cause, item_id, config.hold_timeout_s),
+                                  rec.rid, item_id)
 
     async def passthrough(request: Request, url: str, rec: _Rec) -> Response:
         # Only body-less GET / DELETE get here: there is nothing to scan, so nothing is certified.

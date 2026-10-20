@@ -444,6 +444,28 @@ def test_one_answer_covers_the_same_message_inside_another_request(tmp_path, ana
     assert c.app.state.approvals.approved   # the approved text is kept in memory only, never on disk
     assert "layoff" not in (tmp_path / "allowed.jsonl").read_text()
 
+class _SlowSendPrompter(_SendPrompter):
+    async def ask(self, item):
+        import asyncio
+        await asyncio.sleep(0.3)
+        return await super().ask(item)
+
+async def test_a_request_waiting_for_its_question_rechecks_answers_given_meanwhile(tmp_path, analyzer):
+    """Claude Code sends its session-title request and the turn at the same time: the second one waits while the
+    first is asked about, and an answer that covers it means no second question."""
+    import asyncio
+    up = Upstream(); p = _SlowSendPrompter()
+    cfg = Config(data_dir=tmp_path, judge="ollama:x")
+    gate = Gate(cfg, analyzer=analyzer, judge=_LJ(), store=MappingStore(cfg.mapping_path))
+    app = server.create_app(cfg, gate=gate, upstream_client=httpx.AsyncClient(transport=httpx.MockTransport(up)),
+                            prompter=p)
+    bodies = [{"model": "m", "max_tokens": 5, "messages": [{"role": "user", "content": t}]}
+              for t in (_TITLE_REQ, _SENS["content"])]
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://t") as c:
+        rs = await asyncio.gather(*(c.post("/anthropic/v1/messages", json=b) for b in bodies))
+    assert [r.status_code for r in rs] == [200, 200]
+    assert len(p.items) == 1 and len(up.seen) == 2
+
 def test_local_choice_sends_placeholders_for_the_spans(tmp_path, analyzer):
     up = Upstream(); rw = _Rewriter(); p = _LocalPrompter()
     cfg, c = _local_app(tmp_path, analyzer, up, rw, p)

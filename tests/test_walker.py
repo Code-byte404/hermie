@@ -471,3 +471,12 @@ def test_placeholder_note_has_no_placeholder_of_its_own():
 def test_placeholder_note_asks_for_a_formula_instead_of_an_invented_number():
     note = explain.PLACEHOLDER_NOTE
     assert "<MONEY_n>" in note and "<DATE_n>" in note and "formula" in note
+
+
+def test_held_excerpt_of_a_session_title_request_shows_the_prompt_only(tmp_path, analyzer):
+    """Claude Code wraps the prompt in <session> tags and adds its own instruction to name the session: the menu
+    shows the person's prompt, not the wrapper."""
+    cfg, gate = _gate(tmp_path, analyzer, judge=CutJudge())
+    out = walk_request(_user(_TITLE), gate, Approved([]), cfg)
+    assert out.held.excerpt == _PROMPT
+    assert out.held_own == " ".join(_TITLE.split())   # what "Send this one" covers is the whole text
